@@ -97,6 +97,11 @@ public sealed class RateOverlayTests
         { """{ "schemaVersion": 1, "localOffload": { "baselineModel": "gpt-missing", "additionalHosts": [" "] } }""", "<file>: localOffload.additionalHosts[0]: must not be blank" },
         { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "outputPer1M": "x", "inputPer1M": "y", "name": "default" } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].outputPer1M: must be a number" },
         { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1 } ] } ] } ], "hostSuffixes": [".bad"] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].outputPer1M: is required" },
+
+        // Architect amendments (PR #15 review).
+        { """{ "schemaVersion": null, "schemaVersion": 1 }""", "<file>: schemaVersion: is defined more than once" },
+        { """{ "schemaVersion": 1, "\ud800abcdefgh": 1 }""", "<file>: contains a property name that is not valid text" },
+        { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "effectiveFrom": "2027-05-17\ud800", "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].effectiveFrom: must be a date and time, such as 2027-05-17T00:00:00Z" },
     };
 
     public static TheoryData<string, decimal, decimal> GitHubModelOverlays => new()

@@ -72,7 +72,11 @@ internal static class RateCardReader
             switch (name)
             {
                 case "schemaVersion":
-                    _ = ReadInt32(property.Value, path);
+                    if (property.Value.ValueKind != JsonValueKind.Null)
+                    {
+                        _ = ReadInt32(property.Value, path);
+                    }
+
                     break;
                 case "ratesVersion":
                     ratesVersion = ReadOptionalString(property.Value, path);
@@ -542,10 +546,18 @@ internal static class RateCardReader
 
     private static void ValidateSchemaVersion(JsonElement root)
     {
-        if (!root.TryGetProperty("schemaVersion", out JsonElement value) ||
-            value.ValueKind == JsonValueKind.Null)
+        JsonElement value;
+        try
         {
-            throw Error("schemaVersion", "is required");
+            if (!root.TryGetProperty("schemaVersion", out value) ||
+                value.ValueKind == JsonValueKind.Null)
+            {
+                throw Error("schemaVersion", "is required");
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw Error(string.Empty, "contains a property name that is not valid text", ex);
         }
 
         if (value.ValueKind != JsonValueKind.Number ||
@@ -625,9 +637,21 @@ internal static class RateCardReader
             return null;
         }
 
-        return value.ValueKind == JsonValueKind.String && value.TryGetDateTimeOffset(out DateTimeOffset result)
-            ? result
-            : throw Error(path, "must be a date and time, such as 2027-05-17T00:00:00Z");
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            try
+            {
+                if (value.TryGetDateTimeOffset(out DateTimeOffset result))
+                {
+                    return result;
+                }
+            }
+            catch (InvalidOperationException)
+            {
+            }
+        }
+
+        throw Error(path, "must be a date and time, such as 2027-05-17T00:00:00Z");
     }
 
     private static void RequireObject(JsonElement value, string path)
