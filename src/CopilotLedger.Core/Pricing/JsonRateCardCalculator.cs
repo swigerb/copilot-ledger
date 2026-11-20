@@ -1,10 +1,7 @@
-using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using CopilotLedger.Core.Telemetry;
 
 namespace CopilotLedger.Core.Pricing;
@@ -13,14 +10,7 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
 {
     public const string EmbeddedResourceName = "CopilotLedger.Core.Pricing.rates.json";
 
-    private static readonly JsonSerializerOptions SerializerOptions = new()
-    {
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-        RespectNullableAnnotations = true,
-        ReadCommentHandling = JsonCommentHandling.Disallow,
-        AllowTrailingCommas = false,
-        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.Strict,
-    };
+    private const decimal MaxRatePer1M = 1_000_000m;
 
     private readonly IReadOnlyList<ModelRateCard> _githubModels;
     private readonly IReadOnlyList<ModelRateCard> _foundryModels;
@@ -246,77 +236,84 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
 
     private static JsonRateCardCalculator Create(string baseJson, string? overlayJson, string? overlayName)
     {
-        RateCardDocument baseDocument = Deserialize(baseJson, null, isBase: true);
-        ValidateOverlayShape(baseDocument);
-        _ = Validate(baseDocument);
-        RateCardDocument? overlay = overlayJson is null
-            ? null
-            : Deserialize(overlayJson, overlayName, isBase: false);
+        RateCardDocument baseDocument = RateCardReader.Read(baseJson, isBase: true);
+        JsonRateCardCalculator builtIn = Validate(baseDocument);
+        if (overlayJson is null)
+        {
+            return builtIn;
+        }
+
         try
         {
-            RateCardDocument merged = overlay is null
-                ? baseDocument
-                : Merge(baseDocument, overlay);
+            RateCardDocument overlay = RateCardReader.Read(overlayJson, isBase: false);
+            ValidateOverlay(overlay);
+            RateCardDocument merged = Merge(baseDocument, overlay);
+            ValidateMergedRates(baseDocument, overlay, merged);
             return Validate(merged);
         }
-        catch (InvalidDataException ex) when (overlayName is not null)
+        catch (InvalidDataException ex)
         {
             throw new InvalidDataException($"{overlayName}: {ex.Message}", ex);
         }
     }
 
-    private static RateCardDocument Deserialize(string json, string? source, bool isBase)
+    private static void ValidateOverlay(RateCardDocument overlay)
     {
-        RateCardDocument? document;
-        try
+        if (overlay.GithubAiCredits?.Models is not null)
         {
-            document = JsonSerializer.Deserialize<RateCardDocument>(json, SerializerOptions);
-        }
-        catch (JsonException ex)
-        {
-            string path = ex.Path ?? "$";
-            if (path.StartsWith("$.", StringComparison.Ordinal))
-            {
-                path = path[2..];
-            }
-
-            throw Invalid(source, path, ex.Message, ex);
+            _ = ValidateModels(
+                overlay.GithubAiCredits.Models,
+                BillingChannel.GitHubAiCredits,
+                "githubAiCredits.models");
         }
 
-        if (document is null)
+        if (overlay.FoundryByok?.Models is not null)
         {
-            throw Invalid(source, "$", "expected a JSON object.");
+            _ = ValidateModels(
+                overlay.FoundryByok.Models,
+                BillingChannel.FoundryByok,
+                "foundryByok.models");
         }
 
-        Require(document.SchemaVersion is not null, source, "schemaVersion", "is required");
-        if (document.SchemaVersion != 1)
+        if (overlay.LocalOffload?.Models is not null)
         {
-            throw Invalid(source, "schemaVersion", "must be 1");
+            _ = ValidateLocalModels(overlay.LocalOffload.Models, "localOffload.models");
         }
 
-        if (isBase)
+        if (overlay.LocalOffload?.BaselineModel is not null &&
+            NormalizeModel(overlay.LocalOffload.BaselineModel) is null)
         {
-            Require(document.RatesVersion is not null, source, "ratesVersion", "is required");
-            Require(document.Source is not null, source, "source", "is required");
-            Require(document.Source!.Url is not null, source, "source.url", "is required");
-            Require(document.Source!.RetrievedOn is not null, source, "source.retrievedOn", "is required");
-            Require(document.GithubAiCredits?.HostSuffixes is not null, source, "githubAiCredits.hostSuffixes", "is required");
-            Require(document.GithubAiCredits?.Models is not null, source, "githubAiCredits.models", "is required");
-            Require(document.FoundryByok?.HostSuffixes is not null, source, "foundryByok.hostSuffixes", "is required");
-            Require(document.FoundryByok?.ProviderNames is not null, source, "foundryByok.providerNames", "is required");
-            Require(document.FoundryByok?.Models is not null, source, "foundryByok.models", "is required");
-            Require(document.LocalOffload?.BaselineModel is not null, source, "localOffload.baselineModel", "is required");
-            Require(document.LocalOffload?.Models is not null, source, "localOffload.models", "is required");
-            Require(document.LocalOffload?.AdditionalHosts is not null, source, "localOffload.additionalHosts", "is required");
-            Require(document.LocalOffload?.ProviderNames is not null, source, "localOffload.providerNames", "is required");
+            throw Invalid(null, "localOffload.baselineModel", "must not be blank");
         }
 
-        return document;
+        if (overlay.GithubAiCredits?.HostSuffixes is not null)
+        {
+            _ = ValidateHosts(overlay.GithubAiCredits.HostSuffixes, "githubAiCredits.hostSuffixes");
+        }
+
+        if (overlay.FoundryByok?.HostSuffixes is not null)
+        {
+            _ = ValidateHosts(overlay.FoundryByok.HostSuffixes, "foundryByok.hostSuffixes");
+        }
+
+        if (overlay.FoundryByok?.ProviderNames is not null)
+        {
+            _ = ValidateNames(overlay.FoundryByok.ProviderNames, "foundryByok.providerNames");
+        }
+
+        if (overlay.LocalOffload?.AdditionalHosts is not null)
+        {
+            _ = ValidateNames(overlay.LocalOffload.AdditionalHosts, "localOffload.additionalHosts");
+        }
+
+        if (overlay.LocalOffload?.ProviderNames is not null)
+        {
+            _ = ValidateNames(overlay.LocalOffload.ProviderNames, "localOffload.providerNames");
+        }
     }
 
     private static RateCardDocument Merge(RateCardDocument baseDocument, RateCardDocument overlay)
     {
-        ValidateOverlayShape(overlay);
         string ratesVersion = $"{baseDocument.RatesVersion}+{(string.IsNullOrWhiteSpace(overlay.RatesVersion) ? "user" : overlay.RatesVersion)}";
 
         return new RateCardDocument
@@ -344,6 +341,138 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
                 ProviderNames = MergeStrings(baseDocument.LocalOffload!.ProviderNames!, overlay.LocalOffload?.ProviderNames),
             },
         };
+    }
+
+    private static void ValidateMergedRates(
+        RateCardDocument baseDocument,
+        RateCardDocument overlay,
+        RateCardDocument merged)
+    {
+        if (overlay.GithubAiCredits?.Models is not null)
+        {
+            ValidateMergedModelIdentities(
+                baseDocument.GithubAiCredits!.Models!,
+                overlay.GithubAiCredits.Models,
+                "githubAiCredits.models");
+        }
+
+        if (overlay.FoundryByok?.Models is not null)
+        {
+            ValidateMergedModelIdentities(
+                baseDocument.FoundryByok!.Models!,
+                overlay.FoundryByok.Models,
+                "foundryByok.models");
+        }
+
+        if (overlay.LocalOffload?.Models is not null)
+        {
+            ValidateMergedModelIdentities(
+                baseDocument.LocalOffload!.Models!,
+                overlay.LocalOffload.Models,
+                "localOffload.models");
+        }
+
+        string baseline = NormalizeModel(merged.LocalOffload!.BaselineModel)!;
+        bool resolves = merged.GithubAiCredits!.Models!.Any(model =>
+            NormalizeModel(model.Id) == baseline ||
+            model.Aliases.Any(alias => NormalizeModel(alias) == baseline));
+        if (!resolves)
+        {
+            throw Invalid(
+                null,
+                "localOffload.baselineModel",
+                $"does not resolve to a githubAiCredits model in the merged rates: {baseline}");
+        }
+    }
+
+    private static void ValidateMergedModelIdentities(
+        IReadOnlyList<PricedModelDocument> baseModels,
+        IReadOnlyList<PricedModelDocument> overlayModels,
+        string path)
+    {
+        HashSet<string> replaced = overlayModels
+            .Select(model => NormalizeModel(model.Id)!)
+            .ToHashSet(StringComparer.Ordinal);
+        Dictionary<string, string> owners = new(StringComparer.Ordinal);
+        foreach (PricedModelDocument model in baseModels)
+        {
+            string id = NormalizeModel(model.Id)!;
+            if (replaced.Contains(id))
+            {
+                continue;
+            }
+
+            owners[id] = id;
+            foreach (string alias in model.Aliases)
+            {
+                owners[NormalizeModel(alias)!] = id;
+            }
+        }
+
+        for (int index = 0; index < overlayModels.Count; index++)
+        {
+            PricedModelDocument model = overlayModels[index];
+            RequireNoMergedCollision(owners, NormalizeModel(model.Id)!, $"{path}[{index}].id");
+            for (int aliasIndex = 0; aliasIndex < model.Aliases.Count; aliasIndex++)
+            {
+                RequireNoMergedCollision(
+                    owners,
+                    NormalizeModel(model.Aliases[aliasIndex])!,
+                    $"{path}[{index}].aliases[{aliasIndex}]");
+            }
+        }
+    }
+
+    private static void ValidateMergedModelIdentities(
+        IReadOnlyList<LocalModelDocument> baseModels,
+        IReadOnlyList<LocalModelDocument> overlayModels,
+        string path)
+    {
+        HashSet<string> replaced = overlayModels
+            .Select(model => NormalizeModel(model.Id)!)
+            .ToHashSet(StringComparer.Ordinal);
+        Dictionary<string, string> owners = new(StringComparer.Ordinal);
+        foreach (LocalModelDocument model in baseModels)
+        {
+            string id = NormalizeModel(model.Id)!;
+            if (replaced.Contains(id))
+            {
+                continue;
+            }
+
+            owners[id] = id;
+            foreach (string alias in model.Aliases)
+            {
+                owners[NormalizeModel(alias)!] = id;
+            }
+        }
+
+        for (int index = 0; index < overlayModels.Count; index++)
+        {
+            LocalModelDocument model = overlayModels[index];
+            RequireNoMergedCollision(owners, NormalizeModel(model.Id)!, $"{path}[{index}].id");
+            for (int aliasIndex = 0; aliasIndex < model.Aliases.Count; aliasIndex++)
+            {
+                RequireNoMergedCollision(
+                    owners,
+                    NormalizeModel(model.Aliases[aliasIndex])!,
+                    $"{path}[{index}].aliases[{aliasIndex}]");
+            }
+        }
+    }
+
+    private static void RequireNoMergedCollision(
+        IReadOnlyDictionary<string, string> owners,
+        string identity,
+        string path)
+    {
+        if (owners.TryGetValue(identity, out string? owner))
+        {
+            throw Invalid(
+                null,
+                path,
+                $"duplicate model identity in the merged rates: {identity} (built-in model {owner})");
+        }
     }
 
     private static JsonRateCardCalculator Validate(RateCardDocument document)
@@ -384,98 +513,6 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
             ValidateNames(document.LocalOffload.AdditionalHosts!, "localOffload.additionalHosts"),
             ValidateNames(document.LocalOffload.ProviderNames!, "localOffload.providerNames"),
             baseline);
-    }
-
-    private static void ValidateOverlayShape(RateCardDocument overlay)
-    {
-        ValidateOptionalStringElements(overlay.GithubAiCredits?.HostSuffixes, "githubAiCredits.hostSuffixes");
-        ValidateOptionalStringElements(overlay.FoundryByok?.HostSuffixes, "foundryByok.hostSuffixes");
-        ValidateOptionalStringElements(overlay.FoundryByok?.ProviderNames, "foundryByok.providerNames");
-        ValidateOptionalStringElements(overlay.LocalOffload?.AdditionalHosts, "localOffload.additionalHosts");
-        ValidateOptionalStringElements(overlay.LocalOffload?.ProviderNames, "localOffload.providerNames");
-
-        ValidateOverlayModels(overlay.GithubAiCredits?.Models, "githubAiCredits.models");
-        ValidateOverlayModels(overlay.FoundryByok?.Models, "foundryByok.models");
-        ValidateOverlayModels(overlay.LocalOffload?.Models, "localOffload.models");
-    }
-
-    private static void ValidateOverlayModels(
-        IReadOnlyList<PricedModelDocument>? models,
-        string path)
-    {
-        if (models is null)
-        {
-            return;
-        }
-
-        HashSet<string> ids = new(StringComparer.Ordinal);
-        for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
-        {
-            string modelPath = $"{path}[{modelIndex}]";
-            PricedModelDocument model = models[modelIndex]
-                ?? throw Invalid(null, modelPath, "must not be null");
-            string? id = NormalizeModel(model!.Id);
-            if (id is not null && !ids.Add(id))
-            {
-                throw Invalid(null, $"{modelPath}.id", $"duplicate model identity: {id}");
-            }
-
-            ValidateOptionalStringElements(model.Aliases, $"{modelPath}.aliases");
-            Require(model.Windows is not null, null, $"{modelPath}.windows", "must not be null");
-            for (int windowIndex = 0; windowIndex < model.Windows!.Count; windowIndex++)
-            {
-                string windowPath = $"{modelPath}.windows[{windowIndex}]";
-                RateWindowDocument window = model.Windows[windowIndex]
-                    ?? throw Invalid(null, windowPath, "must not be null");
-                Require(window!.Tiers is not null, null, $"{windowPath}.tiers", "must not be null");
-                for (int tierIndex = 0; tierIndex < window.Tiers!.Count; tierIndex++)
-                {
-                    Require(
-                        window.Tiers[tierIndex] is not null,
-                        null,
-                        $"{windowPath}.tiers[{tierIndex}]",
-                        "must not be null");
-                }
-            }
-        }
-    }
-
-    private static void ValidateOverlayModels(
-        IReadOnlyList<LocalModelDocument>? models,
-        string path)
-    {
-        if (models is null)
-        {
-            return;
-        }
-
-        HashSet<string> ids = new(StringComparer.Ordinal);
-        for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
-        {
-            LocalModelDocument? model = models[modelIndex];
-            string modelPath = $"{path}[{modelIndex}]";
-            Require(model is not null, null, modelPath, "must not be null");
-            string? id = NormalizeModel(model!.Id);
-            if (id is not null && !ids.Add(id))
-            {
-                throw Invalid(null, $"{modelPath}.id", $"duplicate model identity: {id}");
-            }
-
-            ValidateOptionalStringElements(model.Aliases, $"{modelPath}.aliases");
-        }
-    }
-
-    private static void ValidateOptionalStringElements(IReadOnlyList<string>? values, string path)
-    {
-        if (values is null)
-        {
-            return;
-        }
-
-        for (int index = 0; index < values.Count; index++)
-        {
-            Require(values[index] is not null, null, $"{path}[{index}]", "must not be null");
-        }
     }
 
     private static IReadOnlyList<ModelRateCard> ValidateModels(
@@ -701,16 +738,15 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
             throw Invalid(null, path, "must be greater than or equal to 0");
         }
 
-        try
+        // The bound keeps tokens * rate inside decimal for any long token count, so Calculate never throws.
+        if (rate > MaxRatePer1M)
         {
-            if (rate * 1_000_000m % 1m != 0m)
-            {
-                throw Invalid(null, path, "must have no more than 6 decimal places");
-            }
+            throw Invalid(null, path, "must be less than or equal to 1000000");
         }
-        catch (OverflowException ex)
+
+        if (rate * 1_000_000m % 1m != 0m)
         {
-            throw Invalid(null, path, "is too large", ex);
+            throw Invalid(null, path, "must have no more than 6 decimal places");
         }
     }
 
@@ -926,9 +962,8 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
         string message,
         Exception? innerException = null)
     {
-        string displayPath = path.StartsWith("$.", StringComparison.Ordinal) || path == "$" ? path : path;
         string prefix = source is null ? string.Empty : $"{source}: ";
-        return new InvalidDataException($"{prefix}{displayPath}: {message}", innerException);
+        return new InvalidDataException($"{prefix}{path}: {message}", innerException);
     }
 
     private sealed record LocalModelRate(string ModelId, IReadOnlyList<string> Aliases)

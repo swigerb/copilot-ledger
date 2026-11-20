@@ -57,11 +57,71 @@ To change pricing, create `~/.copilot-ledger/rates.json`. CopilotLedger merges i
 - `ratesVersion` is an optional label. Each request in the ledger records which rates priced it, for example `2026-11-20+contoso-2026-11`, or `2026-11-20+user` if you leave the label out.
 - JSON doesn't allow comments, so put your own notes in the optional `notes` array.
 
-If the file is invalid, CopilotLedger refuses to load it and reports an error that names the file and the JSON path of the problem, such as `foundryByok.models[0].windows[0].tiers[0].outputPer1M` for an invalid price. It never silently ignores a broken file.
+If the file is invalid, CopilotLedger refuses to load it and reports the first problem it finds. It never silently ignores a broken file. Each error starts with the file's path, then says where the problem is and what's wrong:
+
+- Most errors give a path into your file, such as `foundryByok.models[0].windows[0].tiers[0].outputPer1M`. Indexes count from 0, and they count only the entries in your file.
+- If the file isn't valid JSON, the error gives the line and column where reading stopped, counting from 1.
+- Two checks compare your file with the built-in rates: a model `id` or alias that a built-in model already uses, and a `localOffload.baselineModel` that isn't a GitHub model. These errors say `in the merged rates`.
+- Property names are case-sensitive, and each property can appear only once in its object.
+
+For example, this file leaves out a tier's `outputPer1M`:
+
+<!-- rates-error-example -->
+```json
+{
+  "schemaVersion": 1,
+  "foundryByok": {
+    "models": [
+      { "id": "gpt-6.1-sol", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1.75 } ] } ] }
+    ]
+  }
+}
+```
+
+CopilotLedger reports:
+
+```text
+/home/me/.copilot-ledger/rates.json: foundryByok.models[0].windows[0].tiers[0].outputPer1M: is required
+```
+<!-- /rates-error-example -->
+
+This file names a baseline model that doesn't exist:
+
+<!-- rates-error-example -->
+```json
+{
+  "schemaVersion": 1,
+  "localOffload": { "baselineModel": "gpt-missing" }
+}
+```
+
+CopilotLedger reports:
+
+```text
+/home/me/.copilot-ledger/rates.json: localOffload.baselineModel: does not resolve to a githubAiCredits model in the merged rates: gpt-missing
+```
+<!-- /rates-error-example -->
+
+This file has a comma after its last property, which JSON doesn't allow:
+
+<!-- rates-error-example -->
+```json
+{
+  "schemaVersion": 1,
+  "ratesVersion": "contoso-2026-11",
+}
+```
+
+CopilotLedger reports:
+
+```text
+/home/me/.copilot-ledger/rates.json: line 4, column 1: invalid JSON
+```
+<!-- /rates-error-example -->
 
 ### Price your Foundry BYOK models
 
-Prices are USD per 1,000,000 tokens, with at most 6 decimal places. Take them from your Azure pricing or invoice. The rates below are an example, not real Azure prices.
+Prices are USD per 1,000,000 tokens, from 0 to 1,000,000, with at most 6 decimal places. Take them from your Azure pricing or invoice. The rates below are an example, not real Azure prices.
 
 ```json
 {

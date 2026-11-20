@@ -16,6 +16,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="..\..\docs\configuration.md" Link="docs\configuration.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\CopilotLedger.Core\CopilotLedger.Core.csproj" />
     <ProjectReference Include="..\..\src\CopilotLedger.Storage\CopilotLedger.Storage.csproj" />
     <ProjectReference Include="..\..\src\CopilotLedger.Otlp\CopilotLedger.Otlp.csproj" />
