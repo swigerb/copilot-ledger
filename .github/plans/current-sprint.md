@@ -17,8 +17,8 @@ Every task ships with its tests, listed under "Test specifications". A task is d
 ## Tasks
 
 - [ ] Task 1: OTLP Trace Decoding & gen_ai Span Normalization (CopilotLedger.Otlp). Create `src/CopilotLedger.Otlp`. Add `GenAiSpanLink` to Core, a dependency-free protobuf reader and a System.Text.Json reader for OTLP `ExportTraceServiceRequest`, and `GenAiSpanNormalizer`, which applies the gen_ai.* extraction rules to turn OTLP spans into `NormalizedGenAiSpan`s (inference spans only) and `GenAiSpanLink`s (trace structure). Tests use golden protobuf bytes, Copilot-shaped JSON, and malformed payloads.
-- [ ] Task 2: Ledger Ingestion, Session Attribution & Rates Refresh (CopilotLedger.Otlp, Storage & Core). Add Migration 2 (`span_links`) and store methods for span links, agent back-fill, pruning, and prompt chains; `CachingGitContextResolver`; `CopilotSessionWorkspaceLocator`, which finds a Copilot session's working directory; and `LedgerIngestor`. Add the default models of Copilot's built-in subagents and the local provider names to `rates.json`. Tests replay real Copilot trace shapes and reconcile with GitHub's own nano-AIU figures.
-- [ ] Task 3: Rates Overlay Error Reporting (CopilotLedger.Core). Replace the rates loader's reflection-based deserialization with `RateCardReader`, a `JsonDocument` reader that owns every message. Validate the overlay by itself, so every error path points into the user's file, and label the two checks that need the built-in rates. A missing property gets its own path, and invalid JSON gets a line and column. Tests assert exact messages, and a test keeps the examples in `docs/configuration.md` identical to real output.
+- [ ] Task 2: Ledger Ingestion, Session Attribution & Rates Refresh (CopilotLedger.Otlp, Storage & Core). Add Migration 2 (`span_links`) and store methods for span links, agent back-fill, pruning, and prompt chains; `CachingGitContextResolver`; `CopilotSessionWorkspaceLocator`, which finds a Copilot session's working directory; and `LedgerIngestor`. Price every text model on GitHub's Copilot price table in `rates.json` (29 more models, with long-context tiers and promotional windows), and add the local provider names. Tests replay real Copilot trace shapes, including custom agents, reconcile with GitHub's own nano-AIU figures, and check every new price against an independent transcription of GitHub's table.
+- [ ] Task 3: Rates Overlay Error Reporting (CopilotLedger.Core). Replace the rates loader's reflection-based deserialization with `RateCardReader`, a `JsonDocument` reader that owns every message. Validate the overlay by itself, so every error path points into the user's file, and label the two checks that need the built-in rates. A missing property gets its own path, and invalid JSON gets a line and column. Rates above 1,000,000 USD per 1M tokens are rejected, so `Calculate` never throws. Tests assert exact messages, and a test keeps the examples in `docs/configuration.md` identical to real output.
 - [ ] Task 4: Kestrel OTLP Receiver & gh-ledger Daemon (CopilotLedger.Otlp & CopilotLedger.Cli). Add the loopback OTLP/HTTP receiver: `POST /v1/traces` as protobuf and JSON, with gzip, size limits, and spec status codes; `/v1/metrics` and `/v1/logs` are accepted and discarded. Create `src/CopilotLedger.Cli` (`gh-ledger`) on System.CommandLine with `daemon run|start|stop` and `rates init|validate`. Tests use `Microsoft.AspNetCore.TestHost`.
 - [ ] Task 5: Reporting Commands, One-Command Install & Single-Binary Packaging (CopilotLedger.Cli). Add `status`, `branch`, `agents`, and `top-prompts` (tables and `--json`); `install` and `uninstall` (`COPILOT_OTEL_ENABLED`, the `gh ledger` alias, and the daemon); single-file self-contained publish settings; a CI publish smoke test; and `docs/cli.md`.
 
@@ -28,17 +28,17 @@ Every task ships with its tests, listed under "Test specifications". A task is d
 - Merged Sprint 1 behavior that this plan depends on (read from the code at `1809dc8`):
   - `SqliteLedgerStore.RecordAsync` validates the whole batch before writing. It throws `ArgumentException` if any entry has status `NotBillableOperation` or a negative token count, so nothing is written.
   - It then inserts every row in one transaction, converting `UsdCost` and `EstimatedCloudSavedUsd` with `PicoUsd.FromUsd`. That throws `ArgumentOutOfRangeException` for an amount above `long.MaxValue` pico-USD (about $9.22 million), which rolls back the whole batch.
-  - `JsonRateCardCalculator.Calculate` can throw `OverflowException` when an overlay rate is extreme. That contradicts the archived Sprint 1 plan's "`Calculate` never throws" (Task 2 specification, `JsonRateCardCalculator`, step 1). `ValidateRate` bounds a rate's size only by requiring `rate × 1,000,000` to fit in a `decimal`, so a rate such as 10^22 per 1M tokens loads, and pricing 10,000,000 tokens with it overflows. Sprint 2 guards against it in the ingestor and leaves Sprint 1's code alone; see "Deferred".
+  - `JsonRateCardCalculator.Calculate` can throw `OverflowException` when an overlay rate is extreme. That contradicts `ICreditCalculator`'s contract ("Throws only ArgumentNullException") and the archived Sprint 1 plan's "`Calculate` never throws" (Task 2 specification, `JsonRateCardCalculator`, step 1). `ValidateRate` bounds a rate's size only by requiring `rate × 1,000,000` to fit in a `decimal`, so a rate such as 10^22 per 1M tokens loads, and pricing 10,000,000 tokens with it overflows. The usage checks can't overflow `long`, so rate size is the only way `Calculate` throws. Task 3 restores the contract by rejecting rates above 1,000,000 USD per 1M tokens (decision 18). Task 2's ingestor, which lands first, catches `OverflowException`, and it keeps that catch afterward as defense in depth.
   - Inserts end with `ON CONFLICT (trace_id, span_id) DO NOTHING`, so re-sending a span never duplicates it.
   - Task 2's "Filtering and per-span errors" keeps every one of these failures away from `RecordAsync`.
   - Rates errors are `InvalidDataException`s whose message is `<file>: <JSON path>: <problem>`. The loader validates the *merged* document, so a path into the user's overlay uses merged indices: the overlay's `localOffload.models[0]` is reported as `localOffload.models[1]`, behind the built-in model. Errors that System.Text.Json finds pass its text through, with .NET type names and a ` Path: $.… | LineNumber: … | BytePositionInLine: ….` suffix, and a missing required property is reported at its object's path. Task 3 replaces all of this.
   - `TempDirectory.Dispose()` calls `SqliteConnection.ClearAllPools()` before deleting its folder. On Windows a pooled connection keeps the SQLite file open, so the folder can't be deleted otherwise. `Dispose` ignores delete failures, so the symptom would be leftover temp folders, not failing tests. The shared test rules extend this pattern to every new test.
 - `.github/workflows/ci.yml` was added in Sprint 1 Task 1 as an architect amendment. It runs `dotnet build CopilotLedger.slnx` and `dotnet test CopilotLedger.slnx` on `ubuntu-latest` and `windows-latest` for pushes to `main`, pull requests, and manual runs. Task 5 extends it.
 - Sprint 1's public contracts are fixed. Sprint 2 adds types and members. It changes only these Sprint 1 artifacts, each called out in its task:
-  - Task 2: `src/CopilotLedger.Core/Pricing/rates.json` and `docs/configuration.md` (three models and four local provider names);
+  - Task 2: `src/CopilotLedger.Core/Pricing/rates.json` (29 models, three notes, and four local provider names) and `docs/configuration.md` (the Local row and the built-in prices);
   - Task 2: `LedgerMigrations` (Migration 2), and test S1's expected `PRAGMA user_version`, which changes from 1 to 2;
   - Task 2: `SqliteLedgerStore` (four new public methods; existing members unchanged);
-  - Task 3: the rates loader's internals in `JsonRateCardCalculator` and `RateCardDocument` (its public API is unchanged), `docs/configuration.md` (the invalid-file paragraph), the Sprint 1 rates tests in `RateOverlayTests` and `RateCardLoadingTests` (they now assert exact messages), and the test project file (it copies the docs into the test output);
+  - Task 3: the rates loader's internals in `JsonRateCardCalculator` and `RateCardDocument` (its public API is unchanged, and it now rejects rates above 1,000,000), `docs/configuration.md` (the price-range sentence and the invalid-file paragraph), the Sprint 1 rates tests in `RateOverlayTests` and `RateCardLoadingTests` (they now assert exact messages), and the test project file (it copies the docs into the test output);
   - Tasks 4 and 5: `docs/configuration.md` (the data-file table and the rates commands).
 - The test project uses xUnit v2 (`xunit` 2.9.3).
 - When an acceptance criterion says `src/` contains no `double` or `float`, it means the C# keywords and the `GetDouble` and `TryGetDouble` calls. The enum member `OtlpValueKind.Double` names a protobuf wire type and is allowed.
@@ -103,7 +103,7 @@ The shared Copilot runtime serves Copilot CLI, the GitHub Copilot app, and VS Co
 - Personal configuration uses environment variables. The `telemetry` settings object exists only in device-wide enterprise managed settings.
 - Content capture is off by default.
 - `gen_ai.conversation.id` is the session identifier. `~/.copilot/session-state/` holds session data "organized by session ID", and `COPILOT_HOME` replaces `~/.copilot`.
-- "To measure AI unit consumption, read `github.copilot.nano_aiu` from the root `invoke_agent` span only."
+- "To measure AI unit consumption, read `github.copilot.nano_aiu` from the root `invoke_agent` span only." The custom-agent capture below found a root span whose total left out a subagent's spend.
 - For bring-your-own-key and local models, `providers[].modelProvider` in Copilot CLI's `providers.json` is "a provider label used only for telemetry". Its recognized values are `openai`, `anthropic`, `azure_openai`, `ollama`, `lm_studio`, `foundry_local`, and `llama_cpp`.
 - VS Code's Local agent harness is configured differently:
   - `COPILOT_OTEL_ENDPOINT` takes precedence over `OTEL_EXPORTER_OTLP_ENDPOINT`, and environment variables take precedence over settings.
@@ -131,19 +131,96 @@ On 2026-11-20 the architect ran a scratch loopback receiver on `localhost:4318`,
 8. **Billing reconciliation.** For each `chat` span, `nano_aiu / 10^9` equaled the AI credits from Sprint 1's formula at GitHub's published rates: `mai-code-2` 0.69071, 0.13053, and 0.69766; `gpt-6-luna` 0.047955 and 0.0051795. Copilot's `--usage-output-file` totals of 690,710,000 and 881,324,500 nano-AIU agree.
 9. `input_tokens` includes cache reads and writes. For example, the subagent's `gpt-6-luna` input of 7,429 = 6 uncached + 3,662 cache read + 3,761 cache write.
 
-### Pricing additions
+### Live capture: custom agents
 
-Source: [Models and pricing for GitHub Copilot](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing). Prices are USD per 1M tokens.
+On 2026-11-20 the architect repeated the capture for custom agents. It used Copilot CLI 1.0.112 with `mai-code-2-flash`, the scratch receiver, and a scratch Git repository outside this one, with `COPILOT_OTEL_ENABLED=true` set only for those processes. User-level Copilot configuration wasn't changed. The probe agent `.github/agents/ledger-probe.agent.md` declared `name: Ledger Probe Display`; a second probe, `ledger-probe-noname.agent.md`, declared no `name`. The three runs cost 0.103028 AI credits: `--usage-output-file` totals of 24,095,000, 62,080,000, and 16,853,000 nano-AIU.
 
-| Model ID | Tier | Input threshold | Input | Cached input | Cache write | Output |
-|---|---|---|---|---|---|---|
-| `gpt-6-luna` | default | ≤ 272K | 0.10 | 0.01 | 0.125 | 0.50 |
-| `gpt-6-luna` | long context | > 272K | 0.20 | 0.02 | 0.25 | 0.75 |
-| `gpt-5.6-luna` | default | ≤ 200K | 0.20 | 0.02 | 0.25 | 1.20 |
-| `gpt-5.6-luna` | long context | > 200K | 0.40 | 0.04 | 0.50 | 1.80 |
-| `claude-haiku-4.5` | single | n/a | 1.00 | 0.10 | 1.25 | 5.00 |
+1. **Run A,** `copilot --agent ledger-probe`. The root span was `invoke_agent Ledger Probe Display`, with `gen_ai.agent.name` = `Ledger Probe Display` (the agent's `name`, not its file ID), `gen_ai.agent.description`, and `github.copilot.agent.type` = `custom`. Its one `chat` span was the root's child and had no `gen_ai.agent.name`.
+2. **Run B,** the default agent calling the probe agent with the `task` tool. The root `invoke_agent` had no `gen_ai.agent.name`, and `github.copilot.agent.type` was `builtin`. The main agent's two `chat` spans were the root's children. So was `execute_tool task`, which carried `gen_ai.transfer.target.name` = `Ledger Probe Display`. Its child was `invoke_agent Ledger Probe Display`, with `gen_ai.agent.name` = `Ledger Probe Display` and type `custom`, and that span's one `chat` child again had no agent name.
+3. **Run C,** `copilot --agent ledger-probe-noname`. `gen_ai.agent.name` was `ledger-probe-noname`: the file name without `.agent.md`.
+4. Each run's spans arrived in one export request. Every `chat` span's `nano_aiu / 10^9` equaled Sprint 1's formula at `mai-code-2-flash`'s promotional price: 0.024095 (run A); 0.02885, 0.028335, and 0.004895 (run B); and 0.016853 (run C).
+5. Run B's root `invoke_agent` reported `github.copilot.nano_aiu` 57,185,000, which covers only the main agent's two `chat` spans. The subagent's 4,895,000 appeared only on its own `invoke_agent` and `chat` spans. The usage file's total of 62,080,000 is the sum of all three `chat` spans. So Copilot's advice to read the root span "only" would have missed the custom subagent's spend. CopilotLedger prices `chat` spans, so it counts that spend.
 
-The CLI command reference lists `gpt-5.6-luna` as the default model of the built-in `explore` and `task` subagents, with `task` falling back to `claude-haiku-4.5`, and lists `claude-haiku-4.5` for `research`. The live capture showed `explore` running `gpt-6-luna` on CLI 1.0.112.
+The design already matches these runs. The normalizer reads `gen_ai.agent.name` only into links, and back-fill gives each `chat` row the name of its nearest `invoke_agent` ancestor without crossing a nested one. A custom agent's spend therefore appears under its `name`, or its file ID when it has no `name`, and the default agent's spend appears under `(none)`. This repository's agents declare `name: ledger-architect` and `name: ledger-builder`, so their spend appears under those names. IG9 replays runs A and B.
+
+### GitHub price table
+
+Source: [Models and pricing for GitHub Copilot](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing), retrieved 2026-11-20. Prices are USD per 1M tokens.
+
+The architect transcribed the page twice, once by parsing its HTML and once from a separate Markdown rendering, and the two transcriptions agree on all 48 rows below. RR1's expected values were computed from that transcription with decimal math, independently of `rates.json`. They agree with a second computation, and with the merged Sprint 1 calculator loading the Task 2 `rates.json`.
+
+The table lists every text model; the page's one image model, GPT Image 2.5 Flare, is left out, and its "Fine-tuned (GitHub)" table is empty. **Cache write** "none" means the page gives no cache-write price, so cache writes bill at the input price, which is Sprint 1's rule for a null `cacheWritePer1M`. **ID source** is explained after the table. **Built in** says which sprint prices the model.
+
+| Provider | Model on the page | Model ID | ID source | Built in | Tier | Threshold | Input | Cached input | Cache write | Output |
+|---|---|---|---|---|---|---|---|---|---|---|
+| OpenAI | GPT-5.3-Codex | `gpt-5.3-codex` | model picker | Task 2 | Default | Not applicable | 1.75 | 0.175 | none | 14.00 |
+| OpenAI | GPT-5.4 nano | `gpt-5.4-nano` | display name | Task 2 | Default | Not applicable | 0.20 | 0.02 | none | 1.25 |
+| OpenAI | GPT-5.6 Luna | `gpt-5.6-luna` | model picker | Task 2 | Default | ≤ 200K | 0.20 | 0.02 | 0.25 | 1.20 |
+| OpenAI | GPT-5.6 Luna | `gpt-5.6-luna` | model picker | Task 2 | Long context | > 200K | 0.40 | 0.04 | 0.50 | 1.80 |
+| OpenAI | GPT-5.6 Sol | `gpt-5.6-sol` | model picker | Task 2 | Default | ≤ 272K | 4.00 | 0.40 | 5.00 | 20.00 |
+| OpenAI | GPT-5.6 Sol | `gpt-5.6-sol` | model picker | Task 2 | Long context | > 272K | 8.00 | 0.80 | 10.00 | 30.00 |
+| OpenAI | GPT-6 Astra | `gpt-6-astra` | model picker | Sprint 1 | Default | ≤ 272K | 10.00 | 1.00 | 12.50 | 50.00 |
+| OpenAI | GPT-6 Astra | `gpt-6-astra` | model picker | Sprint 1 | Long context | > 272K | 20.00 | 2.00 | 25.00 | 75.00 |
+| OpenAI | GPT-6 Luna | `gpt-6-luna` | model picker | Task 2 | Default | ≤ 272K | 0.10 | 0.01 | 0.125 | 0.50 |
+| OpenAI | GPT-6 Luna | `gpt-6-luna` | model picker | Task 2 | Long context | > 272K | 0.20 | 0.02 | 0.25 | 0.75 |
+| OpenAI | GPT-6 Sol | `gpt-6-sol` | model picker | Task 2 | Default | ≤ 272K | 2.00 | 0.20 | 2.50 | 10.00 |
+| OpenAI | GPT-6 Sol | `gpt-6-sol` | model picker | Task 2 | Long context | > 272K | 4.00 | 0.40 | 5.00 | 15.00 |
+| OpenAI | GPT-6.1 Sol | `gpt-6.1-sol` | model picker | Sprint 1 | Default | ≤ 272K | 2.00 | 0.10 | 2.50 | 10.00 |
+| OpenAI | GPT-6.1 Sol | `gpt-6.1-sol` | model picker | Sprint 1 | Long context | > 272K | 4.00 | 0.20 | 5.00 | 15.00 |
+| OpenAI | GPT-6.1 Terra | `gpt-6.1-terra` | model picker | Task 2 | Default | ≤ 272K | 1.00 | 0.05 | 1.25 | 5.00 |
+| OpenAI | GPT-6.1 Terra | `gpt-6.1-terra` | model picker | Task 2 | Long context | > 272K | 2.00 | 0.10 | 2.50 | 7.50 |
+| OpenAI | GPT-6.2 Astra | `gpt-6.2-astra` | model picker | Task 2 | Default | ≤ 272K | 8.00 | 0.40 | 10.00 | 40.00 |
+| OpenAI | GPT-6.2 Astra | `gpt-6.2-astra` | model picker | Task 2 | Long context | > 272K | 16.00 | 0.80 | 20.00 | 60.00 |
+| OpenAI | GPT-6.2 Sol | `gpt-6.2-sol` | model picker | Task 2 | Default | ≤ 272K | 2.00 | 0.10 | 2.50 | 10.00 |
+| OpenAI | GPT-6.2 Sol | `gpt-6.2-sol` | model picker | Task 2 | Long context | > 272K | 4.00 | 0.20 | 5.00 | 15.00 |
+| Anthropic | Claude Haiku 4.5 | `claude-haiku-4.5` | model picker | Task 2 | Default | Not applicable | 1.00 | 0.10 | 1.25 | 5.00 |
+| Anthropic | Claude Haiku 5.5 | `claude-haiku-5.5` | model picker | Task 2 | Default | ≤ 100K | 0.10 | 0.01 | 0.125 | 0.50 |
+| Anthropic | Claude Haiku 5.5 | `claude-haiku-5.5` | model picker | Task 2 | Long context | > 100K | 0.50 | 0.05 | 0.625 | 2.50 |
+| Anthropic | Claude Sonnet 4 | `claude-sonnet-4` | display name | Task 2 | Default | Not applicable | 3.00 | 0.30 | 3.75 | 15.00 |
+| Anthropic | Claude Sonnet 4.6 | `claude-sonnet-4.6` | CLI reference | Task 2 | Default | Not applicable | 3.00 | 0.30 | 3.75 | 15.00 |
+| Anthropic | Claude Opus 4.8 | `claude-opus-4.8` | display name | Task 2 | Default | Not applicable | 5.00 | 0.50 | 6.25 | 25.00 |
+| Anthropic | Claude Opus 5.5 | `claude-opus-5.5` | model picker | Sprint 1 | Default | Not applicable | 4.00 | 0.20 | 5.00 | 20.00 |
+| Anthropic | Claude Sonnet 5 | `claude-sonnet-5` | model picker | Task 2 | Default | Not applicable | 2.00 | 0.20 | 2.50 | 10.00 |
+| Anthropic | Claude Sonnet 5.5 | `claude-sonnet-5.5` | model picker | Sprint 1 | Default | Not applicable | 2.00 | 0.10 | 2.50 | 10.00 |
+| Anthropic | Claude Opus 4.8 (fast mode) (preview) | none | unknown | no | Default | Not applicable | 10.00 | 1.00 | 12.50 | 50.00 |
+| Anthropic | Claude Fable 5 | `claude-fable-5` | display name | Task 2 | Default | Not applicable | 10.00 | 1.00 | 12.50 | 50.00 |
+| Anthropic | Claude Fable 5.1 | `claude-fable-5.1` | display name | Task 2 | Default | Not applicable | 10.00 | 0.25 | 12.50 | 50.00 |
+| Anthropic | Claude Fable 5.2 | `claude-fable-5.2` | display name | Task 2 | Default | Not applicable | 8.00 | 0.20 | 10.00 | 40.00 |
+| Google | Gemini 3.8 Flash | `gemini-3.8-flash` | model picker | Task 2 | Default | Not applicable | 0.75 | 0.075 | none | 3.75 |
+| Google | Gemini 4 Argon | `gemini-4-argon` | model picker | Task 2 | Default | Not applicable | 2.00 | 0.10 | none | 10.00 |
+| Google | Gemini 4 Carbon | `gemini-4-carbon` | model picker | Task 2 | Default | Not applicable | 2.00 | 0.10 | none | 10.00 |
+| Google | Gemini 4 Hydrogen | `gemini-4-hydrogen` | model picker | Task 2 | Default | Not applicable | 1.50 | 0.075 | none | 7.50 |
+| Google | Gemini 4 Neon | `gemini-4-neon` | display name | Task 2 | Default | Not applicable | 3.00 | 0.15 | none | 15.00 |
+| Microsoft | MAI-Code-1.1-Flash | `mai-code-1.1-flash` | model picker | Task 2 | Default | Not applicable | 0.20 | 0.02 | none | 1.20 |
+| Microsoft | MAI Code 2 | `mai-code-2` | model picker | Sprint 1 | Default | Not applicable | 0.50 | 0.025 | none | 2.50 |
+| Microsoft | MAI Code 2 Flash | `mai-code-2-flash` | model picker | Task 2 | Default | Not applicable | 0.05 | 0.005 | none | 0.25 |
+| xAI | Grok 4.5 | `grok-4.5` | display name | Task 2 | Default | ≤ 200K | 2.00 | 0.50 | none | 6.00 |
+| xAI | Grok 4.5 | `grok-4.5` | display name | Task 2 | Long context | > 200K | 4.00 | 1.00 | none | 12.00 |
+| xAI | Grok 4.6 | `grok-4.6` | model picker | Task 2 | Default | ≤ 200K | 2.00 | 0.50 | none | 6.00 |
+| xAI | Grok 4.6 | `grok-4.6` | model picker | Task 2 | Long context | > 200K | 4.00 | 1.00 | none | 12.00 |
+| xAI | Grok 4.7 | `grok-4.7` | model picker | Task 2 | Default | ≤ 200K | 2.00 | 0.50 | none | 6.00 |
+| xAI | Grok 4.7 | `grok-4.7` | model picker | Task 2 | Long context | > 200K | 4.00 | 1.00 | none | 12.00 |
+| Moonshot AI | Kimi K3 | `kimi-k3` | display name | Task 2 | Default | Not applicable | 3.00 | 0.30 | none | 15.00 |
+
+Promotional prices, quoted from the page's footnotes (input / cached input / output):
+
+| Model ID | Page text | Window in `rates.json` |
+|---|---|---|
+| `gemini-3.8-flash` | 0.75 / 0.075 / 3.75 "through December 31, 2026". No later price. | Until `2027-01-01T00:00:00Z`; nothing after |
+| `gemini-4-argon` | 2.00 / 0.10 / 10.00 "until December 1, 2026". No later price. | Until `2026-12-01T00:00:00Z`; nothing after |
+| `gemini-4-carbon` | 2.00 / 0.10 / 10.00 "until December 1, 2026. Starting December 1, 2026, pricing is" 4.00 / 0.20 / 20.00. | Until `2026-12-01T00:00:00Z`, then the later price |
+| `mai-code-2` (Sprint 1) | 0.50 / 0.025 / 2.50 "until May 17, 2027. Starting May 17, 2027, pricing is" 1.00 / 0.05 / 5.00. | Until `2027-05-17T00:00:00Z`, then the later price |
+| `mai-code-2-flash` | 0.05 / 0.005 / 0.25 "until May 17, 2027. Starting May 17, 2027, pricing is" 0.10 / 0.01 / 0.50. | Until `2027-05-17T00:00:00Z`, then the later price |
+
+The page gives dates without a time or time zone. Its own wording makes "until December 1" and "Starting December 1" meet at the start of that day, and Sprint 1 ended `mai-code-2`'s promotion at `2027-05-17T00:00:00Z`. Every window here ends at 00:00:00Z on the date the page names (assumption A4). "Through December 31, 2026" includes that day, so it ends at `2027-01-01T00:00:00Z`. The page's HTML also wraps the Argon and Carbon notes in `<!-- expires 2026-12-01 -->` and the MAI notes in `<!-- expires 2027-05-17 -->`.
+
+Model IDs:
+
+- **Model picker (24).** The coordinator read these from the GitHub Copilot app's model picker on the user's machine: `claude-sonnet-5.5`, `claude-sonnet-5`, `claude-opus-5.5`, `claude-haiku-5.5`, `claude-haiku-4.5`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-luna`, `gpt-5.3-codex`, `mai-code-1.1-flash`, `gemini-4-argon`, `gemini-3.8-flash`, `grok-4.7`, `grok-4.6`, `gemini-4-carbon`, `gemini-4-hydrogen`, `gpt-6.2-astra`, `gpt-6.2-sol`, `mai-code-2-flash`, and `mai-code-2`.
+- **CLI reference (1).** The Copilot CLI command reference lists `claude-sonnet-4.6` as the default model of the built-in `code-review`, `general-purpose`, and `security-review` agents. The same table lists `gpt-5.6-luna` for `explore` and `task` (with `task` falling back to `claude-haiku-4.5`) and `claude-haiku-4.5` for `research`. The live capture showed `explore` running `gpt-6-luna` on CLI 1.0.112.
+- **Display name (9).** No source lists the other IDs. The Copilot CLI 1.0.112 binary carries no model catalog. The GitHub Copilot app caches only the models enabled for the signed-in account. The supported-models page lists display names only. Each of the 25 verified IDs equals its display name in lowercase with spaces as `-`, which is what Sprint 1's model normalization produces. So `gpt-5.4-nano`, `claude-sonnet-4`, `claude-opus-4.8`, `claude-fable-5`, `claude-fable-5.1`, `claude-fable-5.2`, `gemini-4-neon`, `grok-4.5`, and `kimi-k3` use the same rule. Claude Sonnet 4 is on the pricing page but not on the supported-models page; it's included because the pricing page is what GitHub bills.
+- **Left out (1).** For Claude Opus 4.8 (fast mode) (preview), the rule gives `claude-opus-4.8-(fast-mode)-(preview)`, which isn't a plausible ID. The app's model cache has `gpt-5.6-sol-fast`, which hints at a `-fast` suffix, but no fast-mode Claude ID was seen. Users can price it with an overlay.
+- **Not on the pricing page.** The CLI reference also names `gpt-5.4` and `gemini-3.7-flash`, and the app's cache has `gpt-5.6-sol-fast` and `gpt-5.6-terra`. GitHub publishes no price for them, so they stay `unknown_model`.
 
 ### GitHub CLI
 
@@ -183,13 +260,15 @@ The architect verified these with scratch builds in the session folder, outside 
   - `JsonDocument.Parse` reports a syntax error with 0-based `LineNumber` and `BytePositionInLine`; `\r\n` counts as one line break. An empty input is line 0, byte 0. A trailing comma is reported at the closing `}` or `]`.
   - `JsonElement.TryGetProperty` returns the last of repeated property names, and `EnumerateObject` returns all of them in document order.
   - For an escaped lone surrogate such as `"\ud800"`, `JsonDocument.Parse` succeeds, but `GetString()` and `JsonProperty.Name` throw `InvalidOperationException` and `TryGetDateTimeOffset` returns false.
-- A reference implementation of Task 3 was built against `1809dc8` with Task 2's `rates.json`. It passes all 143 Sprint 1 tests and every Task 3 test. Run against the merged loader, 52 of the Task 3 test cases fail.
+- A reference implementation of Task 3, including the rate bound, was built against `1809dc8` with the `rates.json` and `docs/configuration.md` that this plan's Task 2 and Task 3 blocks produce. It passes all 143 Sprint 1 tests, every Task 3 test, and RR1–RR4: 253 tests. Run against the merged loader, 54 of the Task 3 test cases fail.
 
 ### Assumptions (not verified)
 
 - **A1.** Copilot CLI's bring-your-own provider labels appear as `gen_ai.provider.name` on `chat` spans. No BYOK provider was available to capture.
 - **A2.** The `cwd:` line in `workspace.yaml` is undocumented. If it's missing or unreadable, CopilotLedger records the span without Git context; it never fails.
 - **A3.** VS Code's Local harness was not captured live. Its behavior here comes from the VS Code documentation.
+- **A4.** GitHub's pricing page gives promotion dates without a time or time zone. Windows end at 00:00:00Z on the named date, as Sprint 1's `mai-code-2` window does. If GitHub bills by another time zone, a request within a day of a boundary is priced at the neighboring window's rate.
+- **A5.** Nine built-in model IDs are derived from display names (see "GitHub price table"). If Copilot reports a different ID for one of them, its requests are recorded as `unknown_model`, as they would be without the entry, until an overlay alias or a rates update maps them.
 
 ## Design decisions
 
@@ -223,7 +302,7 @@ The architect verified these with scratch builds in the session folder, outside 
    - Each received span that has `gen_ai.operation.name`, or comes from a Copilot resource, is indexed in `span_links`. That table holds IDs, operation, agent name, conversation ID, and Git slug, branch, and SHA, and never content.
    - After each request, a recursive SQL back-fill copies the nearest `invoke_agent` ancestor's agent name and conversation ID onto ledger rows that lack them. It never crosses a nested `invoke_agent`, so subagent spans get the subagent's name.
    - `span_links` rows are pruned after 7 days.
-   - The Copilot runtime's default agent reports no name, so its spend appears under `(none)`.
+   - The Copilot runtime's default agent reports no name, so its spend appears under `(none)`. A custom agent reports its `name`, both at the top level and as a subagent, or its file ID when it has no `name` ("Live capture: custom agents").
 7. **Working directory and Git context.**
    - A span's working directory is the resource attribute `process.working_directory`, from the OTel semantic conventions, which users can set with `OTEL_RESOURCE_ATTRIBUTES`. Otherwise it's the `cwd:` line of `<COPILOT_HOME>/session-state/<gen_ai.conversation.id>/workspace.yaml`. Neither is persisted.
    - Git context comes from Sprint 1's `FileSystemGitContextResolver`, wrapped in a 5-second time-to-live cache. Sprint 1 suggested a `FileSystemWatcher` instead, but a short cache is deterministic to test and immune to watcher limits. A stale branch name lasts at most 5 seconds.
@@ -269,9 +348,11 @@ The architect verified these with scratch builds in the session folder, outside 
     - Trimming is off for the same reflection reason.
     - Verified: the binary is 48.2 MB on `win-arm64`.
     - `InvariantGlobalization` removes the ICU dependency on Linux. Every format and parse already uses `CultureInfo.InvariantCulture`.
-14. **Rates refresh.**
-    - Task 2 adds `gpt-6-luna`, `gpt-5.6-luna`, and `claude-haiku-4.5`. They're the default models of Copilot's built-in subagents, and `gpt-6-luna` appeared in the live capture. Without them, subagent spend would be unpriced.
-    - It also adds the local runtime labels `ollama`, `lm_studio`, `foundry_local`, and `llama_cpp` to `localOffload.providerNames` (A1). `openai`, `anthropic`, and `azure_openai` are left out because GitHub-hosted models might report the same labels.
+14. **Rates refresh: GitHub's whole text-model table.**
+    - Task 2 prices every text model on GitHub's pricing page as of 2026-11-20: 29 models join Sprint 1's five, for 34 built-in GitHub models. A model that isn't priced is recorded at $0 as `unknown_model`, so every missing model understates spend. The page's one image model is skipped, because it's billed per image token and Copilot's image-generation telemetry hasn't been captured.
+    - Model IDs follow "GitHub price table": 25 are verified, and 9 are derived from the display name with Sprint 1's normalization, which reproduces every verified ID (A5). A wrong derived ID costs nothing beyond what leaving the model out would: its requests stay `unknown_model`. Claude Opus 4.8 (fast mode) is left out, because no plausible ID can be derived for it.
+    - Promotional windows end at 00:00:00Z on the date the page gives (A4). Gemini 4 Argon (ending 2026-12-01) and Gemini 3.8 Flash (ending 2027-01-01) have no published later price, so their windows simply end. After those dates their requests are recorded as `no_rate_for_date`, at $0 but counted as unpriced in every report, until a rates update or an overlay window adds the price. CopilotLedger never invents a price; carrying the promotional price forward or borrowing Carbon's later price would both be guesses. Three new `notes` in `rates.json` record these rules.
+    - Task 2 also adds the local runtime labels `ollama`, `lm_studio`, `foundry_local`, and `llama_cpp` to `localOffload.providerNames` (A1). `openai`, `anthropic`, and `azure_openai` are left out because GitHub-hosted models might report the same labels.
     - `ratesVersion` stays `2026-11-20`, because every price is from that day's retrieval.
 15. **Privacy.**
     - The ledger never stores prompt or response content, remote URLs, or a session's working directory; the only local path stored is Sprint 1's repository root. VS Code repository URLs are reduced to an `owner/repo` slug after credentials are removed.
@@ -281,17 +362,22 @@ The architect verified these with scratch builds in the session folder, outside 
     - Sprint 1's `RecordAsync` validates and inserts a whole batch in one transaction, so one bad entry would lose every span in the request. Worse, the receiver answers a failed write with a retryable 503. The exporter would re-send the same request, fail the same way, and finally drop the batch.
     - So `RecordAsync` only ever receives entries that can't fail its checks:
       - the normalizer passes only inference spans with valid IDs, a start time, and non-negative counts within the cap;
-      - the ingestor prices each span on its own and drops a span whose cost or savings overflows `decimal` or pico-USD. Git context is best effort: if it can't be read, the span is recorded without it.
+      - the ingestor prices each span on its own and drops a span whose cost or savings doesn't fit in pico-USD. Before Task 3, an extreme overlay rate can also make `Calculate` overflow `decimal`; the ingestor drops that span too, and keeps the check afterward as defense in depth. Git context is best effort: if it can't be read, the span is recorded without it.
     - Dropped spans are reported as an OTLP partial success (200), which clients must not retry because the result would be the same.
     - 503 is kept for store failures such as a locked or full database. Those are transient, and a retry is safe because inserts ignore duplicates.
     - Task 2's "Filtering and per-span errors" has the full table.
 17. **Rates overlay errors point into the user's file, and Core owns every message (Task 3).**
-    - A review of Sprint 1 Task 2 (#5) found that overlay errors use merged-document indices. Verified on `1809dc8` with Task 2's rates: an overlay's `localOffload.models[0]` is reported as `localOffload.models[1]`, a new GitHub model as `githubAiCredits.models[8]`, and the first Foundry host suffix as `foundryByok.hostSuffixes[3]`. One alias collision was reported at the *built-in* model's path, which isn't in the user's file at all.
+    - A review of Sprint 1 Task 2 (#5) found that overlay errors use merged-document indices. Verified on `1809dc8` with Task 2's rates: an overlay's `localOffload.models[0]` is reported as `localOffload.models[1]`, a new GitHub model as `githubAiCredits.models[34]`, and the first Foundry host suffix as `foundryByok.hostSuffixes[3]`. One alias collision was reported at the *built-in* model's path, which isn't in the user's file at all.
     - Decision: every path points into the file that contains the problem, using its own indexes. The overlay is validated by itself before merging. Only two checks need the built-in rates: a model identity that a remaining built-in model already uses, and `localOffload.baselineModel`. Their messages contain `in the merged rates`, which `docs/configuration.md` defines, and a collision names the built-in model.
     - Core owns every message. System.Text.Json's messages contain .NET type names such as ``System.Nullable`1[System.Int32]`` and the `$.` path suffix, and they report a missing required property at its object's path. A small `JsonDocument` reader (`RateCardReader`) replaces reflection-based deserialization. It reads the same values: `TryGetDecimal`, `TryGetInt32`, `TryGetInt64`, and `TryGetDateTimeOffset` gave the same results as the Sprint 1 serializer on every probe (verified on .NET 10). The reader also rejects repeated property names, which the serializer silently resolved by keeping the last one.
     - Invalid JSON is reported by line and column, counting from 1, with no System.Text.Json text, which is developer-facing ("Change the reader options", "isFinalBlock").
     - The loader reports the first problem it finds, in an order Task 3 specifies. The tests assert every message exactly, and a test checks that the examples in `docs/configuration.md` match real output.
     - The CLI prints Core's message unchanged after its own prefix. This replaces the CLI-side formatter in the first version of this plan.
+18. **Rates are at most 1,000,000 USD per 1M tokens, so `Calculate` never throws (Task 3).**
+    - `ICreditCalculator.Calculate` promises to throw only `ArgumentNullException`, but Sprint 1 accepts any rate whose `rate × 1,000,000` fits in a `decimal`, and such a rate can overflow when it's multiplied by a token count ("Starting point").
+    - Task 3 rejects any rate above 1,000,000, in the built-in rates and in an overlay, with `must be less than or equal to 1000000`. The most expensive price GitHub publishes is $75 per 1M tokens, so the bound leaves room for any real price. Token counts are `long`, at most about 9.22 × 10^18. Each cost component, `tokens × rate / 1,000,000`, then has an intermediate product under 10^25 and a result under 9.3 × 10^18 USD. The four components sum to under 3.7 × 10^19 USD, which is under 3.7 × 10^21 AI credits. All of these are far inside `decimal`'s 7.9 × 10^28, so `Calculate` can't overflow, whatever the usage.
+    - A rate of exactly 1,000,000 still loads. Its cost can exceed pico-USD's `long.MaxValue` (about $9.22 million), so the ingestor's `cost out of range` check (decision 16) stays necessary; IG6 tests it with an in-bound rate. The ingestor's `OverflowException` catch stays too, as defense in depth for any other `ICreditCalculator`, and IG8 tests it with a fake calculator.
+    - The bound check runs before the 6-decimal-place check, which therefore can't overflow, so its `is too large` branch is removed. The reader's `is too large` remains for numbers outside `decimal`'s range, such as `1e30`.
 
 ## Task 1 specification: OTLP Trace Decoding & gen_ai Span Normalization
 
@@ -648,19 +734,34 @@ In `SqliteLedgerStoreTests.S1_InitializeAsync_CreatesWalDatabaseAndIsIdempotent`
 
 ### rates.json changes
 
-Append these three entries, in this order, to `githubAiCredits.models`, after `mai-code-2`:
+Change `src/CopilotLedger.Core/Pricing/rates.json` in exactly three places. Change nothing else; in particular, `ratesVersion` stays `2026-11-20`, and the five Sprint 1 models don't change.
+
+**Models.** Append these 29 entries, in this order, to `githubAiCredits.models`, after `mai-code-2`. They're the models whose **Built in** column says Task 2 in "GitHub price table", in the page's order. Indent them like the existing entries.
 
 ```json
 [
   {
-    "id": "claude-haiku-4.5",
+    "id": "gpt-5.3-codex",
     "aliases": [],
     "windows": [
       {
         "effectiveFrom": null,
         "effectiveUntil": null,
         "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 1.00, "cachedInputPer1M": 0.10, "cacheWritePer1M": 1.25, "outputPer1M": 5.00 }
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 1.75, "cachedInputPer1M": 0.175, "cacheWritePer1M": null, "outputPer1M": 14.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gpt-5.4-nano",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 0.20, "cachedInputPer1M": 0.02, "cacheWritePer1M": null, "outputPer1M": 1.25 }
         ]
       }
     ]
@@ -680,6 +781,20 @@ Append these three entries, in this order, to `githubAiCredits.models`, after `m
     ]
   },
   {
+    "id": "gpt-5.6-sol",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": 272000, "inputPer1M": 4.00, "cachedInputPer1M": 0.40, "cacheWritePer1M": 5.00, "outputPer1M": 20.00 },
+          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 8.00, "cachedInputPer1M": 0.80, "cacheWritePer1M": 10.00, "outputPer1M": 30.00 }
+        ]
+      }
+    ]
+  },
+  {
     "id": "gpt-6-luna",
     "aliases": [],
     "windows": [
@@ -692,11 +807,355 @@ Append these three entries, in this order, to `githubAiCredits.models`, after `m
         ]
       }
     ]
+  },
+  {
+    "id": "gpt-6-sol",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": 272000, "inputPer1M": 2.00, "cachedInputPer1M": 0.20, "cacheWritePer1M": 2.50, "outputPer1M": 10.00 },
+          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 4.00, "cachedInputPer1M": 0.40, "cacheWritePer1M": 5.00, "outputPer1M": 15.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gpt-6.1-terra",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": 272000, "inputPer1M": 1.00, "cachedInputPer1M": 0.05, "cacheWritePer1M": 1.25, "outputPer1M": 5.00 },
+          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 2.00, "cachedInputPer1M": 0.10, "cacheWritePer1M": 2.50, "outputPer1M": 7.50 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gpt-6.2-astra",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": 272000, "inputPer1M": 8.00, "cachedInputPer1M": 0.40, "cacheWritePer1M": 10.00, "outputPer1M": 40.00 },
+          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 16.00, "cachedInputPer1M": 0.80, "cacheWritePer1M": 20.00, "outputPer1M": 60.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gpt-6.2-sol",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": 272000, "inputPer1M": 2.00, "cachedInputPer1M": 0.10, "cacheWritePer1M": 2.50, "outputPer1M": 10.00 },
+          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 4.00, "cachedInputPer1M": 0.20, "cacheWritePer1M": 5.00, "outputPer1M": 15.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "claude-haiku-4.5",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 1.00, "cachedInputPer1M": 0.10, "cacheWritePer1M": 1.25, "outputPer1M": 5.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "claude-haiku-5.5",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": 100000, "inputPer1M": 0.10, "cachedInputPer1M": 0.01, "cacheWritePer1M": 0.125, "outputPer1M": 0.50 },
+          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 0.50, "cachedInputPer1M": 0.05, "cacheWritePer1M": 0.625, "outputPer1M": 2.50 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "claude-sonnet-4",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 3.00, "cachedInputPer1M": 0.30, "cacheWritePer1M": 3.75, "outputPer1M": 15.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "claude-sonnet-4.6",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 3.00, "cachedInputPer1M": 0.30, "cacheWritePer1M": 3.75, "outputPer1M": 15.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "claude-opus-4.8",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 5.00, "cachedInputPer1M": 0.50, "cacheWritePer1M": 6.25, "outputPer1M": 25.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "claude-sonnet-5",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 2.00, "cachedInputPer1M": 0.20, "cacheWritePer1M": 2.50, "outputPer1M": 10.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "claude-fable-5",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 10.00, "cachedInputPer1M": 1.00, "cacheWritePer1M": 12.50, "outputPer1M": 50.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "claude-fable-5.1",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 10.00, "cachedInputPer1M": 0.25, "cacheWritePer1M": 12.50, "outputPer1M": 50.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "claude-fable-5.2",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 8.00, "cachedInputPer1M": 0.20, "cacheWritePer1M": 10.00, "outputPer1M": 40.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gemini-3.8-flash",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": "2027-01-01T00:00:00Z",
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 0.75, "cachedInputPer1M": 0.075, "cacheWritePer1M": null, "outputPer1M": 3.75 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gemini-4-argon",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": "2026-12-01T00:00:00Z",
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 2.00, "cachedInputPer1M": 0.10, "cacheWritePer1M": null, "outputPer1M": 10.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gemini-4-carbon",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": "2026-12-01T00:00:00Z",
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 2.00, "cachedInputPer1M": 0.10, "cacheWritePer1M": null, "outputPer1M": 10.00 }
+        ]
+      },
+      {
+        "effectiveFrom": "2026-12-01T00:00:00Z",
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 4.00, "cachedInputPer1M": 0.20, "cacheWritePer1M": null, "outputPer1M": 20.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gemini-4-hydrogen",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 1.50, "cachedInputPer1M": 0.075, "cacheWritePer1M": null, "outputPer1M": 7.50 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gemini-4-neon",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 3.00, "cachedInputPer1M": 0.15, "cacheWritePer1M": null, "outputPer1M": 15.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "mai-code-1.1-flash",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 0.20, "cachedInputPer1M": 0.02, "cacheWritePer1M": null, "outputPer1M": 1.20 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "mai-code-2-flash",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": "2027-05-17T00:00:00Z",
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 0.05, "cachedInputPer1M": 0.005, "cacheWritePer1M": null, "outputPer1M": 0.25 }
+        ]
+      },
+      {
+        "effectiveFrom": "2027-05-17T00:00:00Z",
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 0.10, "cachedInputPer1M": 0.01, "cacheWritePer1M": null, "outputPer1M": 0.50 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "grok-4.5",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": 200000, "inputPer1M": 2.00, "cachedInputPer1M": 0.50, "cacheWritePer1M": null, "outputPer1M": 6.00 },
+          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 4.00, "cachedInputPer1M": 1.00, "cacheWritePer1M": null, "outputPer1M": 12.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "grok-4.6",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": 200000, "inputPer1M": 2.00, "cachedInputPer1M": 0.50, "cacheWritePer1M": null, "outputPer1M": 6.00 },
+          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 4.00, "cachedInputPer1M": 1.00, "cacheWritePer1M": null, "outputPer1M": 12.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "grok-4.7",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": 200000, "inputPer1M": 2.00, "cachedInputPer1M": 0.50, "cacheWritePer1M": null, "outputPer1M": 6.00 },
+          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 4.00, "cachedInputPer1M": 1.00, "cacheWritePer1M": null, "outputPer1M": 12.00 }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "kimi-k3",
+    "aliases": [],
+    "windows": [
+      {
+        "effectiveFrom": null,
+        "effectiveUntil": null,
+        "tiers": [
+          { "name": "default", "maxInputTokens": null, "inputPer1M": 3.00, "cachedInputPer1M": 0.30, "cacheWritePer1M": null, "outputPer1M": 15.00 }
+        ]
+      }
+    ]
   }
 ]
 ```
 
-Also change `"localOffload": { ..., "providerNames": [] }` to `"providerNames": ["ollama", "lm_studio", "foundry_local", "llama_cpp"]`. Change nothing else; in particular, `ratesVersion` stays `2026-11-20`.
+**Notes.** Insert these three strings into `notes`, in this order, right after `"mai-code-2 promotional pricing ends 2027-05-17T00:00:00Z."`:
+
+```json
+[
+  "Promotional windows end at 00:00:00Z on the date the pricing page gives: gemini-4-argon and gemini-4-carbon on 2026-12-01, mai-code-2-flash on 2027-05-17, and gemini-3.8-flash on 2027-01-01 (the page says through December 31, 2026).",
+  "gemini-4-argon and gemini-3.8-flash have no published price after their promotions, so later requests are recorded as no_rate_for_date until a price is added.",
+  "Model ids are the ids Copilot reports. gpt-5.4-nano, claude-sonnet-4, claude-opus-4.8, claude-fable-5, claude-fable-5.1, claude-fable-5.2, gemini-4-neon, grok-4.5, and kimi-k3 are derived from the pricing page's display names. Claude Opus 4.8 (fast mode) is omitted because its id is unknown."
+]
+```
+
+**Local provider names.** Change `"localOffload": { ..., "providerNames": [] }` to `"providerNames": ["ollama", "lm_studio", "foundry_local", "llama_cpp"]`.
 
 ### docs/configuration.md changes
 
@@ -706,10 +1165,13 @@ Also change `"localOffload": { ..., "providerNames": [] }` to `"providerNames": 
   An endpoint of `localhost`, `127.x.x.x`, `::1`, or a host you list; a local provider name (`ollama`, `lm_studio`, `foundry_local`, or `llama_cpp`, which Copilot CLI reports for models you bring or run yourself); or a known local model, such as Qwen3.8-27B, with no endpoint
   ```
 
-- Replace the sentence that lists the built-in prices with:
+- Replace the sentence that lists the built-in prices, `The built-in prices are GitHub's November 2026 rates for ...`, with this text:
 
   ```text
-  The built-in prices are GitHub's November 2026 rates for `claude-opus-5.5`, `claude-sonnet-5.5`, `gpt-6.1-sol`, `gpt-6-astra`, and `mai-code-2`, plus the default models of Copilot's built-in subagents: `gpt-6-luna`, `gpt-5.6-luna`, and `claude-haiku-4.5`.
+  The built-in prices are GitHub's rates for every text model on [Models and pricing for GitHub Copilot](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing) as of 2026-11-20: 34 models, with their long-context tiers and promotional prices. A promotional price ends at 00:00 UTC on the date GitHub gives. Two models need your attention:
+
+  - Claude Opus 4.8 (fast mode) isn't built in, because the model name Copilot reports for it isn't known yet. If you use it, add it under `githubAiCredits.models` with the model name Copilot reports.
+  - GitHub hasn't published the prices that follow the promotions for Gemini 4 Argon (ending 2026-12-01) and Gemini 3.8 Flash (ending after 2026-12-31). Later requests for them are recorded with status `no_rate_for_date` until you add a price window or a CopilotLedger update adds the price.
   ```
 
 ### Migration 2 (copy exactly)
@@ -1027,7 +1489,7 @@ Its batch checks therefore never throw for ingested data. If `RecordAsync` throw
 | Not an inference span, such as `invoke_agent`, `execute_tool`, a Copilot span with no operation, or another application's HTTP span | Normalizer | Never priced and never a ledger row. Spans with an operation, and every span from a Copilot resource, become links. | Counted as received, not rejected |
 | Invalid trace or span ID, or a zero start time | Normalizer | Rejected: no entry and no link | 200 partial success |
 | A token count that isn't a non-negative integer, overflows, or exceeds `MaxTokenCount` | Normalizer | Rejected: no entry and no link | 200 partial success |
-| `Calculate` throws `OverflowException`, or `PicoUsd.FromUsd` throws `ArgumentOutOfRangeException` | Ingestor | Rejected as `cost out of range`: no entry, but its link is kept | 200 partial success |
+| `PicoUsd.FromUsd` throws `ArgumentOutOfRangeException` for a cost or savings amount above about $9.22 million; or `Calculate` throws `OverflowException`, which only an extreme overlay rate can cause, and only before Task 3 | Ingestor | Rejected as `cost out of range`: no entry, but its link is kept | 200 partial success |
 | A pricing status that bills nothing, such as `unknown_model` or `byok_unpriced` | Calculator | Recorded with that status, its tokens, and $0.00 | 200 success |
 | Git context can't be read: the resolver throws `IOException`, `UnauthorizedAccessException`, or `ArgumentException` | Ingestor | Recorded without Git context, under `(none)` | 200 success |
 | The same span again | Store | Skipped by `ON CONFLICT DO NOTHING`, and not counted in `RecordedSpans` | 200 success |
@@ -1035,16 +1497,17 @@ Its batch checks therefore never throw for ingested data. If `RecordAsync` throw
 
 - A cost-rejected span keeps its link because it's structurally valid. A descendant may need that link to reach its `invoke_agent` ancestor during back-fill.
 - Around pricing, only `OverflowException` and `ArgumentOutOfRangeException` are caught, and around Git resolution only the three types above. Any other exception is a bug, and it fails the request with 503.
+- Once Task 3 bounds rates, `JsonRateCardCalculator.Calculate` can't throw `OverflowException`. Keep the catch anyway, as defense in depth for any `ICreditCalculator` (decision 18). IG8 tests it with a fake calculator, and IG6 tests the pico-USD limit with an in-bound rate.
 - The receiver reports `RejectedSpans` as an OTLP partial success (Task 4, receiver step 9). Clients must not retry a partial success, which is right here: the same spans would be rejected again.
 
 ### Acceptance criteria
 
-- `rates.json` differs from Sprint 1 only by the three appended models and the four `localOffload.providerNames`. `LoadEmbedded().RatesVersion` is still `2026-11-20`.
+- `rates.json` differs from Sprint 1 only by the 29 appended models, the three inserted notes, and the four `localOffload.providerNames`, exactly as "rates.json changes" lists them. `LoadEmbedded().RatesVersion` is still `2026-11-20`.
 - Migration 2 matches this plan exactly. A Sprint 1 database (`user_version` 1) migrates to 2 and keeps its rows.
 - The new public surfaces match this section exactly. `docs/configuration.md` has the two changes above.
 - `LedgerIngestor` follows "Filtering and per-span errors": it catches only `OverflowException` and `ArgumentOutOfRangeException` around pricing, and only `IOException`, `UnauthorizedAccessException`, and `ArgumentException` around Git resolution. One bad span never fails the other spans in its request.
 - Tests never read or write the real `~/.copilot` or `~/.copilot-ledger`; they pass temp paths. `src/` contains no `double`, `float`, or `System.Diagnostics.Process`.
-- `dotnet build CopilotLedger.slnx` succeeds with 0 warnings, and `dotnet test CopilotLedger.slnx` passes all Sprint 1 cases (S1 now expects 2), all Task 1 cases, and RR1–RR3, CG1–CG3, WL1–WL4, SL1–SL7, and IG1–IG7, with 0 failed and 0 skipped.
+- `dotnet build CopilotLedger.slnx` succeeds with 0 warnings, and `dotnet test CopilotLedger.slnx` passes all Sprint 1 cases (S1 now expects 2), all Task 1 cases, and RR1–RR4 (RR1 has 48 cases), CG1–CG3, WL1–WL4, SL1–SL7, and IG1–IG9, with 0 failed and 0 skipped.
 
 ### Verify
 
@@ -1082,7 +1545,7 @@ No package is added. The public API of `JsonRateCardCalculator` doesn't change: 
 - `InvalidDataException("<file>: could not read rates overlay.")` when reading the file throws `IOException` or `UnauthorizedAccessException`;
 - `InvalidDataException` for every invalid document, with the messages below.
 
-Valid documents load exactly as before, with the same values.
+Valid documents load exactly as before, with the same values. The one exception is a rate above 1,000,000 USD per 1M tokens, which is now rejected (decision 18).
 
 Implement `RateCardReader` and the validation changes below, update `docs/configuration.md` and the test project file, and then change the tests as "Task 3 tests" under "Test specifications" describes.
 
@@ -1226,7 +1689,36 @@ So the reported problem is the first one found in document order, except that `s
    3. Go through the overlay's models in order. For each, check its normalized id, then its normalized aliases in order. At the first one in the map, throw `<list>[i].id` or `<list>[i].aliases[j]`, followed by `: duplicate model identity in the merged rates: <identity> (built-in model <owner>)`.
 2. **Baseline.** Let `b = NormalizeModel(merged.LocalOffload.BaselineModel)`. If no model in the merged `githubAiCredits.models` has a normalized id or normalized alias equal to `b`, throw `localOffload.baselineModel: does not resolve to a githubAiCredits model in the merged rates: <b>`. An overlay can't remove a built-in model, so this check fails only when the overlay sets `baselineModel`.
 
-Delete `SerializerOptions`, `Deserialize`, `ValidateOverlayShape` (and its call in `Merge`), both `ValidateOverlayModels` overloads, and `ValidateOptionalStringElements`. The reader now guarantees what they checked. In `RateCardDocument.cs`, remove every `[JsonPropertyName]` attribute and the `using System.Text.Json.Serialization;` line. The classes and their members stay as they are. `Validate`, `Merge`, `ValidateModels`, `ValidateLocalModels`, `ValidateHosts`, `ValidateNames`, and `ValidateRate` keep their logic and messages.
+Delete `SerializerOptions`, `Deserialize`, `ValidateOverlayShape` (and its call in `Merge`), both `ValidateOverlayModels` overloads, and `ValidateOptionalStringElements`. The reader now guarantees what they checked. In `RateCardDocument.cs`, remove every `[JsonPropertyName]` attribute and the `using System.Text.Json.Serialization;` line. The classes and their members stay as they are. `Validate`, `Merge`, `ValidateModels`, `ValidateLocalModels`, `ValidateHosts`, and `ValidateNames` keep their logic and messages. `ValidateRate` changes only as "Rate bound" says.
+
+### Rate bound
+
+Add a constant to `JsonRateCardCalculator`, and replace `ValidateRate` with this method:
+
+```csharp
+private const decimal MaxRatePer1M = 1_000_000m;
+
+private static void ValidateRate(decimal rate, string path)
+{
+    if (rate < 0)
+    {
+        throw Invalid(null, path, "must be greater than or equal to 0");
+    }
+
+    // The bound keeps tokens * rate inside decimal for any long token count, so Calculate never throws.
+    if (rate > MaxRatePer1M)
+    {
+        throw Invalid(null, path, "must be less than or equal to 1000000");
+    }
+
+    if (rate * 1_000_000m % 1m != 0m)
+    {
+        throw Invalid(null, path, "must have no more than 6 decimal places");
+    }
+}
+```
+
+The `try`/`catch (OverflowException)` around the decimal-places check goes away, because `rate * 1_000_000m` can't overflow once the rate is at most 1,000,000. Every rate in the built-in rates and in an overlay goes through `ValidateRate`, through `Validate` and `ValidateOverlay`, so each document reports the bound at a path into itself. `Calculate` doesn't change.
 
 ### Message catalog
 
@@ -1255,9 +1747,15 @@ Sprint 1's rule texts stay exactly as they are, now at paths into the file that 
 - `must be later than effectiveFrom` and `windows must be sorted and must not overlap`;
 - `must be unique within the window`;
 - `the last tier must be unbounded`, `must be greater than 0 for every tier except the last`, and `must be strictly ascending`;
-- `must be greater than or equal to 0`, `must have no more than 6 decimal places`, and `is too large`, for a rate whose `rate × 1,000,000` overflows;
+- `must be greater than or equal to 0` and `must have no more than 6 decimal places`;
 - `must be a host suffix without a leading '.', '/', or ':'`;
 - `ratesVersion: must not be blank` and `does not resolve to a githubAiCredits model: <model>`, which only the built-in rates can produce.
+
+Sprint 1's `is too large` for a rate whose `rate × 1,000,000` overflows can no longer happen, because of the new rule:
+
+| Problem | Reported at |
+|---|---|
+| `must be less than or equal to 1000000` | An `inputPer1M`, `cachedInputPer1M`, `cacheWritePer1M`, or `outputPer1M` above 1,000,000, in either document |
 
 The two merged-rates problems, which only an overlay can produce:
 
@@ -1271,11 +1769,15 @@ The two merged-rates problems, which only an overlay can produce:
 - Every message is now one of the texts above, and every overlay path points into the overlay.
 - A property name that appears twice in one object is an error. Sprint 1 silently kept the last value.
 - Elements of `notes` must be strings. Sprint 1 accepted `null`.
+- A rate above 1,000,000 is rejected. Sprint 1 accepted any rate up to about 7.9 × 10^22.
 - `schemaVersion` is checked first, so a file with `"schemaVersion": 2` gets `schemaVersion: must be 1` even when it also has properties this version doesn't know.
 
 ### docs/configuration.md changes
 
-Replace the paragraph that starts `If the file is invalid` with this text, exactly. The `<!-- rates-error-example -->` comments don't render on GitHub; the docs test uses them to find the examples.
+Make two changes.
+
+1. In "Price your Foundry BYOK models", replace the sentence `Prices are USD per 1,000,000 tokens, with at most 6 decimal places.` with `Prices are USD per 1,000,000 tokens, from 0 to 1,000,000, with at most 6 decimal places.`
+2. Replace the paragraph that starts `If the file is invalid` with the text below, exactly. The `<!-- rates-error-example -->` comments don't render on GitHub; the docs test uses them to find the examples.
 
 ````markdown
 If the file is invalid, CopilotLedger refuses to load it and reports the first problem it finds. It never silently ignores a broken file. Each error starts with the file's path, then says where the problem is and what's wrong:
@@ -1352,10 +1854,10 @@ In `tests/CopilotLedger.Tests/CopilotLedger.Tests.csproj`, add this item group s
 ### Acceptance criteria
 
 - The public members of `JsonRateCardCalculator` and their exceptions are unchanged, and no package was added. `src/CopilotLedger.Core` doesn't call `JsonSerializer`.
-- The reader, the validation order, and every message match this section. Every overlay path points into the overlay.
-- `docs/configuration.md` has the new text, and `DocsExamples_MatchRealMessages` passes.
+- The reader, the validation order, the rate bound, and every message match this section. Every overlay path points into the overlay. `ValidateRate` has no `try`/`catch`.
+- `docs/configuration.md` has both changes, and `DocsExamples_MatchRealMessages` passes.
 - The Sprint 1 rates tests changed only as "Task 3 tests" says.
-- `dotnet build CopilotLedger.slnx` succeeds with 0 warnings, and `dotnet test CopilotLedger.slnx` passes everything from earlier tasks plus the 51 cases that "Task 3 tests" adds, with 0 failed and 0 skipped.
+- `dotnet build CopilotLedger.slnx` succeeds with 0 warnings, and `dotnet test CopilotLedger.slnx` passes everything from earlier tasks plus the 55 cases that "Task 3 tests" adds, with 0 failed and 0 skipped.
 
 ### Verify
 
@@ -1688,7 +2190,7 @@ Run steps 3–12 inside a `try`, so an early `return 1` still releases the lock 
   "schemaVersion": 1,
   "notes": [
     "CopilotLedger rates overlay. See docs/configuration.md in the CopilotLedger repository.",
-    "Prices are USD per 1,000,000 tokens with at most 6 decimal places."
+    "Prices are USD per 1,000,000 tokens, from 0 to 1,000,000, with at most 6 decimal places."
   ],
   "foundryByok": {
     "hostSuffixes": [],
@@ -2120,11 +2622,15 @@ The job names don't change, so required checks named `build-test (ubuntu-latest)
   5. **Reports.**
      - `status`, `branch`, `agents`, and `top-prompts`, with every option, the `--since` values, and `--json`.
      - Tables round to cents; JSON is exact.
-     - `(none)` under Agent means no agent name was reported. Copilot's default agent reports none; custom agents and subagents do.
+     - `(none)` under Agent means no agent name was reported. Copilot's default agent reports none, and built-in subagents such as `explore` report their own names. A custom agent reports the `name` in its `.agent.md` file, both when you start it with `copilot --agent` and when another agent calls it as a subagent. A custom agent without a `name` reports its file name without `.agent.md`.
   6. **Rates.** `rates init` and `rates validate`, with a link to `configuration.md`.
   7. **Uninstall.** What it reverses, and that ledger data is kept.
   8. **Privacy.** No prompt or response content, no working directories, and no remote URLs are stored. Repositories are stored as `owner/repo` slugs or local roots, and credentials are stripped.
-  9. **Troubleshooting.** Port 4318 in use; nothing recorded (check `gh-ledger status` and its warnings, then restart Copilot); `COPILOT_LEDGER_HOME`.
+  9. **Troubleshooting.**
+     - Port 4318 in use.
+     - Nothing recorded: check `gh-ledger status` and its warnings, then restart Copilot.
+     - Apps launched outside a terminal, such as from the macOS Dock or a Linux desktop launcher, may not read shell profiles, so they may not see the `COPILOT_OTEL_ENABLED` that `install` put there. If `status` shows nothing recorded after you use such an app, start it from a terminal.
+     - `COPILOT_LEDGER_HOME`.
 
 ### Acceptance criteria
 
@@ -2481,6 +2987,37 @@ Batch A is tool, luna1, luna2, explore, task, and main1, in that order. Batch B 
 - operation `chat`, provider `github`, response model `claude-opus-5.5`, conversation `d9b2d63d-a233-4123-847a-5a1f3c8e6e1f`;
 - input 1200000, output 50000, cache read 800000, cache write 100000.
 
+**Trace F** is live probe run A, a custom agent at the top level, with synthetic IDs:
+
+- resource `CopilotResource` plus `Str("service.version", "1.0.112")`;
+- trace `c0de0000000000000000000000000f01`;
+- both spans carry `gen_ai.conversation.id` = `f1d5c3a2-9b8e-4d7c-a6f5-e4d3c2b1a0f1`;
+- the chat span carries `gen_ai.provider.name` `github` and both request and response model.
+
+| Key | Span ID | Parent | Name | Start ns | End ns | Other attributes |
+|---|---|---|---|---|---|---|
+| chat | `0f00000000000002` | root | `chat mai-code-2-flash` | 1795207524382000000 | 1795207526444000000 | operation `chat`; model `mai-code-2-flash`; input 4734; output 17 |
+| root | `0f00000000000001` | none | `invoke_agent Ledger Probe Display` | 1795207524370000000 | 1795207526476000000 | operation `invoke_agent`; provider `github`; agent `Ledger Probe Display`; `github.copilot.agent.type` `custom` |
+
+The request holds chat, then root.
+
+**Trace G** is live probe run B, the default agent calling the custom agent with the `task` tool. It has the same resource and synthetic IDs:
+
+- trace `c0de0000000000000000000000000f02`;
+- every span carries `gen_ai.conversation.id` = `f2d5c3a2-9b8e-4d7c-a6f5-e4d3c2b1a0f2`;
+- every chat span carries `gen_ai.provider.name` `github` and both request and response model.
+
+| Key | Span ID | Parent | Name | Start ns | End ns | Other attributes |
+|---|---|---|---|---|---|---|
+| probechat | `0f00000000000015` | probe | `chat mai-code-2-flash` | 1795207544429000000 | 1795207546581000000 | operation `chat`; model `mai-code-2-flash`; input 954; output 5 |
+| probe | `0f00000000000014` | task | `invoke_agent Ledger Probe Display` | 1795207544337000000 | 1795207546589000000 | operation `invoke_agent`; provider `github`; agent `Ledger Probe Display`; `github.copilot.agent.type` `custom` |
+| task | `0f00000000000013` | root | `execute_tool task` | 1795207544328000000 | 1795207546595000000 | operation `execute_tool`; `gen_ai.tool.name` `task`; `gen_ai.transfer.target.name` `Ledger Probe Display` |
+| main1 | `0f00000000000012` | root | `chat mai-code-2-flash` | 1795207542071000000 | 1795207544319000000 | operation `chat`; model `mai-code-2-flash`; input 5560; output 42 |
+| main2 | `0f00000000000016` | root | `chat mai-code-2-flash` | 1795207546608000000 | 1795207549789000000 | operation `chat`; model `mai-code-2-flash`; input 5642; output 5 |
+| root | `0f00000000000011` | none | `invoke_agent` | 1795207542057000000 | 1795207549819000000 | operation `invoke_agent`; provider `github`; `github.copilot.agent.type` `builtin` |
+
+The request holds the spans in table order, the order Copilot sent them.
+
 **Chain seed K1–K5.** Every span is a `chat` span. All except K4 use the embedded rates.
 
 | Key | Trace ID | Span ID | Start (UTC) | Model and endpoint | Usage | Git (slug / branch) | Agent | Conversation | Expected |
@@ -2493,21 +3030,83 @@ Batch A is tool, luna1, luna2, explore, task, and main1, in that order. Batch B 
 
 #### Pricing: `RatesRefreshTests` (embedded rates)
 
-**RR1** (theory). Each case is GitHub, `Priced`, with the listed tier, `UsdCost`, and `AiCredits`. The first two are the live-capture spans: their credits equal `nano_aiu / 10^9`.
+**RR1** (theory, 48 cases) checks every price that Task 2 adds against GitHub's table. Its expected values were computed from the pricing page with decimal math, not from `rates.json` ("GitHub price table"), so they catch a transcription error in `rates.json`.
+
+- Each case prices `TestSpans.Chat(startTime: DateTimeOffset.Parse(start, CultureInfo.InvariantCulture), requestModel: model, inputTokens: input, cacheReadInputTokens: 10_000, cacheWriteInputTokens: 5_000, outputTokens: 2_000)` with `JsonRateCardCalculator.LoadEmbedded()`. Each of the tier's four prices produces its own `Breakdown` component, so a wrong price fails its own assertion.
+- A model with one tier uses input 100,000. A tiered model uses its threshold, which selects `default`, and its threshold + 1, which selects `long_context`. That covers every tier and every tier boundary.
+- Start times are 2026-11-20T12:00:00Z. A model with a promotional window adds one tick before the window ends and the instant it ends.
+- When `tier` is null, the case expects no price for that date: `Status` `NoRateForDate`, `Channel` `GitHubAiCredits`, `ModelId` equal to the model, `RateCardModelId`, `TierName`, and `Breakdown` null, and `UsdCost` and `AiCredits` 0. Its four expected components are placeholders and aren't asserted.
+- Otherwise the case expects `Status` `Priced`, `Channel` `GitHubAiCredits`, `ModelId` and `RateCardModelId` equal to the model, `TierName` equal to `tier`, the four `Breakdown` components, `AiCredits`, and a `UsdCost` equal to the sum of the four expected components.
+
+The theory is `RR1_PublishedPrices_MatchGitHubTable(string model, string start, long input, string? tier, decimal uncachedInputUsd, decimal cacheReadUsd, decimal cacheWriteUsd, decimal outputUsd, decimal aiCredits)`. Copy the data exactly:
+
+```csharp
+// model, start, input tokens, tier (null: no price for that date), then the expected
+// UncachedInputUsd, CacheReadUsd, CacheWriteUsd, OutputUsd, and AiCredits.
+// Every case also has 10,000 cache-read, 5,000 cache-write, and 2,000 output tokens.
+public static TheoryData<string, string, long, string?, decimal, decimal, decimal, decimal, decimal> PublishedPrices => new()
+{
+    { "gpt-5.3-codex", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.14875m, 0.00175m, 0.00875m, 0.028m, 18.725m },
+    { "gpt-5.4-nano", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.017m, 0.0002m, 0.001m, 0.0025m, 2.07m },
+    { "gpt-5.6-luna", "2026-11-20T12:00:00.0000000+00:00", 200000, "default", 0.037m, 0.0002m, 0.00125m, 0.0024m, 4.085m },
+    { "gpt-5.6-luna", "2026-11-20T12:00:00.0000000+00:00", 200001, "long_context", 0.0740004m, 0.0004m, 0.0025m, 0.0036m, 8.05004m },
+    { "gpt-5.6-sol", "2026-11-20T12:00:00.0000000+00:00", 272000, "default", 1.028m, 0.004m, 0.025m, 0.04m, 109.7m },
+    { "gpt-5.6-sol", "2026-11-20T12:00:00.0000000+00:00", 272001, "long_context", 2.056008m, 0.008m, 0.05m, 0.06m, 217.4008m },
+    { "gpt-6-luna", "2026-11-20T12:00:00.0000000+00:00", 272000, "default", 0.0257m, 0.0001m, 0.000625m, 0.001m, 2.7425m },
+    { "gpt-6-luna", "2026-11-20T12:00:00.0000000+00:00", 272001, "long_context", 0.0514002m, 0.0002m, 0.00125m, 0.0015m, 5.43502m },
+    { "gpt-6-sol", "2026-11-20T12:00:00.0000000+00:00", 272000, "default", 0.514m, 0.002m, 0.0125m, 0.02m, 54.85m },
+    { "gpt-6-sol", "2026-11-20T12:00:00.0000000+00:00", 272001, "long_context", 1.028004m, 0.004m, 0.025m, 0.03m, 108.7004m },
+    { "gpt-6.1-terra", "2026-11-20T12:00:00.0000000+00:00", 272000, "default", 0.257m, 0.0005m, 0.00625m, 0.01m, 27.375m },
+    { "gpt-6.1-terra", "2026-11-20T12:00:00.0000000+00:00", 272001, "long_context", 0.514002m, 0.001m, 0.0125m, 0.015m, 54.2502m },
+    { "gpt-6.2-astra", "2026-11-20T12:00:00.0000000+00:00", 272000, "default", 2.056m, 0.004m, 0.05m, 0.08m, 219.0m },
+    { "gpt-6.2-astra", "2026-11-20T12:00:00.0000000+00:00", 272001, "long_context", 4.112016m, 0.008m, 0.10m, 0.12m, 434.0016m },
+    { "gpt-6.2-sol", "2026-11-20T12:00:00.0000000+00:00", 272000, "default", 0.514m, 0.001m, 0.0125m, 0.02m, 54.75m },
+    { "gpt-6.2-sol", "2026-11-20T12:00:00.0000000+00:00", 272001, "long_context", 1.028004m, 0.002m, 0.025m, 0.03m, 108.5004m },
+    { "claude-haiku-4.5", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.085m, 0.001m, 0.00625m, 0.01m, 10.225m },
+    { "claude-haiku-5.5", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.0085m, 0.0001m, 0.000625m, 0.001m, 1.0225m },
+    { "claude-haiku-5.5", "2026-11-20T12:00:00.0000000+00:00", 100001, "long_context", 0.0425005m, 0.0005m, 0.003125m, 0.005m, 5.11255m },
+    { "claude-sonnet-4", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.255m, 0.003m, 0.01875m, 0.03m, 30.675m },
+    { "claude-sonnet-4.6", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.255m, 0.003m, 0.01875m, 0.03m, 30.675m },
+    { "claude-opus-4.8", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.425m, 0.005m, 0.03125m, 0.05m, 51.125m },
+    { "claude-sonnet-5", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.17m, 0.002m, 0.0125m, 0.02m, 20.45m },
+    { "claude-fable-5", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.85m, 0.01m, 0.0625m, 0.10m, 102.25m },
+    { "claude-fable-5.1", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.85m, 0.0025m, 0.0625m, 0.10m, 101.50m },
+    { "claude-fable-5.2", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.68m, 0.002m, 0.05m, 0.08m, 81.2m },
+    { "gemini-3.8-flash", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.06375m, 0.00075m, 0.00375m, 0.0075m, 7.575m },
+    { "gemini-3.8-flash", "2026-12-31T23:59:59.9999999+00:00", 100000, "default", 0.06375m, 0.00075m, 0.00375m, 0.0075m, 7.575m },
+    { "gemini-3.8-flash", "2027-01-01T00:00:00.0000000+00:00", 100000, null, 0m, 0m, 0m, 0m, 0m },
+    { "gemini-4-argon", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.17m, 0.001m, 0.01m, 0.02m, 20.1m },
+    { "gemini-4-argon", "2026-11-30T23:59:59.9999999+00:00", 100000, "default", 0.17m, 0.001m, 0.01m, 0.02m, 20.1m },
+    { "gemini-4-argon", "2026-12-01T00:00:00.0000000+00:00", 100000, null, 0m, 0m, 0m, 0m, 0m },
+    { "gemini-4-carbon", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.17m, 0.001m, 0.01m, 0.02m, 20.1m },
+    { "gemini-4-carbon", "2026-11-30T23:59:59.9999999+00:00", 100000, "default", 0.17m, 0.001m, 0.01m, 0.02m, 20.1m },
+    { "gemini-4-carbon", "2026-12-01T00:00:00.0000000+00:00", 100000, "default", 0.34m, 0.002m, 0.02m, 0.04m, 40.2m },
+    { "gemini-4-hydrogen", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.1275m, 0.00075m, 0.0075m, 0.015m, 15.075m },
+    { "gemini-4-neon", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.255m, 0.0015m, 0.015m, 0.03m, 30.15m },
+    { "mai-code-1.1-flash", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.017m, 0.0002m, 0.001m, 0.0024m, 2.06m },
+    { "mai-code-2-flash", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.00425m, 0.00005m, 0.00025m, 0.0005m, 0.505m },
+    { "mai-code-2-flash", "2027-05-16T23:59:59.9999999+00:00", 100000, "default", 0.00425m, 0.00005m, 0.00025m, 0.0005m, 0.505m },
+    { "mai-code-2-flash", "2027-05-17T00:00:00.0000000+00:00", 100000, "default", 0.0085m, 0.0001m, 0.0005m, 0.001m, 1.01m },
+    { "grok-4.5", "2026-11-20T12:00:00.0000000+00:00", 200000, "default", 0.37m, 0.005m, 0.01m, 0.012m, 39.7m },
+    { "grok-4.5", "2026-11-20T12:00:00.0000000+00:00", 200001, "long_context", 0.740004m, 0.01m, 0.02m, 0.024m, 79.4004m },
+    { "grok-4.6", "2026-11-20T12:00:00.0000000+00:00", 200000, "default", 0.37m, 0.005m, 0.01m, 0.012m, 39.7m },
+    { "grok-4.6", "2026-11-20T12:00:00.0000000+00:00", 200001, "long_context", 0.740004m, 0.01m, 0.02m, 0.024m, 79.4004m },
+    { "grok-4.7", "2026-11-20T12:00:00.0000000+00:00", 200000, "default", 0.37m, 0.005m, 0.01m, 0.012m, 39.7m },
+    { "grok-4.7", "2026-11-20T12:00:00.0000000+00:00", 200001, "long_context", 0.740004m, 0.01m, 0.02m, 0.024m, 79.4004m },
+    { "kimi-k3", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.255m, 0.003m, 0.015m, 0.03m, 30.3m },
+};
+```
+
+**RR2** (theory). The two live-capture `gpt-6-luna` spans. Each is GitHub, `Priced`, with the listed tier, `UsdCost`, and `AiCredits`, and its credits equal Copilot's `nano_aiu / 10^9`.
 
 | Model | Input | Cache read | Cache write | Output | Tier | UsdCost | AiCredits |
 |---|---|---|---|---|---|---|---|
 | `gpt-6-luna` | 3,665 | 0 | 3,662 | 43 | default | 0.00047955 | 0.047955 |
 | `gpt-6-luna` | 3,764 | 3,662 | 99 | 5 | default | 0.000051795 | 0.0051795 |
-| `gpt-6-luna` | 272,000 | 0 | 0 | 1,000 | default | 0.0277 | 2.77 |
-| `gpt-6-luna` | 272,001 | 0 | 0 | 1,000 | long_context | 0.0551502 | 5.51502 |
-| `gpt-5.6-luna` | 200,000 | 0 | 0 | 10,000 | default | 0.052 | 5.2 |
-| `gpt-5.6-luna` | 200,001 | 0 | 0 | 10,000 | long_context | 0.0980004 | 9.80004 |
-| `claude-haiku-4.5` | 10,000 | 4,000 | 1,000 | 2,000 | default | 0.01665 | 1.665 |
 
-**RR2** (theory). With provider `ollama`, `lm_studio`, `foundry_local`, or `llama_cpp`, no host, model `llama3.3:70b`, input 400,000, and output 12,000: Local, `LocalOffload`, `EstimatedCloudSavedUsd` 0.23, `ModelId` `llama3.3:70b`, and `RateCardModelId` `mai-code-2`.
+**RR3** (theory). With provider `ollama`, `lm_studio`, `foundry_local`, or `llama_cpp`, no host, model `llama3.3:70b`, input 400,000, and output 12,000: Local, `LocalOffload`, `EstimatedCloudSavedUsd` 0.23, `ModelId` `llama3.3:70b`, and `RateCardModelId` `mai-code-2`.
 
-**RR3.** `JsonRateCardCalculator.LoadEmbedded().RatesVersion` is `2026-11-20`.
+**RR4.** `JsonRateCardCalculator.LoadEmbedded().RatesVersion` is `2026-11-20`.
 
 #### Git: `CachingGitContextResolverTests`
 
@@ -2574,7 +3173,7 @@ The Git fixture at `<root>/repo` has:
 | IG3 | (theory) (a) Trace E, with `<home>/session-state/d9b2d63d-a233-4123-847a-5a1f3c8e6e1f/workspace.yaml` containing `cwd: <root>/repo/src` and `branch: stale-branch`. (b) Trace E without its conversation ID, and with the resource attribute `process.working_directory` = `<root>/repo`. | Each Branch rollup has one row: `swigerb/copilot-ledger` / `feature/ledger`, 1 span, `AiCredits` 286, `AiCreditsUsd` 2.86 |
 | IG4 | Trace D1, then D2 | After D1: Recorded 1, and the Branch rollup is `(none)` / `(none)`. After D2: Recorded 0, the Branch rollup is `contoso/webapp` / `feature/login` with 60 credits, and the Agent rollup is `GitHub Copilot Chat`. No TEXT value in any `spans` or `span_links` row contains `s3cr3t`; read every column through a separate connection. |
 | IG5 | One request with two chat spans (distinct span IDs), the second with `Int("gen_ai.usage.output_tokens", -1)` | Received 2, Rejected 1, `FirstRejectionReason` `gen_ai.usage.output_tokens is not a non-negative integer`, Inference 1, Recorded 1 |
-| IG6 | (theory) The IG6 calculator and spans below, in one request: (a) H, M, O; (b) H, M, O, N; (c) H9, M | (a) Received 3, Rejected 2, `FirstRejectionReason` `cost out of range`, Inference 1, Recorded 1. (b) Received 4, Rejected 3, `FirstRejectionReason` `gen_ai.usage.output_tokens is not a non-negative integer` (the normalizer's reason wins although N comes last), Inference 1, Recorded 1. For (a) and (b), the Model rollup has one row, `mai-code-2`: 1 span, `AiCredits` 0.075, `AiCreditsUsd` 0.00075. `SELECT COUNT(*) FROM span_links`, through a separate connection, is 3: the cost-rejected H and O keep their links, and N has none. (c) Received 2, Rejected 0, Inference 2, Recorded 2. The Model rollup is `ig6-huge` (`AiCredits` 900,000,000, `AiCreditsUsd` 9,000,000), then `mai-code-2` (`AiCredits` 0.075). |
+| IG6 | (theory) The IG6 calculator and spans below, in one request: (a) H, M; (b) H, M, N; (c) H9, M | (a) Received 2, Rejected 1, `FirstRejectionReason` `cost out of range`, Inference 1, Recorded 1. (b) Received 3, Rejected 2, `FirstRejectionReason` `gen_ai.usage.output_tokens is not a non-negative integer` (the normalizer's reason wins although N comes last), Inference 1, Recorded 1. For (a) and (b), the Model rollup has one row, `mai-code-2`: 1 span, `AiCredits` 0.075, `AiCreditsUsd` 0.00075. `SELECT COUNT(*) FROM span_links`, through a separate connection, is 2: the cost-rejected H keeps its link, and N has none. (c) Received 2, Rejected 0, Inference 2, Recorded 2. The Model rollup is `ig6-huge` (`AiCredits` 900,000,000, `AiCreditsUsd` 9,000,000), then `mai-code-2` (`AiCredits` 0.075). |
 
 IG6 prices with `JsonRateCardCalculator.LoadEmbeddedWithOverlay(<root>/ig6-rates.json)` instead of the embedded calculator. The file holds:
 
@@ -2584,12 +3183,13 @@ IG6 prices with `JsonRateCardCalculator.LoadEmbeddedWithOverlay(<root>/ig6-rates
   "ratesVersion": "ig6",
   "githubAiCredits": {
     "models": [
-      { "id": "ig6-huge", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1000000, "outputPer1M": 1000000 } ] } ] },
-      { "id": "ig6-overflow", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 10000000000000000000000, "outputPer1M": 1 } ] } ] }
+      { "id": "ig6-huge", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1000000, "outputPer1M": 1000000 } ] } ] }
     ]
   }
 }
 ```
+
+Its rates are exactly at Task 3's bound, so the file loads both before and after Task 3, and the cost rejection comes from the pico-USD limit, not from an out-of-range rate.
 
 Build the request with `Request(CopilotResource, ...)`. Each span uses the Task 1 normalization defaults (trace `5b8efff798038103d269b633813fc60c`, no parent, the default start and end, and `Str("gen_ai.operation.name", "chat")`), with this span ID and these extra attributes:
 
@@ -2598,12 +3198,22 @@ Build the request with `Request(CopilotResource, ...)`. Each span uses the Task 
 | H | `0000000000000001` | `Str("gen_ai.request.model", "ig6-huge")`, `Int("gen_ai.usage.input_tokens", 10000000)` | Costs $10,000,000, which is 10^19 pico-USD, above `long.MaxValue`, so `PicoUsd.FromUsd` throws `ArgumentOutOfRangeException` |
 | H9 | `0000000000000001` | `Str("gen_ai.request.model", "ig6-huge")`, `Int("gen_ai.usage.input_tokens", 9000000)` | Costs $9,000,000 (9 × 10^18 pico-USD), just inside the limit |
 | M | `0000000000000002` | `Str("gen_ai.request.model", "mai-code-2")`, `Int("gen_ai.usage.input_tokens", 1000)`, `Int("gen_ai.usage.output_tokens", 100)` | Costs 1,000 × $0.50 + 100 × $2.50 per 1M = $0.00075 |
-| O | `0000000000000003` | `Str("gen_ai.request.model", "ig6-overflow")`, `Int("gen_ai.usage.input_tokens", 10000000)` | 10^7 tokens × 10^22 = 10^29, above `decimal.MaxValue` (about 7.9 × 10^28), so `Calculate` throws `OverflowException` |
 | N | `0000000000000004` | `Str("gen_ai.request.model", "mai-code-2")`, `Int("gen_ai.usage.output_tokens", -1)` | Rejected by the normalizer |
 
-These results were computed with the merged Sprint 1 calculator and `PicoUsd`.
+These results were computed with the merged Sprint 1 calculator, `PicoUsd`, and store. The overlay also loads unchanged in the Task 3 reference implementation.
 
 **IG7.** Git context is best effort. Ingest span M from IG6 in a request whose resource is `CopilotResource` plus `Str("process.working_directory", <root>)`. Use the embedded calculator, and instead of the Git resolver above, a private fake `IGitContextResolver` in `LedgerIngestorTests` whose `Resolve` throws `IOException`. The fake is called once, with `<root>`. The result is Received 1, Rejected 0, Inference 1, Recorded 1. The Branch rollup has one row: `(none)` / `(none)`, 1 span, `AiCredits` 0.075.
+
+**IG8.** The ingestor's `OverflowException` catch is defense in depth (decision 18), so it's tested with a fake. Use a private fake `ICreditCalculator` in `LedgerIngestorTests` whose `Calculate` throws `OverflowException` when the span's `RequestModel` is `overflow-model`, and otherwise returns the embedded calculator's result. Its `RatesVersion` is the embedded calculator's. Ingest one request built like IG6's, with span O (`0000000000000003`, `Str("gen_ai.request.model", "overflow-model")`, `Int("gen_ai.usage.input_tokens", 1)`) and then span M from IG6. The result is Received 2, Rejected 1, `FirstRejectionReason` `cost out of range`, Inference 1, Recorded 1. The Model rollup has one row, `mai-code-2`, with `AiCredits` 0.075. `SELECT COUNT(*) FROM span_links`, through a separate connection, is 2.
+
+**IG9.** Custom agents, replaying live probe runs A and B ("Live capture: custom agents"). Ingest Trace F as one request, then Trace G as one request.
+
+- Trace F: Received 2, Rejected 0, Inference 1, Recorded 1.
+- Trace G: Received 6, Rejected 0, Inference 3, Recorded 3.
+- The final Agent rollup, in order: `(none)` (2 spans, input 11,202, output 47, `AiCredits` 0.057185, `AiCreditsUsd` 0.00057185), then `Ledger Probe Display` (2 spans, input 5,688, output 22, `AiCredits` 0.02899, `AiCreditsUsd` 0.0002899). The top-level custom agent's chat and the custom subagent's chat both get the agent's `name`, and the default agent's two chats stay under `(none)`.
+- The final Model rollup has one row: `mai-code-2-flash`, 4 spans, `AiCredits` 0.086175. That's 86,175,000 nano-AIU, the sum of the two runs' `--usage-output-file` totals (24,095,000 and 62,080,000), at `mai-code-2-flash`'s promotional price.
+
+These results were computed with the merged Sprint 1 calculator and store, Task 2's `rates.json`, and this plan's Migration 2 and back-fill SQL.
 
 ### Task 3 tests
 
@@ -2674,6 +3284,7 @@ Task 3 changes Sprint 1's rates tests in place, so each case is written once. Ev
        { """{ "schemaVersion": 1, "localOffload": { "baselineModel": " " } }""", "<file>: localOffload.baselineModel: must not be blank" },
        { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "maxInputTokens": 1000, "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].maxInputTokens: the last tier must be unbounded" },
        { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": -1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be greater than or equal to 0" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1000000.000001, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be less than or equal to 1000000" },
        { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "aliases": ["Contoso New"], "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].aliases[0]: duplicate model identity: contoso-new" },
 
        // Checks against the merged rates.
@@ -2692,7 +3303,8 @@ Task 3 changes Sprint 1's rates tests in place, so each case is written once. Ev
 2. In `Overlay_DuplicateNormalizedIdsThrow`, replace both `Assert.Contains` calls with `Assert.Equal($"{path}: githubAiCredits.models[1].id: duplicate model identity: duplicate", exception.Message)`.
 3. Add `Overlay_ReplacingBuiltInModelFreesItsAliases`. It loads `{ "schemaVersion": 1, "localOffload": { "models": [ { "id": "qwen3.8-27b", "aliases": ["my-qwen-build"] }, { "id": "my-local", "aliases": ["qwen3.8:27b"] } ] } }` without an error. `Calculate(TestSpans.Chat(requestModel: "qwen3.8:27b", inputTokens: 400_000, outputTokens: 12_000))` has `Status` `LocalOffload` and `ModelId` `my-local`.
 4. Add `Overlay_BaselineCanNameAnOverlayModelByAlias`. It loads `{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "aliases": ["contoso-alias"], "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] }, "localOffload": { "baselineModel": "Contoso Alias" } }`. `Calculate(TestSpans.Chat(serverAddress: "127.0.0.1", requestModel: "qwen3.8:27b", inputTokens: 400_000, outputTokens: 12_000))` has `RateCardModelId` `contoso-new` and `EstimatedCloudSavedUsd` 0.412 (400,000 × $1 + 12,000 × $1 per 1M).
-5. Add `DocsExamples_MatchRealMessages`:
+5. Add `Overlay_RateAtMaximum_Loads`. It loads `{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1000000, "outputPer1M": 1 } ] } ] } ] } }` without an error. `Calculate(TestSpans.Chat(requestModel: "contoso-new", inputTokens: 1))` has `Status` `Priced` and `UsdCost` 1.
+6. Add `DocsExamples_MatchRealMessages`:
    1. Read `Path.Combine(AppContext.BaseDirectory, "docs", "configuration.md")` with `File.ReadAllLines`, so line endings don't matter.
    2. An example starts at a line equal to `<!-- rates-error-example -->` and ends at the next line equal to `<!-- /rates-error-example -->`. Its JSON is the lines after the first line equal to ```` ```json ```` up to the next line equal to ```` ``` ````. Its message is the single line after the next line equal to ```` ```text ````, which is followed by a ```` ``` ```` line.
    3. Assert there are exactly 3 examples.
@@ -2700,7 +3312,7 @@ Task 3 changes Sprint 1's rates tests in place, so each case is written once. Ev
 
 #### Rates loading: `RateCardLoadingTests`
 
-1. Replace `InvalidDocuments` and `Parse_InvalidDocument_Throws` with this data and `Parse_InvalidDocument_ReportsExactMessage(string find, string replacement, string expected)`. It keeps the `Assert.Contains(find, json)` guard and asserts `Assert.Equal(expected, exception.Message)`. The last row is new.
+1. Replace `InvalidDocuments` and `Parse_InvalidDocument_Throws` with this data and `Parse_InvalidDocument_ReportsExactMessage(string find, string replacement, string expected)`. It keeps the `Assert.Contains(find, json)` guard and asserts `Assert.Equal(expected, exception.Message)`. The last two rows are new.
 
    ```csharp
    public static TheoryData<string, string, string> InvalidDocuments => new()
@@ -2713,6 +3325,7 @@ Task 3 changes Sprint 1's rates tests in place, so each case is written once. Ev
        { "\"inputPer1M\": 2.00,", "\"inputPer1M\": -2.00,", "githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be greater than or equal to 0" },
        { "\"ratesVersion\": \"test-fixture\",", string.Empty, "ratesVersion: is required" },
        { ", \"retrievedOn\": \"2026-11-20\" }", " }", "source.retrievedOn: is required" },
+       { "\"inputPer1M\": 2.00,", "\"inputPer1M\": 1000000.000001,", "githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be less than or equal to 1000000" },
    };
    ```
 
@@ -2720,8 +3333,9 @@ Task 3 changes Sprint 1's rates tests in place, so each case is written once. Ev
 3. In `Parse_NullCollectionElement_ThrowsWithExactPath`, replace both assertions with `Assert.Equal("githubAiCredits.hostSuffixes[1]: must be a string", exception.Message)`.
 4. In `Parse_InvalidBaseWithOverlay_DoesNotAddOverlayPrefix`, replace both assertions with `Assert.Equal("githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be greater than or equal to 0", exception.Message)`.
 5. Add `Parse_InvalidOverlay_NamesTheOverlay`: `JsonRateCardCalculator.Parse(RateFixtures.ByokTestRatesJson, """{ "schemaVersion": 2 }""")` throws `InvalidDataException` with the message `overlay: schemaVersion: must be 1`.
+6. Add `Parse_RateAtMaximum_Loads`: replace every `"inputPer1M": 2.00,` in `RateFixtures.ByokTestRatesJson` with `"inputPer1M": 1000000,` (ordinal). `Parse` succeeds, and `Calculate(TestSpans.Chat(requestModel: "claude-sonnet-5.5", inputTokens: 1))` has `Status` `Priced` and `UsdCost` 1.
 
-`InvalidOverlays` grows from 6 cases to 52 and `InvalidDocuments` from 7 to 8, and there are 4 new facts. Task 3 adds 51 test cases in all.
+`InvalidOverlays` grows from 6 cases to 53 and `InvalidDocuments` from 7 to 9, and there are 6 new facts. Task 3 adds 55 test cases in all.
 
 ### Task 4 tests
 
@@ -2927,11 +3541,10 @@ IN10 cases:
 - **`gh ledger` on Windows without Git for Windows.** A precompiled gh extension runs without `sh`, but it needs a repository named `gh-*` (for example `swigerb/gh-ledger`) with per-platform release assets. Creating that repository is a user decision; it pairs with Sprint 4's release work.
 - **Binary location.** `install` doesn't copy the binary or edit `PATH`.
 - **A custom port in `install`.** It would need `OTEL_EXPORTER_OTLP_ENDPOINT`, which affects every OpenTelemetry SDK.
-- **Reconciliation.** Verified on 5 spans: `github.copilot.nano_aiu / 10^9` equals the computed AI credits. Next: store `nano_aiu` from root `invoke_agent` spans and report drift per model. JSON carries the number's text. Protobuf carries an IEEE `double`, so this needs a design that keeps money decimal-only.
-- **The rest of GitHub's price table** (GPT-6 Sol, GPT-6.2 Astra and Sol, Claude Sonnet 5, Claude Haiku 5.5, MAI Code 2 Flash, MAI-Code-1.1-Flash, and others), delivered with a `rates.json` update command.
+- **Reconciliation.** Verified on 10 spans: `github.copilot.nano_aiu / 10^9` equals the computed AI credits. Next: store each `chat` span's `nano_aiu` and report drift per model. Don't use the root `invoke_agent` span's total: in the custom-agent capture, it left out the subagent's spend. JSON carries the number's text. Protobuf carries an IEEE `double`, so this needs a design that keeps money decimal-only.
+- **Rates follow-ups.** Confirm the nine derived model IDs (A5) and Claude Opus 4.8 (fast mode)'s ID from live telemetry, and add aliases or the model if they differ. Add Gemini 4 Argon's and Gemini 3.8 Flash's post-promotion prices when GitHub publishes them. Both ship with the rates update command.
 - **More live captures:** a BYOK provider and a local provider (assumption A1: provider labels and `server.address`), and VS Code Local harness payloads (A3). Adjust the `rates.json` host and provider lists to match.
 - **File-exporter ingestion** (`COPILOT_OTEL_FILE_EXPORTER_PATH`, JSON lines) as an offline alternative to the daemon. Its line format is undocumented, so capture it first.
 - **Native AOT.** After Task 3 the rates loader has no reflection, but `daemon.json` and `install.json` still need source-generated System.Text.Json, and Microsoft.Data.Sqlite's native library still ships as a separate file.
 - **Overflow-safe rollups.** SQLite's `SUM` over `INTEGER` raises an error on 64-bit overflow, and then every report fails. With the token cap, a span at built-in rates costs at most $100,000 (10^17 pico-USD), so a rollup needs 93 such spans to overflow; an overlay with extreme rates needs fewer. If that ever matters, cap per-span cost at ingestion or aggregate in `decimal`, which changes Sprint 1's Storage.
-- **`Calculate`'s "never throws" contract.** Sprint 1's `ValidateRate` could reject rates above 1,000,000 USD per 1M tokens. A `long` token count times such a rate stays under 10^25, well inside `decimal`, so `Calculate` could never overflow. Task 3 doesn't change which rates are accepted, so this bound is left for a later decision; it would also change `docs/configuration.md` and IG6's overflow case. Sprint 2's ingestor guard works either way, and it's still needed for the pico-USD limit.
 - **Sprints 3 and 4,** per the roadmap: the runaway-loop circuit breaker, the MCP server, PR receipts with the GitHub Action, and the rates update command.
