@@ -20,23 +20,26 @@ public sealed class SqliteLedgerStoreTests
         SqliteLedgerStore store = new(databasePath);
 
         await store.InitializeAsync();
-        await store.InitializeAsync();
 
         Assert.True(Directory.Exists(Path.GetDirectoryName(databasePath)));
         Assert.True(File.Exists(databasePath));
-        await using SqliteConnection connection = new($"Data Source={databasePath}");
-        await connection.OpenAsync();
-        await using (SqliteCommand journalCommand = connection.CreateCommand())
+        await using (SqliteConnection connection = new($"Data Source={databasePath}"))
         {
-            journalCommand.CommandText = "PRAGMA journal_mode;";
-            Assert.Equal("wal", await journalCommand.ExecuteScalarAsync());
+            await connection.OpenAsync();
+            await using (SqliteCommand journalCommand = connection.CreateCommand())
+            {
+                journalCommand.CommandText = "PRAGMA journal_mode;";
+                Assert.Equal("wal", await journalCommand.ExecuteScalarAsync());
+            }
+
+            await using (SqliteCommand versionCommand = connection.CreateCommand())
+            {
+                versionCommand.CommandText = "PRAGMA user_version;";
+                Assert.Equal(1L, await versionCommand.ExecuteScalarAsync());
+            }
         }
 
-        await using (SqliteCommand versionCommand = connection.CreateCommand())
-        {
-            versionCommand.CommandText = "PRAGMA user_version;";
-            Assert.Equal(1L, await versionCommand.ExecuteScalarAsync());
-        }
+        await store.InitializeAsync();
     }
 
     [Fact]
@@ -350,14 +353,15 @@ public sealed class SqliteLedgerStoreTests
     [Fact]
     public async Task S11_Rollup_PreservesPicoUsdExactness()
     {
-        using TempDirectory temp = new();
+        using TempDirectory v5Temp = new();
+        using TempDirectory v12Temp = new();
         JsonRateCardCalculator calculator = JsonRateCardCalculator.LoadEmbedded();
 
         NormalizedGenAiSpan v5Span = TestSpans.Chat(
             requestModel: "gpt-6.1-sol",
             inputTokens: 272_001,
             outputTokens: 10_000);
-        SqliteLedgerStore v5Store = await InitializedStoreAsync(temp, "v5");
+        SqliteLedgerStore v5Store = await InitializedStoreAsync(v5Temp);
         await v5Store.RecordAsync(
             [new LedgerEntry(v5Span, calculator.Calculate(v5Span), null)]);
         LedgerRollupRow v5 =
@@ -371,7 +375,7 @@ public sealed class SqliteLedgerStoreTests
             requestModel: "mai-code-2",
             inputTokens: 1,
             cacheReadInputTokens: 1);
-        SqliteLedgerStore v12Store = await InitializedStoreAsync(temp, "v12");
+        SqliteLedgerStore v12Store = await InitializedStoreAsync(v12Temp);
         await v12Store.RecordAsync(
             [new LedgerEntry(v12Span, calculator.Calculate(v12Span), null)]);
         LedgerRollupRow v12 =
@@ -389,14 +393,9 @@ public sealed class SqliteLedgerStoreTests
         return store;
     }
 
-    private static async Task<SqliteLedgerStore> InitializedStoreAsync(
-        TempDirectory temp,
-        string? directory = null)
+    private static async Task<SqliteLedgerStore> InitializedStoreAsync(TempDirectory temp)
     {
-        string databasePath = Path.Combine(
-            temp.Path,
-            directory ?? "nested",
-            "ledger.db");
+        string databasePath = Path.Combine(temp.Path, "nested", "ledger.db");
         SqliteLedgerStore store = new(databasePath);
         await store.InitializeAsync();
         return store;

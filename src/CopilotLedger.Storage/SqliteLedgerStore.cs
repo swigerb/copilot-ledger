@@ -109,7 +109,7 @@ public sealed class SqliteLedgerStore
         List<LedgerEntry> batch = [.. entries];
         foreach (LedgerEntry entry in batch)
         {
-            ValidateEntry(entry);
+            ValidateEntry(entry, nameof(entries));
         }
 
         if (batch.Count == 0)
@@ -194,11 +194,19 @@ public sealed class SqliteLedgerStore
     private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
         SqliteConnection connection = new(_connectionString);
-        await connection.OpenAsync(cancellationToken);
-        await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = "PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;";
-        await command.ExecuteNonQueryAsync(cancellationToken);
-        return connection;
+        try
+        {
+            await connection.OpenAsync(cancellationToken);
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;";
+            await command.ExecuteNonQueryAsync(cancellationToken);
+            return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
     }
 
     private static async Task<int> GetUserVersionAsync(
@@ -220,7 +228,7 @@ public sealed class SqliteLedgerStore
         }
     }
 
-    private static void ValidateEntry(LedgerEntry entry)
+    private static void ValidateEntry(LedgerEntry entry, string parameterName)
     {
         NormalizedGenAiSpan span = entry.Span;
         if (entry.Calculation.Status == PricingStatus.NotBillableOperation
@@ -231,7 +239,7 @@ public sealed class SqliteLedgerStore
         {
             throw new ArgumentException(
                 "Entries must be billable and all token counts must be non-negative.",
-                nameof(entry));
+                parameterName);
         }
     }
 
