@@ -56,4 +56,21 @@ public sealed class RateCardLoadingTests
         Assert.Contains("githubAiCredits.hostSuffixes[1]", exception.Message);
         Assert.DoesNotContain("$.githubAiCredits", exception.Message);
     }
+
+    [Fact]
+    public void Parse_InvalidBaseWithOverlay_DoesNotAddOverlayPrefix()
+    {
+        string json = RateFixtures.ByokTestRatesJson.Replace(
+            "\"inputPer1M\": 2.00,",
+            "\"inputPer1M\": -2.00,",
+            StringComparison.Ordinal);
+
+        InvalidDataException exception = Assert.Throws<InvalidDataException>(
+            () => JsonRateCardCalculator.Parse(json, """{ "schemaVersion": 1 }"""));
+
+        Assert.Contains(
+            "githubAiCredits.models[0].windows[0].tiers[0].inputPer1M",
+            exception.Message);
+        Assert.False(exception.Message.StartsWith("overlay:", StringComparison.Ordinal));
+    }
 }

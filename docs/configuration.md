@@ -54,7 +54,7 @@ To change pricing, create `~/.copilot-ledger/rates.json`. CopilotLedger merges i
 - `ratesVersion` is an optional label. Each request in the ledger records which rates priced it, for example `2026-11-20+contoso-2026-11`, or `2026-11-20+user` if you leave the label out.
 - JSON doesn't allow comments, so put your own notes in the optional `notes` array.
 
-If the file is invalid, CopilotLedger refuses to load it and reports an error that names the file and the exact JSON path, such as `foundryByok.models[0].windows[0].tiers[0].outputPer1M`. It never silently ignores a broken file.
+If the file is invalid, CopilotLedger refuses to load it and reports an error that names the file and the JSON path of the problem, such as `foundryByok.models[0].windows[0].tiers[0].outputPer1M` for an invalid price. It never silently ignores a broken file.
 
 ### Price your Foundry BYOK models
 

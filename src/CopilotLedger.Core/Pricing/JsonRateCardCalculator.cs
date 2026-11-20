@@ -248,6 +248,7 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
     {
         RateCardDocument baseDocument = Deserialize(baseJson, null, isBase: true);
         ValidateOverlayShape(baseDocument);
+        _ = Validate(baseDocument);
         RateCardDocument? overlay = overlayJson is null
             ? null
             : Deserialize(overlayJson, overlayName, isBase: false);
