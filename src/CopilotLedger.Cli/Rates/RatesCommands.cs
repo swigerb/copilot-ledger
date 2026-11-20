@@ -63,7 +63,7 @@ internal static class RatesCommands
         Directory.CreateDirectory(context.DataDirectory);
         await File.WriteAllTextAsync(
             path,
-            Scaffold + "\n",
+            Scaffold.ReplaceLineEndings("\n") + "\n",
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             cancellationToken);
         context.Out.WriteLine(

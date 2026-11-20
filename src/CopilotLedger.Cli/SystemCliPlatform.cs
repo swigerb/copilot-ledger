@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 
 namespace CopilotLedger.Cli;
 
@@ -64,6 +65,8 @@ public sealed class SystemCliPlatform : ICliPlatform
         process.StartInfo.CreateNoWindow = true;
         process.StartInfo.RedirectStandardOutput = true;
         process.StartInfo.RedirectStandardError = true;
+        process.StartInfo.StandardOutputEncoding = Encoding.UTF8;
+        process.StartInfo.StandardErrorEncoding = Encoding.UTF8;
         foreach (string argument in arguments)
         {
             process.StartInfo.ArgumentList.Add(argument);
@@ -100,7 +103,7 @@ public sealed class SystemCliPlatform : ICliPlatform
         try
         {
             using Process process = Process.GetProcessById(processId);
-            return !process.HasExited;
+            return true;
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
         {

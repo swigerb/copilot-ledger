@@ -29,6 +29,12 @@ public sealed class DaemonCommandTests
         CliRun duplicate = await harness.RunAsync("daemon", "run");
         Assert.Equal(1, duplicate.ExitCode);
         Assert.Contains("gh-ledger daemon is already running.", duplicate.Out);
+        Assert.True(File.Exists(statePath));
+        using JsonDocument stateAfterDuplicate = JsonDocument.Parse(
+            await File.ReadAllTextAsync(statePath));
+        Assert.Equal(
+            Environment.ProcessId,
+            stateAfterDuplicate.RootElement.GetProperty("processId").GetInt32());
 
         CliRun stop = await harness.RunAsync("daemon", "stop");
         Assert.Equal(0, stop.ExitCode);
@@ -125,7 +131,7 @@ public sealed class DaemonCommandTests
         CliRun run = await harness.RunAsync("daemon", "run");
         Assert.Equal(1, run.ExitCode);
         Assert.Contains(
-            $"Invalid rates overlay: {data}\\rates.json: line 2, column 32: invalid JSON",
+            $"Invalid rates overlay: {Path.Combine(data, "rates.json")}: line 2, column 32: invalid JSON",
             run.Out);
         Assert.DoesNotContain("gh-ledger daemon stopped", run.Out);
         Assert.False(File.Exists(Path.Combine(data, "daemon.json")));

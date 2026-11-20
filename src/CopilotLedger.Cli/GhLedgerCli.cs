@@ -7,6 +7,7 @@ namespace CopilotLedger.Cli;
 
 public static class GhLedgerCli
 {
+    // AssemblyInformationalVersionAttribute: "0.2.0"
     public static string Version { get; } =
         typeof(GhLedgerCli).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()

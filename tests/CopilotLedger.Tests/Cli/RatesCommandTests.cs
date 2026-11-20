@@ -1,3 +1,4 @@
+using System.Text;
 using CopilotLedger.Tests.TestSupport;
 
 namespace CopilotLedger.Tests.Cli;
@@ -16,7 +17,6 @@ public sealed class RatesCommandTests
             "models": []
           }
         }
-
         """;
 
     [Fact]
@@ -31,7 +31,9 @@ public sealed class RatesCommandTests
         Assert.Equal(
             $"Created {path}. Add your prices, then run: gh-ledger rates validate\n",
             first.Out);
-        Assert.Equal(Scaffold.Replace("\r\n", "\n"), File.ReadAllText(path).Replace("\r\n", "\n"));
+        Assert.Equal(
+            Encoding.UTF8.GetBytes(Scaffold.ReplaceLineEndings("\n") + "\n"),
+            File.ReadAllBytes(path));
         string original = await File.ReadAllTextAsync(path);
 
         CliRun second = await harness.RunAsync("rates", "init");
@@ -88,18 +90,27 @@ public sealed class RatesCommandTests
         Assert.Empty(run.Out);
         Assert.Equal($"Invalid rates overlay: {path}: {problem}\n", run.Error);
 
-        if (problem == "schemaVersion: must be 1")
-        {
-            CliRun relative = await harness.RunInAsync(
-                temp.Path,
-                "rates",
-                "validate",
-                "--file",
-                "bad.json");
-            Assert.Equal(1, relative.ExitCode);
-            Assert.Empty(relative.Out);
-            Assert.Equal(run.Error, relative.Error);
-        }
+    }
+
+    [Fact]
+    public async Task RT3_RelativeFileReportsResolvedPath()
+    {
+        using var temp = new TempDirectory();
+        await using var harness = new CliHarness(temp.Path);
+        string path = Path.Combine(temp.Path, "bad.json");
+        await File.WriteAllTextAsync(path, """{ "schemaVersion": 2 }""");
+
+        CliRun relative = await harness.RunInAsync(
+            temp.Path,
+            "rates",
+            "validate",
+            "--file",
+            "bad.json");
+        Assert.Equal(1, relative.ExitCode);
+        Assert.Empty(relative.Out);
+        Assert.Equal(
+            $"Invalid rates overlay: {path}: schemaVersion: must be 1\n",
+            relative.Error);
     }
 
     [Fact]

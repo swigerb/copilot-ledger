@@ -19,25 +19,34 @@ internal static class DaemonHost
         CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(context.DataDirectory);
-        FileStream? lockStream = null;
-        TextWriter? writer = null;
-        bool ownsWriter = false;
+        TextWriter writer = CreateLogWriter(context, logFile, out bool ownsWriter);
+        FileStream lockStream;
+        try
+        {
+            lockStream = DaemonFiles.AcquireLock(context);
+        }
+        catch (IOException)
+        {
+            try
+            {
+                WriteLog(writer, context, "gh-ledger daemon is already running.");
+            }
+            finally
+            {
+                if (ownsWriter)
+                {
+                    writer.Dispose();
+                }
+            }
+
+            return 1;
+        }
+
         WebApplication? app = null;
         bool started = false;
         PosixSignalRegistration? sighupRegistration = null;
         try
         {
-            writer = CreateLogWriter(context, logFile, out ownsWriter);
-            try
-            {
-                lockStream = DaemonFiles.AcquireLock(context);
-            }
-            catch (IOException)
-            {
-                WriteLog(writer, context, "gh-ledger daemon is already running.");
-                return 1;
-            }
-
             DaemonFiles.DeleteIfExists(DaemonFiles.StopPath(context));
 
             JsonRateCardCalculator calculator;
@@ -165,15 +174,15 @@ internal static class DaemonHost
                 await app.DisposeAsync();
             }
 
-            lockStream?.Dispose();
-            if (started && writer is not null)
+            lockStream.Dispose();
+            if (started)
             {
                 WriteLog(writer, context, "gh-ledger daemon stopped");
             }
 
             if (ownsWriter)
             {
-                writer?.Dispose();
+                writer.Dispose();
             }
         }
     }

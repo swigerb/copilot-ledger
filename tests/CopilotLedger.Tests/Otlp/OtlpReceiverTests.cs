@@ -31,7 +31,7 @@ public sealed class OtlpReceiverTests
             Request("/v1/traces", "application/x-protobuf", OtlpFixtures.PGold1));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("application/x-protobuf", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("application/x-protobuf", response.Content.Headers.ContentType?.ToString());
         Assert.Empty(await response.Content.ReadAsByteArrayAsync());
         OtlpTraceRequest request = Assert.Single(ingestor.Requests);
         Assert.Equal(1, request.SpanCount);
@@ -54,7 +54,7 @@ public sealed class OtlpReceiverTests
                 Encoding.UTF8.GetBytes(OtlpFixtures.CopilotChatTraceJson)));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.ToString());
         Assert.Equal("{}", await response.Content.ReadAsStringAsync());
         Assert.Equal(2, Assert.Single(ingestor.Requests).SpanCount);
     }
@@ -301,8 +301,12 @@ public sealed class OtlpReceiverTests
                 "application/json",
                 Encoding.UTF8.GetBytes("""{"resourceLogs":[]}""")));
         Assert.Equal(HttpStatusCode.OK, metrics.StatusCode);
+        Assert.Equal(
+            "application/x-protobuf",
+            metrics.Content.Headers.ContentType?.ToString());
         Assert.Empty(await metrics.Content.ReadAsByteArrayAsync());
         Assert.Equal(HttpStatusCode.OK, logs.StatusCode);
+        Assert.Equal("application/json", logs.Content.Headers.ContentType?.ToString());
         Assert.Equal("{}", await logs.Content.ReadAsStringAsync());
         Assert.Empty(ingestor.Requests);
     }
