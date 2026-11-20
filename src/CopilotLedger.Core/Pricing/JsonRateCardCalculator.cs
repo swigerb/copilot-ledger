@@ -123,7 +123,7 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
         LocalModelRate? localModel = model is null ? null : _localModels.FirstOrDefault(item => item.Matches(model));
         bool localByKnownModel = string.IsNullOrWhiteSpace(host) && localModel is not null;
         if (IsLoopback(host) ||
-            MatchesHost(host, _localHosts) ||
+            MatchesValue(host, _localHosts) ||
             MatchesValue(span.ProviderName, _localProviders) ||
             localByKnownModel)
         {
@@ -247,15 +247,15 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
     private static JsonRateCardCalculator Create(string baseJson, string? overlayJson, string? overlayName)
     {
         RateCardDocument baseDocument = Deserialize(baseJson, null, isBase: true);
+        ValidateOverlayShape(baseDocument);
         RateCardDocument? overlay = overlayJson is null
             ? null
             : Deserialize(overlayJson, overlayName, isBase: false);
-        RateCardDocument merged = overlay is null
-            ? baseDocument
-            : Merge(baseDocument, overlay);
-
         try
         {
+            RateCardDocument merged = overlay is null
+                ? baseDocument
+                : Merge(baseDocument, overlay);
             return Validate(merged);
         }
         catch (InvalidDataException ex) when (overlayName is not null)
@@ -273,7 +273,13 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
         }
         catch (JsonException ex)
         {
-            throw Invalid(source, ex.Path ?? "$", ex.Message, ex);
+            string path = ex.Path ?? "$";
+            if (path.StartsWith("$.", StringComparison.Ordinal))
+            {
+                path = path[2..];
+            }
+
+            throw Invalid(source, path, ex.Message, ex);
         }
 
         if (document is null)
@@ -309,7 +315,8 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
 
     private static RateCardDocument Merge(RateCardDocument baseDocument, RateCardDocument overlay)
     {
-        string ratesVersion = $"{baseDocument.RatesVersion}+{(string.IsNullOrWhiteSpace(overlay.RatesVersion) ? "user" : overlay.RatesVersion.Trim())}";
+        ValidateOverlayShape(overlay);
+        string ratesVersion = $"{baseDocument.RatesVersion}+{(string.IsNullOrWhiteSpace(overlay.RatesVersion) ? "user" : overlay.RatesVersion)}";
 
         return new RateCardDocument
         {
@@ -373,9 +380,101 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
             ValidateHosts(document.GithubAiCredits.HostSuffixes!, "githubAiCredits.hostSuffixes"),
             ValidateHosts(document.FoundryByok.HostSuffixes!, "foundryByok.hostSuffixes"),
             ValidateNames(document.FoundryByok.ProviderNames!, "foundryByok.providerNames"),
-            ValidateHosts(document.LocalOffload.AdditionalHosts!, "localOffload.additionalHosts"),
+            ValidateNames(document.LocalOffload.AdditionalHosts!, "localOffload.additionalHosts"),
             ValidateNames(document.LocalOffload.ProviderNames!, "localOffload.providerNames"),
             baseline);
+    }
+
+    private static void ValidateOverlayShape(RateCardDocument overlay)
+    {
+        ValidateOptionalStringElements(overlay.GithubAiCredits?.HostSuffixes, "githubAiCredits.hostSuffixes");
+        ValidateOptionalStringElements(overlay.FoundryByok?.HostSuffixes, "foundryByok.hostSuffixes");
+        ValidateOptionalStringElements(overlay.FoundryByok?.ProviderNames, "foundryByok.providerNames");
+        ValidateOptionalStringElements(overlay.LocalOffload?.AdditionalHosts, "localOffload.additionalHosts");
+        ValidateOptionalStringElements(overlay.LocalOffload?.ProviderNames, "localOffload.providerNames");
+
+        ValidateOverlayModels(overlay.GithubAiCredits?.Models, "githubAiCredits.models");
+        ValidateOverlayModels(overlay.FoundryByok?.Models, "foundryByok.models");
+        ValidateOverlayModels(overlay.LocalOffload?.Models, "localOffload.models");
+    }
+
+    private static void ValidateOverlayModels(
+        IReadOnlyList<PricedModelDocument>? models,
+        string path)
+    {
+        if (models is null)
+        {
+            return;
+        }
+
+        HashSet<string> ids = new(StringComparer.Ordinal);
+        for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
+        {
+            string modelPath = $"{path}[{modelIndex}]";
+            PricedModelDocument model = models[modelIndex]
+                ?? throw Invalid(null, modelPath, "must not be null");
+            string? id = NormalizeModel(model!.Id);
+            if (id is not null && !ids.Add(id))
+            {
+                throw Invalid(null, $"{modelPath}.id", $"duplicate model identity: {id}");
+            }
+
+            ValidateOptionalStringElements(model.Aliases, $"{modelPath}.aliases");
+            Require(model.Windows is not null, null, $"{modelPath}.windows", "must not be null");
+            for (int windowIndex = 0; windowIndex < model.Windows!.Count; windowIndex++)
+            {
+                string windowPath = $"{modelPath}.windows[{windowIndex}]";
+                RateWindowDocument window = model.Windows[windowIndex]
+                    ?? throw Invalid(null, windowPath, "must not be null");
+                Require(window!.Tiers is not null, null, $"{windowPath}.tiers", "must not be null");
+                for (int tierIndex = 0; tierIndex < window.Tiers!.Count; tierIndex++)
+                {
+                    Require(
+                        window.Tiers[tierIndex] is not null,
+                        null,
+                        $"{windowPath}.tiers[{tierIndex}]",
+                        "must not be null");
+                }
+            }
+        }
+    }
+
+    private static void ValidateOverlayModels(
+        IReadOnlyList<LocalModelDocument>? models,
+        string path)
+    {
+        if (models is null)
+        {
+            return;
+        }
+
+        HashSet<string> ids = new(StringComparer.Ordinal);
+        for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
+        {
+            LocalModelDocument? model = models[modelIndex];
+            string modelPath = $"{path}[{modelIndex}]";
+            Require(model is not null, null, modelPath, "must not be null");
+            string? id = NormalizeModel(model!.Id);
+            if (id is not null && !ids.Add(id))
+            {
+                throw Invalid(null, $"{modelPath}.id", $"duplicate model identity: {id}");
+            }
+
+            ValidateOptionalStringElements(model.Aliases, $"{modelPath}.aliases");
+        }
+    }
+
+    private static void ValidateOptionalStringElements(IReadOnlyList<string>? values, string path)
+    {
+        if (values is null)
+        {
+            return;
+        }
+
+        for (int index = 0; index < values.Count; index++)
+        {
+            Require(values[index] is not null, null, $"{path}[{index}]", "must not be null");
+        }
     }
 
     private static IReadOnlyList<ModelRateCard> ValidateModels(
@@ -387,17 +486,22 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
         List<ModelRateCard> result = [];
         for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
         {
-            PricedModelDocument model = models[modelIndex];
             string modelPath = $"{path}[{modelIndex}]";
+            PricedModelDocument model = models[modelIndex]
+                ?? throw Invalid(null, modelPath, "must not be null");
             string id = NormalizeModel(model.Id)
                 ?? throw Invalid(null, $"{modelPath}.id", "must not be blank");
             AddIdentity(identities, id, $"{modelPath}.id");
 
             List<string> aliases = [];
-            for (int aliasIndex = 0; aliasIndex < model.Aliases.Count; aliasIndex++)
+            IReadOnlyList<string> modelAliases = model.Aliases
+                ?? throw Invalid(null, $"{modelPath}.aliases", "must not be null");
+            for (int aliasIndex = 0; aliasIndex < modelAliases.Count; aliasIndex++)
             {
                 string aliasPath = $"{modelPath}.aliases[{aliasIndex}]";
-                string alias = NormalizeModel(model.Aliases[aliasIndex])
+                string? rawAlias = modelAliases[aliasIndex];
+                Require(rawAlias is not null, null, aliasPath, "must not be null");
+                string alias = NormalizeModel(rawAlias)
                     ?? throw Invalid(null, aliasPath, "must not be blank");
                 AddIdentity(identities, alias, aliasPath);
                 aliases.Add(alias);
@@ -411,8 +515,9 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
             List<RateWindow> windows = [];
             for (int windowIndex = 0; windowIndex < model.Windows.Count; windowIndex++)
             {
-                RateWindowDocument window = model.Windows[windowIndex];
                 string windowPath = $"{modelPath}.windows[{windowIndex}]";
+                RateWindowDocument window = model.Windows[windowIndex]
+                    ?? throw Invalid(null, windowPath, "must not be null");
                 if (window.EffectiveFrom is not null &&
                     window.EffectiveUntil is not null &&
                     window.EffectiveFrom >= window.EffectiveUntil)
@@ -422,7 +527,8 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
 
                 if (windowIndex > 0)
                 {
-                    RateWindowDocument previous = model.Windows[windowIndex - 1];
+                    RateWindowDocument previous = model.Windows[windowIndex - 1]
+                        ?? throw Invalid(null, $"{modelPath}.windows[{windowIndex - 1}]", "must not be null");
                     if (window.EffectiveFrom is null ||
                         previous.EffectiveUntil is null ||
                         previous.EffectiveUntil > window.EffectiveFrom)
@@ -441,8 +547,9 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
                 long? previousMax = null;
                 for (int tierIndex = 0; tierIndex < window.Tiers.Count; tierIndex++)
                 {
-                    RateTierDocument tier = window.Tiers[tierIndex];
                     string tierPath = $"{windowPath}.tiers[{tierIndex}]";
+                    RateTierDocument tier = window.Tiers[tierIndex]
+                        ?? throw Invalid(null, tierPath, "must not be null");
                     if (string.IsNullOrWhiteSpace(tier.Name))
                     {
                         throw Invalid(null, $"{tierPath}.name", "must not be blank");
@@ -504,17 +611,22 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
         List<LocalModelRate> result = [];
         for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
         {
-            LocalModelDocument model = models[modelIndex];
             string modelPath = $"{path}[{modelIndex}]";
+            LocalModelDocument model = models[modelIndex]
+                ?? throw Invalid(null, modelPath, "must not be null");
             string id = NormalizeModel(model.Id)
                 ?? throw Invalid(null, $"{modelPath}.id", "must not be blank");
             AddIdentity(identities, id, $"{modelPath}.id");
 
             List<string> aliases = [];
-            for (int aliasIndex = 0; aliasIndex < model.Aliases.Count; aliasIndex++)
+            IReadOnlyList<string> modelAliases = model.Aliases
+                ?? throw Invalid(null, $"{modelPath}.aliases", "must not be null");
+            for (int aliasIndex = 0; aliasIndex < modelAliases.Count; aliasIndex++)
             {
                 string aliasPath = $"{modelPath}.aliases[{aliasIndex}]";
-                string alias = NormalizeModel(model.Aliases[aliasIndex])
+                string? rawAlias = modelAliases[aliasIndex];
+                Require(rawAlias is not null, null, aliasPath, "must not be null");
+                string alias = NormalizeModel(rawAlias)
                     ?? throw Invalid(null, aliasPath, "must not be blank");
                 AddIdentity(identities, alias, aliasPath);
                 aliases.Add(alias);
@@ -531,6 +643,7 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
         List<string> result = [];
         for (int index = 0; index < values.Count; index++)
         {
+            Require(values[index] is not null, null, $"{path}[{index}]", "must not be null");
             string value = values[index].Trim().ToLowerInvariant();
             if (string.IsNullOrEmpty(value) ||
                 value.StartsWith('.') ||
@@ -551,6 +664,7 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
         List<string> result = [];
         for (int index = 0; index < values.Count; index++)
         {
+            Require(values[index] is not null, null, $"{path}[{index}]", "must not be null");
             string value = values[index].Trim();
             if (value.Length == 0)
             {

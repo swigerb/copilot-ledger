@@ -64,7 +64,7 @@ public sealed class FileSystemGitContextResolverTests
         using TempDirectory temp = new();
         string repo = CreateDirectory(temp, "repo");
         string git = CreateDirectory(repo, ".git");
-        Write(git, "HEAD", sha.ToUpperInvariant() + "\n");
+        Write(git, "HEAD", sha + "\n");
 
         GitWorkspaceContext? result = Resolve(temp, repo);
         Assert.Null(result!.BranchName);
@@ -92,6 +92,7 @@ public sealed class FileSystemGitContextResolverTests
         using TempDirectory temp = new();
         string main = CreateDirectory(temp, "main");
         string mainGit = CreateDirectory(main, ".git");
+        Write(mainGit, "HEAD", "ref: refs/heads/main\n");
         WriteOriginConfig(mainGit);
         Write(mainGit, "refs/heads/wt-branch", Sha1 + "\n");
         string worktreeGit = CreateDirectory(mainGit, "worktrees", "wt");
@@ -121,18 +122,15 @@ public sealed class FileSystemGitContextResolverTests
         Write(
             git,
             "config",
-            """
-            # comment
-            ; comment
-            [core]
-            repositoryformatversion = 0
-            [remote "upstream"]
-            url = https://github.com/contoso/upstream.git
-            [Remote "origin"]
-            URL = "https://github.com/swigerb/copilot-ledger.git" ; trailing comment
-            fetch = +refs/heads/*:refs/remotes/origin/*
-
-            """);
+            "# comment\n" +
+            "; comment\n" +
+            "[core]\n" +
+            "\trepositoryformatversion = 0\n" +
+            "[remote \"upstream\"]\n" +
+            "\turl = https://github.com/contoso/upstream.git\n" +
+            "[Remote \"origin\"]\n" +
+            "\tURL = \"https://github.com/swigerb/copilot-ledger.git\" ; trailing comment\n" +
+            "\tfetch = +refs/heads/*:refs/remotes/origin/*\n");
 
         GitWorkspaceContext? result = Resolve(temp, repo);
         Assert.Equal(OriginUrl, result!.RemoteOriginUrl);
@@ -150,7 +148,7 @@ public sealed class FileSystemGitContextResolverTests
         Write(
             git,
             "config",
-            "[remote \"origin\"]\nurl = https://user:s3cr3t@github.com/swigerb/copilot-ledger.git\n");
+            "[remote \"origin\"]\n\turl = https://user:s3cr3t@github.com/swigerb/copilot-ledger.git\n");
 
         GitWorkspaceContext? result = Resolve(temp, repo);
         Assert.Equal(OriginUrl, result!.RemoteOriginUrl);
@@ -187,6 +185,49 @@ public sealed class FileSystemGitContextResolverTests
         Assert.Equal(Sha1, result.HeadCommitSha);
         Assert.Null(result.RemoteOriginUrl);
         Assert.Null(result.RepositorySlug);
+    }
+
+    [Fact]
+    public void Resolve_FilesystemRootCeiling_StillFindsRepository()
+    {
+        using TempDirectory temp = new();
+        string repo = CreateDirectory(temp, "repo");
+        string git = CreateDirectory(repo, ".git");
+        Write(git, "HEAD", "ref: refs/heads/main\n");
+        Write(git, "refs/heads/main", Sha1 + "\n");
+        string ceiling = Path.GetPathRoot(temp.Path)!;
+
+        GitWorkspaceContext? result = new FileSystemGitContextResolver(ceiling).Resolve(repo);
+
+        Assert.NotNull(result);
+        Assert.Equal(Path.GetFullPath(repo), Path.GetFullPath(result.RepositoryRoot));
+    }
+
+    [Fact]
+    public void Resolve_EmptyHead_ReturnsContextWithoutBranchOrSha()
+    {
+        using TempDirectory temp = new();
+        string repo = CreateDirectory(temp, "repo");
+        string git = CreateDirectory(repo, ".git");
+        Write(git, "HEAD", string.Empty);
+
+        GitWorkspaceContext? result = Resolve(temp, repo);
+
+        Assert.NotNull(result);
+        Assert.Null(result.BranchName);
+        Assert.Null(result.HeadCommitSha);
+    }
+
+    [Fact]
+    public void Resolve_GitFileWithLeadingSpaceBeforeGitdir_ReturnsNull()
+    {
+        using TempDirectory temp = new();
+        string repo = CreateDirectory(temp, "repo");
+        string target = CreateDirectory(temp, "target");
+        Write(target, "HEAD", "ref: refs/heads/main\n");
+        Write(repo, ".git", " gitdir: " + target + "\n");
+
+        Assert.Null(Resolve(temp, repo));
     }
 
     private static GitWorkspaceContext? Resolve(TempDirectory temp, string workingDirectory) =>

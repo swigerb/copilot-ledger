@@ -57,6 +57,10 @@ public sealed class JsonRateCardCalculatorTests
         Assert.Equal(usdCost, result.UsdCost);
         Assert.Equal(aiCredits, result.AiCredits);
         Assert.Equal(0m, result.EstimatedCloudSavedUsd);
+        if (input == 1 && model == "mai-code-2")
+        {
+            Assert.Equal(0.000000025m, result.Breakdown!.CacheReadUsd);
+        }
     }
 
     [Fact]
@@ -106,12 +110,14 @@ public sealed class JsonRateCardCalculatorTests
                 outputTokens: 2_000));
         Assert.Equal(PricingStatus.Priced, result.Status);
         Assert.Equal("claude-sonnet-5.5", result.ModelId);
+        Assert.Equal(0.04m, result.UsdCost);
 
         result = JsonRateCardCalculator.LoadEmbedded().Calculate(
             TestSpans.Chat(
                 responseModel: "Claude Opus 5.5",
                 inputTokens: 1_000_000,
                 outputTokens: 1_000_000));
+        Assert.Equal(PricingStatus.Priced, result.Status);
         Assert.Equal(24.00m, result.UsdCost);
         Assert.Equal("claude-opus-5.5", result.ModelId);
     }
@@ -122,7 +128,11 @@ public sealed class JsonRateCardCalculatorTests
     public void Calculate_NonInference_IsNotBillable(string operation)
     {
         CreditCalculationResult result = JsonRateCardCalculator.LoadEmbedded().Calculate(
-            TestSpans.Chat(operationName: operation, requestModel: "claude-opus-5.5"));
+            TestSpans.Chat(
+                operationName: operation,
+                requestModel: "claude-opus-5.5",
+                inputTokens: 1_000_000,
+                outputTokens: 1_000_000));
 
         Assert.Equal(BillingChannel.Unpriced, result.Channel);
         Assert.Equal(PricingStatus.NotBillableOperation, result.Status);
@@ -143,6 +153,7 @@ public sealed class JsonRateCardCalculatorTests
                 cacheReadInputTokens: cacheRead,
                 cacheWriteInputTokens: cacheWrite));
 
+        Assert.Equal(BillingChannel.Unpriced, result.Channel);
         Assert.Equal(PricingStatus.InvalidUsage, result.Status);
         Assert.Equal(0, result.UncachedInputTokens);
         AssertUnpricedAmounts(result);
@@ -175,6 +186,7 @@ public sealed class JsonRateCardCalculatorTests
                 inputTokens: 10_000,
                 outputTokens: 2_000));
 
+        Assert.Equal(BillingChannel.GitHubAiCredits, result.Channel);
         Assert.Equal(PricingStatus.Priced, result.Status);
         Assert.Equal(0.04m, result.UsdCost);
     }
@@ -186,7 +198,11 @@ public sealed class JsonRateCardCalculatorTests
     public void Calculate_UnrecognizedHosts_AreNotPriced(string host)
     {
         CreditCalculationResult result = JsonRateCardCalculator.LoadEmbedded().Calculate(
-            TestSpans.Chat(serverAddress: host, requestModel: "claude-sonnet-5.5"));
+            TestSpans.Chat(
+                serverAddress: host,
+                requestModel: "claude-sonnet-5.5",
+                inputTokens: 10_000,
+                outputTokens: 2_000));
 
         Assert.Equal(BillingChannel.Unpriced, result.Channel);
         Assert.Equal(PricingStatus.UnrecognizedEndpoint, result.Status);

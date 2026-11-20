@@ -72,6 +72,7 @@ public sealed class RateOverlayTests
                 requestModel: "claude-sonnet-5.5",
                 inputTokens: 10_000,
                 outputTokens: 2_000));
+        Assert.Equal(BillingChannel.GitHubAiCredits, result.Channel);
         Assert.Equal(PricingStatus.Priced, result.Status);
         Assert.Equal(0.04m, result.UsdCost);
     }
@@ -111,6 +112,32 @@ public sealed class RateOverlayTests
         Assert.Equal(0.23m, result.EstimatedCloudSavedUsd);
     }
 
+    [Fact]
+    public void Overlay_LocalHostsAreExactAndMayContainColons()
+    {
+        using TempDirectory temp = new();
+        JsonRateCardCalculator calculator = JsonRateCardCalculator.LoadEmbeddedWithOverlay(
+            WriteOverlay(temp, """{ "schemaVersion": 1, "localOffload": { "additionalHosts": ["lan", "fd00::5"] } }"""));
+
+        CreditCalculationResult subdomain = calculator.Calculate(
+            TestSpans.Chat(
+                serverAddress: "foo.lan",
+                requestModel: "phi-local-test",
+                inputTokens: 400_000,
+                outputTokens: 12_000));
+        CreditCalculationResult ipv6 = calculator.Calculate(
+            TestSpans.Chat(
+                serverAddress: "fd00::5",
+                requestModel: "phi-local-test",
+                inputTokens: 400_000,
+                outputTokens: 12_000));
+
+        Assert.Equal(BillingChannel.Unpriced, subdomain.Channel);
+        Assert.Equal(PricingStatus.UnrecognizedEndpoint, subdomain.Status);
+        Assert.Equal(BillingChannel.Local, ipv6.Channel);
+        Assert.Equal(PricingStatus.LocalOffload, ipv6.Status);
+    }
+
     [Theory]
     [MemberData(nameof(GitHubModelOverlays))]
     public void Overlay_CanAddOrReplaceGitHubModel(string model, decimal usd, decimal credits)
@@ -125,6 +152,8 @@ public sealed class RateOverlayTests
                 inputTokens: 1_000_000,
                 outputTokens: 1_000_000));
 
+        Assert.Equal(BillingChannel.GitHubAiCredits, result.Channel);
+        Assert.Equal(PricingStatus.Priced, result.Status);
         Assert.Equal(usd, result.UsdCost);
         Assert.Equal(credits, result.AiCredits);
     }
@@ -163,6 +192,30 @@ public sealed class RateOverlayTests
         using TempDirectory temp = new();
         string path = System.IO.Path.Combine(temp.Path, "missing.json");
         Assert.Throws<FileNotFoundException>(() => JsonRateCardCalculator.LoadEmbeddedWithOverlay(path));
+    }
+
+    [Fact]
+    public void Overlay_DuplicateNormalizedIdsThrow()
+    {
+        using TempDirectory temp = new();
+        string path = WriteOverlay(
+            temp,
+            """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "duplicate", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1 } ] } ] }, { "id": "Duplicate", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] } }""");
+
+        InvalidDataException exception = Assert.Throws<InvalidDataException>(
+            () => JsonRateCardCalculator.LoadEmbeddedWithOverlay(path));
+        Assert.Contains(path, exception.Message);
+        Assert.Contains("githubAiCredits.models[1].id", exception.Message);
+    }
+
+    [Fact]
+    public void Overlay_RatesVersionIsNotTrimmed()
+    {
+        using TempDirectory temp = new();
+        JsonRateCardCalculator calculator = JsonRateCardCalculator.LoadEmbeddedWithOverlay(
+            WriteOverlay(temp, """{ "schemaVersion": 1, "ratesVersion": " custom " }"""));
+
+        Assert.Equal("2026-11-20+ custom ", calculator.RatesVersion);
     }
 
     private static string WriteOverlay(TempDirectory temp, string overlay)

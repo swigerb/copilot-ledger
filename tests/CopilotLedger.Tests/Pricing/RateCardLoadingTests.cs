@@ -41,4 +41,19 @@ public sealed class RateCardLoadingTests
         string json = RateFixtures.ByokTestRatesJson[..^1];
         Assert.Throws<InvalidDataException>(() => JsonRateCardCalculator.Parse(json));
     }
+
+    [Fact]
+    public void Parse_NullCollectionElement_ThrowsWithExactPath()
+    {
+        string json = RateFixtures.ByokTestRatesJson.Replace(
+            "\"hostSuffixes\": [\"githubcopilot.com\"]",
+            "\"hostSuffixes\": [\"githubcopilot.com\", null]",
+            StringComparison.Ordinal);
+
+        InvalidDataException exception = Assert.Throws<InvalidDataException>(
+            () => JsonRateCardCalculator.Parse(json));
+
+        Assert.Contains("githubAiCredits.hostSuffixes[1]", exception.Message);
+        Assert.DoesNotContain("$.githubAiCredits", exception.Message);
+    }
 }

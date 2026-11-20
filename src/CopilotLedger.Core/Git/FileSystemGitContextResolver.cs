@@ -22,17 +22,7 @@ public sealed class FileSystemGitContextResolver : IGitContextResolver
             return null;
         }
 
-        string workingPath = TrimSeparators(Path.GetFullPath(workingDirectory));
-        if (_ceilingDirectory is not null &&
-            !workingPath.Equals(_ceilingDirectory, _pathComparison) &&
-            !workingPath.StartsWith(
-                _ceilingDirectory + Path.DirectorySeparatorChar,
-                _pathComparison))
-        {
-            return null;
-        }
-
-        DirectoryInfo? directory = new(workingPath);
+        DirectoryInfo? directory = new(TrimSeparators(Path.GetFullPath(workingDirectory)));
         while (directory is not null)
         {
             string repoRoot = TrimSeparators(directory.FullName);
@@ -116,8 +106,12 @@ public sealed class FileSystemGitContextResolver : IGitContextResolver
             return null;
         }
 
-        string? line = ReadFirstLine(gitEntry);
-        if (line is null || !line.StartsWith("gitdir:", StringComparison.Ordinal))
+        if (!TryReadFirstLine(gitEntry, trim: false, out string line))
+        {
+            return null;
+        }
+
+        if (!line.StartsWith("gitdir:", StringComparison.Ordinal))
         {
             return string.Empty;
         }
@@ -166,15 +160,19 @@ public sealed class FileSystemGitContextResolver : IGitContextResolver
         }
 
         string relativePath = reference.Replace('/', Path.DirectorySeparatorChar);
-        string? looseReference = FirstExisting(
+        string[] looseReferences =
+        [
             Path.Combine(gitDirectory, relativePath),
-            Path.Combine(commonDirectory, relativePath));
-        if (looseReference is not null)
+            Path.Combine(commonDirectory, relativePath),
+        ];
+        foreach (string looseReference in looseReferences.Distinct(OperatingSystem.IsWindows()
+                     ? StringComparer.OrdinalIgnoreCase
+                     : StringComparer.Ordinal))
         {
-            string? value = ReadFirstLine(looseReference);
-            if (value is null)
+            if (!File.Exists(looseReference) ||
+                !TryReadFirstLine(looseReference, trim: true, out string value))
             {
-                return null;
+                continue;
             }
 
             if (value.StartsWith("ref: ", StringComparison.Ordinal))
@@ -335,26 +333,28 @@ public sealed class FileSystemGitContextResolver : IGitContextResolver
             Math.Min(firstIndex, secondIndex);
     }
 
-    private static string? FirstExisting(string first, string second)
+    private static string? ReadFirstLine(string path)
     {
-        if (File.Exists(first))
-        {
-            return first;
-        }
-
-        return File.Exists(second) ? second : null;
+        return TryReadFirstLine(path, trim: true, out string line) ? line : null;
     }
 
-    private static string? ReadFirstLine(string path)
+    private static bool TryReadFirstLine(string path, bool trim, out string line)
     {
         try
         {
             using StreamReader reader = File.OpenText(path);
-            return reader.ReadLine()?.Trim();
+            string? firstLine = reader.ReadLine();
+            line = firstLine is null
+                ? string.Empty
+                : trim
+                    ? firstLine.Trim()
+                    : firstLine;
+            return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return null;
+            line = string.Empty;
+            return false;
         }
     }
 
