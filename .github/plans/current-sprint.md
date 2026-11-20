@@ -18,8 +18,9 @@ Every task ships with its tests, listed under "Test specifications". A task is d
 
 - [ ] Task 1: OTLP Trace Decoding & gen_ai Span Normalization (CopilotLedger.Otlp). Create `src/CopilotLedger.Otlp`. Add `GenAiSpanLink` to Core, a dependency-free protobuf reader and a System.Text.Json reader for OTLP `ExportTraceServiceRequest`, and `GenAiSpanNormalizer`, which applies the gen_ai.* extraction rules to turn OTLP spans into `NormalizedGenAiSpan`s (inference spans only) and `GenAiSpanLink`s (trace structure). Tests use golden protobuf bytes, Copilot-shaped JSON, and malformed payloads.
 - [ ] Task 2: Ledger Ingestion, Session Attribution & Rates Refresh (CopilotLedger.Otlp, Storage & Core). Add Migration 2 (`span_links`) and store methods for span links, agent back-fill, pruning, and prompt chains; `CachingGitContextResolver`; `CopilotSessionWorkspaceLocator`, which finds a Copilot session's working directory; and `LedgerIngestor`. Add the default models of Copilot's built-in subagents and the local provider names to `rates.json`. Tests replay real Copilot trace shapes and reconcile with GitHub's own nano-AIU figures.
-- [ ] Task 3: Kestrel OTLP Receiver & gh-ledger Daemon (CopilotLedger.Otlp & CopilotLedger.Cli). Add the loopback OTLP/HTTP receiver: `POST /v1/traces` as protobuf and JSON, with gzip, size limits, and spec status codes; `/v1/metrics` and `/v1/logs` are accepted and discarded. Create `src/CopilotLedger.Cli` (`gh-ledger`) on System.CommandLine with `daemon run|start|stop` and `rates init|validate`. Tests use `Microsoft.AspNetCore.TestHost`.
-- [ ] Task 4: Reporting Commands, One-Command Install & Single-Binary Packaging (CopilotLedger.Cli). Add `status`, `branch`, `agents`, and `top-prompts` (tables and `--json`); `install` and `uninstall` (`COPILOT_OTEL_ENABLED`, the `gh ledger` alias, and the daemon); single-file self-contained publish settings; a CI publish smoke test; and `docs/cli.md`.
+- [ ] Task 3: Rates Overlay Error Reporting (CopilotLedger.Core). Replace the rates loader's reflection-based deserialization with `RateCardReader`, a `JsonDocument` reader that owns every message. Validate the overlay by itself, so every error path points into the user's file, and label the two checks that need the built-in rates. A missing property gets its own path, and invalid JSON gets a line and column. Tests assert exact messages, and a test keeps the examples in `docs/configuration.md` identical to real output.
+- [ ] Task 4: Kestrel OTLP Receiver & gh-ledger Daemon (CopilotLedger.Otlp & CopilotLedger.Cli). Add the loopback OTLP/HTTP receiver: `POST /v1/traces` as protobuf and JSON, with gzip, size limits, and spec status codes; `/v1/metrics` and `/v1/logs` are accepted and discarded. Create `src/CopilotLedger.Cli` (`gh-ledger`) on System.CommandLine with `daemon run|start|stop` and `rates init|validate`. Tests use `Microsoft.AspNetCore.TestHost`.
+- [ ] Task 5: Reporting Commands, One-Command Install & Single-Binary Packaging (CopilotLedger.Cli). Add `status`, `branch`, `agents`, and `top-prompts` (tables and `--json`); `install` and `uninstall` (`COPILOT_OTEL_ENABLED`, the `gh ledger` alias, and the daemon); single-file self-contained publish settings; a CI publish smoke test; and `docs/cli.md`.
 
 ## Starting point
 
@@ -30,14 +31,15 @@ Every task ships with its tests, listed under "Test specifications". A task is d
   - `JsonRateCardCalculator.Calculate` can throw `OverflowException` when an overlay rate is extreme. That contradicts the archived Sprint 1 plan's "`Calculate` never throws" (Task 2 specification, `JsonRateCardCalculator`, step 1). `ValidateRate` bounds a rate's size only by requiring `rate × 1,000,000` to fit in a `decimal`, so a rate such as 10^22 per 1M tokens loads, and pricing 10,000,000 tokens with it overflows. Sprint 2 guards against it in the ingestor and leaves Sprint 1's code alone; see "Deferred".
   - Inserts end with `ON CONFLICT (trace_id, span_id) DO NOTHING`, so re-sending a span never duplicates it.
   - Task 2's "Filtering and per-span errors" keeps every one of these failures away from `RecordAsync`.
-  - Rates errors are `InvalidDataException`s whose message is `<file>: <JSON path>: <problem>`. For many System.Text.Json errors, such as a syntax error or a value that can't be converted, the message also ends with `Path: $.… | LineNumber: … | BytePositionInLine: ….` Task 3's `RatesErrorFormatter` handles that suffix.
+  - Rates errors are `InvalidDataException`s whose message is `<file>: <JSON path>: <problem>`. The loader validates the *merged* document, so a path into the user's overlay uses merged indices: the overlay's `localOffload.models[0]` is reported as `localOffload.models[1]`, behind the built-in model. Errors that System.Text.Json finds pass its text through, with .NET type names and a ` Path: $.… | LineNumber: … | BytePositionInLine: ….` suffix, and a missing required property is reported at its object's path. Task 3 replaces all of this.
   - `TempDirectory.Dispose()` calls `SqliteConnection.ClearAllPools()` before deleting its folder. On Windows a pooled connection keeps the SQLite file open, so the folder can't be deleted otherwise. `Dispose` ignores delete failures, so the symptom would be leftover temp folders, not failing tests. The shared test rules extend this pattern to every new test.
-- `.github/workflows/ci.yml` was added in Sprint 1 Task 1 as an architect amendment. It runs `dotnet build CopilotLedger.slnx` and `dotnet test CopilotLedger.slnx` on `ubuntu-latest` and `windows-latest` for pushes to `main`, pull requests, and manual runs. Task 4 extends it.
+- `.github/workflows/ci.yml` was added in Sprint 1 Task 1 as an architect amendment. It runs `dotnet build CopilotLedger.slnx` and `dotnet test CopilotLedger.slnx` on `ubuntu-latest` and `windows-latest` for pushes to `main`, pull requests, and manual runs. Task 5 extends it.
 - Sprint 1's public contracts are fixed. Sprint 2 adds types and members. It changes only these Sprint 1 artifacts, each called out in its task:
   - Task 2: `src/CopilotLedger.Core/Pricing/rates.json` and `docs/configuration.md` (three models and four local provider names);
   - Task 2: `LedgerMigrations` (Migration 2), and test S1's expected `PRAGMA user_version`, which changes from 1 to 2;
   - Task 2: `SqliteLedgerStore` (four new public methods; existing members unchanged);
-  - Tasks 3 and 4: `docs/configuration.md` (the data-file table, the rates commands, and one sentence in the invalid-file paragraph).
+  - Task 3: the rates loader's internals in `JsonRateCardCalculator` and `RateCardDocument` (its public API is unchanged), `docs/configuration.md` (the invalid-file paragraph), the Sprint 1 rates tests in `RateOverlayTests` and `RateCardLoadingTests` (they now assert exact messages), and the test project file (it copies the docs into the test output);
+  - Tasks 4 and 5: `docs/configuration.md` (the data-file table and the rates commands).
 - The test project uses xUnit v2 (`xunit` 2.9.3).
 - When an acceptance criterion says `src/` contains no `double` or `float`, it means the C# keywords and the `GetDouble` and `TryGetDouble` calls. The enum member `OtlpValueKind.Double` names a protobuf wire type and is allowed.
 
@@ -173,6 +175,15 @@ The architect verified these with scratch builds in the session folder, outside 
   Parse and validation errors write the error and help to `Error` and return 1.
 - A single-file, self-contained, compressed `win-arm64` publish of Kestrel, System.CommandLine, and Microsoft.Data.Sqlite produced one 48.2 MB `gh-ledger.exe`. It served requests and opened SQLite in WAL mode; the native `e_sqlite3` library is extracted at run time.
 - SQLite 3.53.3 (Microsoft.Data.Sqlite 10.0.15) accepts `STRICT, WITHOUT ROWID` and `WITH RECURSIVE ... UPDATE`. The Task 2 back-fill and prompt-chain SQL in this plan was run against the plan's seeds and produced the expected rows.
+- System.Text.Json on .NET 10, for Task 3:
+  - `JsonElement.TryGetDecimal`, `TryGetInt32`, `TryGetInt64`, and `TryGetDateTimeOffset` accept and reject exactly what Sprint 1's serializer accepted and rejected with `JsonNumberHandling.Strict`, with equal values:
+    - `1e2` reads as the decimal 100, `1e-30` reads as 0, and `79228162514264337593543950336` and `1e30` fail;
+    - `1.0`, `1e0`, and `2e5` fail as integers;
+    - `2027-05-17` and `2027-05-17T00:00:00` read as local time, as before, and `2027-05-17 00:00:00Z` fails.
+  - `JsonDocument.Parse` reports a syntax error with 0-based `LineNumber` and `BytePositionInLine`; `\r\n` counts as one line break. An empty input is line 0, byte 0. A trailing comma is reported at the closing `}` or `]`.
+  - `JsonElement.TryGetProperty` returns the last of repeated property names, and `EnumerateObject` returns all of them in document order.
+  - For an escaped lone surrogate such as `"\ud800"`, `JsonDocument.Parse` succeeds, but `GetString()` and `JsonProperty.Name` throw `InvalidOperationException` and `TryGetDateTimeOffset` returns false.
+- A reference implementation of Task 3 was built against `1809dc8` with Task 2's `rates.json`. It passes all 143 Sprint 1 tests and every Task 3 test. Run against the merged loader, 52 of the Task 3 test cases fail.
 
 ### Assumptions (not verified)
 
@@ -190,7 +201,7 @@ The architect verified these with scratch builds in the session folder, outside 
 2. **Copilot integration: one variable, `COPILOT_OTEL_ENABLED=true`.**
    - `install` sets only this variable. The Copilot runtime and VS Code's Local harness both then export to their default endpoint, `http://localhost:4318`.
    - It doesn't set `OTEL_EXPORTER_OTLP_ENDPOINT`. That variable is read by every OpenTelemetry SDK, so setting it for the whole user account would redirect unrelated applications.
-   - Conflicting settings produce warnings, not changes (Task 4).
+   - Conflicting settings produce warnings, not changes (Task 5).
 3. **Protobuf decoding: a hand-written reader, with no package.**
    - `OtlpTraceDecoder` reads only the seven request messages in the schema table above, about 150 lines over `ReadOnlySpan<byte>`. The three response messages are only written. Unknown fields are skipped, which the protobuf format guarantees is safe.
    - These options were rejected:
@@ -252,7 +263,7 @@ The architect verified these with scratch builds in the session folder, outside 
     - On Windows without Git for Windows, gh can't run shell aliases, so `install` sets the alias anyway and warns. `gh-ledger` itself always works.
 13. **Single binary: single-file, self-contained, and compressed, one per runtime identifier.**
     - Native AOT is rejected for three reasons:
-      - Sprint 1's rates loader uses reflection-based System.Text.Json, which fails AOT and trimming analysis under `TreatWarningsAsErrors`.
+      - The CLI reads and writes `daemon.json` and `install.json` with reflection-based System.Text.Json, which fails AOT and trimming analysis under `TreatWarningsAsErrors`. Task 3 removes reflection from the rates loader, so these two files are what's left.
       - Microsoft.Data.Sqlite's native library still ships as a separate file under AOT.
       - AOT needs a platform C toolchain on every build machine.
     - Trimming is off for the same reflection reason.
@@ -274,11 +285,13 @@ The architect verified these with scratch builds in the session folder, outside 
     - Dropped spans are reported as an OTLP partial success (200), which clients must not retry because the result would be the same.
     - 503 is kept for store failures such as a locked or full database. Those are transient, and a retry is safe because inserts ignore duplicates.
     - Task 2's "Filtering and per-span errors" has the full table.
-17. **Rates errors are reformatted for people, in the CLI only.**
-    - Sprint 1's loader passes System.Text.Json's message through, including its suffix ` Path: $.… | LineNumber: N | BytePositionInLine: M.` That suffix repeats the JSON path that the message already starts with, and counts lines and bytes from 0.
-    - The CLI strips exactly that suffix and appends a 1-based ` (line N, column M)` taken from the `JsonException`. Other messages pass through unchanged.
-    - Core isn't changed: its messages are merged Sprint 1 behavior, and they stay complete for diagnostics.
-    - The same formatter serves `rates validate`, the daemon's startup error, and `status` (Task 3's "Rates error messages").
+17. **Rates overlay errors point into the user's file, and Core owns every message (Task 3).**
+    - A review of Sprint 1 Task 2 (#5) found that overlay errors use merged-document indices. Verified on `1809dc8` with Task 2's rates: an overlay's `localOffload.models[0]` is reported as `localOffload.models[1]`, a new GitHub model as `githubAiCredits.models[8]`, and the first Foundry host suffix as `foundryByok.hostSuffixes[3]`. One alias collision was reported at the *built-in* model's path, which isn't in the user's file at all.
+    - Decision: every path points into the file that contains the problem, using its own indexes. The overlay is validated by itself before merging. Only two checks need the built-in rates: a model identity that a remaining built-in model already uses, and `localOffload.baselineModel`. Their messages contain `in the merged rates`, which `docs/configuration.md` defines, and a collision names the built-in model.
+    - Core owns every message. System.Text.Json's messages contain .NET type names such as ``System.Nullable`1[System.Int32]`` and the `$.` path suffix, and they report a missing required property at its object's path. A small `JsonDocument` reader (`RateCardReader`) replaces reflection-based deserialization. It reads the same values: `TryGetDecimal`, `TryGetInt32`, `TryGetInt64`, and `TryGetDateTimeOffset` gave the same results as the Sprint 1 serializer on every probe (verified on .NET 10). The reader also rejects repeated property names, which the serializer silently resolved by keeping the last one.
+    - Invalid JSON is reported by line and column, counting from 1, with no System.Text.Json text, which is developer-facing ("Change the reader options", "isFinalBlock").
+    - The loader reports the first problem it finds, in an order Task 3 specifies. The tests assert every message exactly, and a test checks that the examples in `docs/configuration.md` match real output.
+    - The CLI prints Core's message unchanged after its own prefix. This replaces the CLI-side formatter in the first version of this plan.
 
 ## Task 1 specification: OTLP Trace Decoding & gen_ai Span Normalization
 
@@ -1022,7 +1035,7 @@ Its batch checks therefore never throw for ingested data. If `RecordAsync` throw
 
 - A cost-rejected span keeps its link because it's structurally valid. A descendant may need that link to reach its `invoke_agent` ancestor during back-fill.
 - Around pricing, only `OverflowException` and `ArgumentOutOfRangeException` are caught, and around Git resolution only the three types above. Any other exception is a bug, and it fails the request with 503.
-- The receiver reports `RejectedSpans` as an OTLP partial success (Task 3, receiver step 9). Clients must not retry a partial success, which is right here: the same spans would be rejected again.
+- The receiver reports `RejectedSpans` as an OTLP partial success (Task 4, receiver step 9). Clients must not retry a partial success, which is right here: the same spans would be rejected again.
 
 ### Acceptance criteria
 
@@ -1042,7 +1055,318 @@ dotnet test CopilotLedger.slnx
 
 Report the passed, failed, and skipped counts.
 
-## Task 3 specification: Kestrel OTLP Receiver & gh-ledger Daemon
+## Task 3 specification: Rates Overlay Error Reporting
+
+### Files
+
+Create:
+
+```text
+src/CopilotLedger.Core/Pricing/RateCardReader.cs               (internal)
+```
+
+Modify:
+
+```text
+src/CopilotLedger.Core/Pricing/JsonRateCardCalculator.cs
+src/CopilotLedger.Core/Pricing/RateCardDocument.cs
+tests/CopilotLedger.Tests/CopilotLedger.Tests.csproj
+tests/CopilotLedger.Tests/Pricing/RateOverlayTests.cs
+tests/CopilotLedger.Tests/Pricing/RateCardLoadingTests.cs
+docs/configuration.md
+```
+
+No package is added. The public API of `JsonRateCardCalculator` doesn't change: `EmbeddedResourceName`, `RatesVersion`, `LoadEmbedded()`, `LoadEmbeddedWithOverlay(string)`, `LoadDefault()`, `Parse(string, string?)`, and `Calculate`. Its exceptions don't change either:
+
+- `FileNotFoundException` for a missing overlay file;
+- `InvalidDataException("<file>: could not read rates overlay.")` when reading the file throws `IOException` or `UnauthorizedAccessException`;
+- `InvalidDataException` for every invalid document, with the messages below.
+
+Valid documents load exactly as before, with the same values.
+
+Implement `RateCardReader` and the validation changes below, update `docs/configuration.md` and the test project file, and then change the tests as "Task 3 tests" under "Test specifications" describes.
+
+### Message format
+
+| Form | Used for |
+|---|---|
+| `<source>: <location>: <problem>` | An overlay |
+| `<source>: <problem>` | An overlay whose root isn't an object, or has an unreadable property name |
+| `<location>: <problem>` | The built-in rates: the embedded file, or the `json` argument of `Parse` |
+| `<problem>` | The built-in rates, in the same two cases |
+
+- `<source>` is the path passed to `LoadEmbeddedWithOverlay`, exactly as given, or `overlay` for `Parse(json, overlayJson)`.
+- `<location>` is a path into the document that contains the problem. Property names are joined with `.`, and array indexes are in brackets, counting from 0, as in `foundryByok.models[0].windows[0].tiers[0].outputPer1M`. There's no `$` and no quoting; names appear exactly as they are in the file. For invalid JSON, `<location>` is `line L, column C`.
+- `<problem>` is exactly one of the texts in "Message catalog".
+
+### RateCardReader
+
+```csharp
+// ---- src/CopilotLedger.Core/Pricing/RateCardReader.cs
+namespace CopilotLedger.Core.Pricing;
+
+internal static class RateCardReader
+{
+    // Reads a rates document into the RateCardDocument classes. isBase selects which properties are required.
+    // Throws InvalidDataException with a "<location>: <problem>" or "<problem>" message; the caller adds "<source>: ".
+    public static RateCardDocument Read(string json, bool isBase);
+}
+```
+
+`Read`:
+
+1. Parse with `JsonDocument.Parse(json, new JsonDocumentOptions { AllowTrailingCommas = false, CommentHandling = JsonCommentHandling.Disallow, MaxDepth = 64 })`. On `JsonException`, throw `line {LineNumber + 1}, column {BytePositionInLine + 1}: invalid JSON`, with `CultureInfo.InvariantCulture` and 0 for a null value. Dispose the document when reading ends.
+2. If the root isn't an object, throw `must contain a JSON object`.
+3. Check `schemaVersion` before anything else, with `root.TryGetProperty("schemaVersion", out value)`, which returns the last one if the name repeats:
+   - missing or `null`: `schemaVersion: is required`;
+   - not a number that `TryGetInt32` accepts: `schemaVersion: must be an integer`;
+   - not 1: `schemaVersion: must be 1`.
+4. Read the root object as "Reading an object" describes, and return the classes from `RateCardDocument.cs`. An absent optional property stays null, except `aliases`, which defaults to `[]` as in Sprint 1.
+
+### Schema
+
+The **Null** column says what JSON `null` means for that property. **Absent** means it's treated as if the property weren't there. **Error** means it's a value of the wrong kind. This matches Sprint 1: null is absent exactly where the C# property type in `RateCardDocument.cs` is nullable.
+
+| Object | Property | Kind | Null | Required in the built-in rates | Required in an overlay |
+|---|---|---|---|---|---|
+| root | `schemaVersion` | integer (`int`) | absent | yes | yes |
+| root | `ratesVersion` | string | absent | yes | no |
+| root | `source` | source object | absent | yes | no |
+| root | `notes` | array of strings | absent | no | no |
+| root | `githubAiCredits` | GitHub section | absent | yes | no |
+| root | `foundryByok` | Foundry section | absent | yes | no |
+| root | `localOffload` | local section | absent | yes | no |
+| source object | `url` | string | absent | yes | no |
+| source object | `retrievedOn` | string | absent | yes | no |
+| GitHub section | `hostSuffixes` | array of strings | absent | yes | no |
+| GitHub section | `models` | array of priced models | absent | yes | no |
+| Foundry section | `hostSuffixes` | array of strings | absent | yes | no |
+| Foundry section | `providerNames` | array of strings | absent | yes | no |
+| Foundry section | `models` | array of priced models | absent | yes | no |
+| local section | `baselineModel` | string | absent | yes | no |
+| local section | `models` | array of local models | absent | yes | no |
+| local section | `additionalHosts` | array of strings | absent | yes | no |
+| local section | `providerNames` | array of strings | absent | yes | no |
+| priced model | `id` | string | error | yes | yes |
+| priced model | `aliases` | array of strings | error | no | no |
+| priced model | `windows` | array of windows | error | yes | yes |
+| window | `effectiveFrom` | date and time | absent | no | no |
+| window | `effectiveUntil` | date and time | absent | no | no |
+| window | `tiers` | array of tiers | error | yes | yes |
+| tier | `name` | string | error | yes | yes |
+| tier | `maxInputTokens` | integer (`long`) | absent | no | no |
+| tier | `inputPer1M` | number | error | yes | yes |
+| tier | `cachedInputPer1M` | number | absent | no | no |
+| tier | `cacheWritePer1M` | number | absent | no | no |
+| tier | `outputPer1M` | number | error | yes | yes |
+| local model | `id` | string | error | yes | yes |
+| local model | `aliases` | array of strings | error | no | no |
+
+Every element of an array of strings must be a string, and every element of an array of objects must be an object. A `null` element is a value of the wrong kind.
+
+### Reading values
+
+| Kind | Accepted | Otherwise |
+|---|---|---|
+| object | `JsonValueKind.Object` | `must be an object` |
+| array | `JsonValueKind.Array` | `must be an array` |
+| string | `JsonValueKind.String`, read with `GetString()` | `must be a string`. If `GetString()` throws `InvalidOperationException`: `is not valid text`. |
+| integer | `JsonValueKind.Number` that `TryGetInt32` (for `schemaVersion`) or `TryGetInt64` (for `maxInputTokens`) accepts | `must be an integer` |
+| number | `JsonValueKind.Number` that `TryGetDecimal` accepts | `is too large` for a number that `TryGetDecimal` rejects; `must be a number` for any other kind |
+| date and time | `JsonValueKind.String` that `TryGetDateTimeOffset` accepts | `must be a date and time, such as 2027-05-17T00:00:00Z` |
+
+These are the conversions Sprint 1's serializer made with `JsonNumberHandling.Strict` (see "Verified facts").
+
+### Reading an object
+
+An object at path `P` (empty for the root) is read in one pass:
+
+1. Go through its properties in document order with `EnumerateObject()`. For each property:
+   1. Read its name. If `JsonProperty.Name` throws `InvalidOperationException`, throw `P: contains a property name that is not valid text`, or just `contains a property name that is not valid text` at the root.
+   2. The property's path is `P.name`, or `name` at the root.
+   3. If the object has no property with exactly that name (ordinal), throw `<path>: is not a known property`. If one of its properties matches ignoring case (`StringComparison.OrdinalIgnoreCase`), append `; did you mean <property>?` with the first such property in schema order.
+   4. If the name appeared earlier in this object, throw `<path>: is defined more than once`.
+   5. Read the value by the property's kind and Null rule. Read objects and arrays recursively; array elements have the path `<path>[i]`.
+2. Then go through the object's required properties in schema order. For the first one that's absent, throw `P.name: is required` (`name: is required` at the root). A property whose Null rule is absent and whose value is `null` counts as absent.
+
+So the reported problem is the first one found in document order, except that `schemaVersion` is checked first, and a missing property is found when its object ends.
+
+### Validation order
+
+`JsonRateCardCalculator.Create(baseJson, overlayJson, overlayName)` becomes:
+
+```text
+1. baseDocument = RateCardReader.Read(baseJson, isBase: true)
+2. builtIn = Validate(baseDocument)                     // Sprint 1's checks, unchanged
+3. if overlayJson is null, return builtIn
+4. try
+     a. overlay = RateCardReader.Read(overlayJson, isBase: false)
+     b. ValidateOverlay(overlay)
+     c. merged = Merge(baseDocument, overlay)
+     d. ValidateMergedRates(baseDocument, overlay, merged)
+   catch (InvalidDataException ex)
+     throw new InvalidDataException($"{overlayName}: {ex.Message}", ex)
+5. return Validate(merged)                              // can't fail after steps 2 and 4
+```
+
+`ValidateOverlay` runs Sprint 1's existing validators on the overlay's own lists, with paths into the overlay. It goes in this order, skipping any property the overlay doesn't have:
+
+1. `githubAiCredits.models`: `ValidateModels(models, BillingChannel.GitHubAiCredits, "githubAiCredits.models")`. That covers every per-model rule, and duplicate identities within the list.
+2. `foundryByok.models`: `ValidateModels(models, BillingChannel.FoundryByok, "foundryByok.models")`.
+3. `localOffload.models`: `ValidateLocalModels(models, "localOffload.models")`.
+4. `localOffload.baselineModel`: `localOffload.baselineModel: must not be blank` when `NormalizeModel` returns null.
+5. `githubAiCredits.hostSuffixes`, then `foundryByok.hostSuffixes`: `ValidateHosts`.
+6. `foundryByok.providerNames`, then `localOffload.additionalHosts`, then `localOffload.providerNames`: `ValidateNames`.
+
+`ValidateMergedRates` runs the only two checks that need the built-in rates:
+
+1. **Identity collisions,** for `githubAiCredits.models`, `foundryByok.models`, and then `localOffload.models`, when the overlay has that list:
+   1. The built-in models that *remain* are those whose `NormalizeModel(id)` isn't the normalized id of any overlay model in the list. This is Sprint 1's replace rule, so a replaced built-in model frees its aliases.
+   2. Map the normalized id and each normalized alias of every remaining built-in model to that model's normalized id.
+   3. Go through the overlay's models in order. For each, check its normalized id, then its normalized aliases in order. At the first one in the map, throw `<list>[i].id` or `<list>[i].aliases[j]`, followed by `: duplicate model identity in the merged rates: <identity> (built-in model <owner>)`.
+2. **Baseline.** Let `b = NormalizeModel(merged.LocalOffload.BaselineModel)`. If no model in the merged `githubAiCredits.models` has a normalized id or normalized alias equal to `b`, throw `localOffload.baselineModel: does not resolve to a githubAiCredits model in the merged rates: <b>`. An overlay can't remove a built-in model, so this check fails only when the overlay sets `baselineModel`.
+
+Delete `SerializerOptions`, `Deserialize`, `ValidateOverlayShape` (and its call in `Merge`), both `ValidateOverlayModels` overloads, and `ValidateOptionalStringElements`. The reader now guarantees what they checked. In `RateCardDocument.cs`, remove every `[JsonPropertyName]` attribute and the `using System.Text.Json.Serialization;` line. The classes and their members stay as they are. `Validate`, `Merge`, `ValidateModels`, `ValidateLocalModels`, `ValidateHosts`, `ValidateNames`, and `ValidateRate` keep their logic and messages.
+
+### Message catalog
+
+Problems the reader reports:
+
+| Problem | Reported at |
+|---|---|
+| `invalid JSON` | `line L, column C`, counting from 1. Columns count UTF-8 bytes. |
+| `must contain a JSON object` | The document |
+| `contains a property name that is not valid text` | The object that contains the name |
+| `is not a known property` | An unknown property |
+| `is not a known property; did you mean <property>?` | An unknown property that matches a known one ignoring case |
+| `is defined more than once` | The second occurrence of a property |
+| `is required` | A missing required property |
+| `must be an object`, `must be an array`, `must be a string`, `must be an integer`, `must be a number` | A value of the wrong kind |
+| `must be a date and time, such as 2027-05-17T00:00:00Z` | `effectiveFrom` or `effectiveUntil` |
+| `is not valid text` | A string that can't be decoded |
+| `is too large` | A number outside `decimal`'s range |
+| `must be 1` | `schemaVersion` |
+
+Sprint 1's rule texts stay exactly as they are, now at paths into the file that contains the problem:
+
+- `must not be blank`;
+- `duplicate model identity: <identity>`, for a duplicate within one file;
+- `must contain at least one window` and `must contain at least one tier`;
+- `must be later than effectiveFrom` and `windows must be sorted and must not overlap`;
+- `must be unique within the window`;
+- `the last tier must be unbounded`, `must be greater than 0 for every tier except the last`, and `must be strictly ascending`;
+- `must be greater than or equal to 0`, `must have no more than 6 decimal places`, and `is too large`, for a rate whose `rate × 1,000,000` overflows;
+- `must be a host suffix without a leading '.', '/', or ':'`;
+- `ratesVersion: must not be blank` and `does not resolve to a githubAiCredits model: <model>`, which only the built-in rates can produce.
+
+The two merged-rates problems, which only an overlay can produce:
+
+| Problem | Reported at |
+|---|---|
+| `duplicate model identity in the merged rates: <identity> (built-in model <id>)` | The overlay model's `id` or alias |
+| `does not resolve to a githubAiCredits model in the merged rates: <model>` | `localOffload.baselineModel` |
+
+### Behavior changes
+
+- Every message is now one of the texts above, and every overlay path points into the overlay.
+- A property name that appears twice in one object is an error. Sprint 1 silently kept the last value.
+- Elements of `notes` must be strings. Sprint 1 accepted `null`.
+- `schemaVersion` is checked first, so a file with `"schemaVersion": 2` gets `schemaVersion: must be 1` even when it also has properties this version doesn't know.
+
+### docs/configuration.md changes
+
+Replace the paragraph that starts `If the file is invalid` with this text, exactly. The `<!-- rates-error-example -->` comments don't render on GitHub; the docs test uses them to find the examples.
+
+````markdown
+If the file is invalid, CopilotLedger refuses to load it and reports the first problem it finds. It never silently ignores a broken file. Each error starts with the file's path, then says where the problem is and what's wrong:
+
+- Most errors give a path into your file, such as `foundryByok.models[0].windows[0].tiers[0].outputPer1M`. Indexes count from 0, and they count only the entries in your file.
+- If the file isn't valid JSON, the error gives the line and column where reading stopped, counting from 1.
+- Two checks compare your file with the built-in rates: a model `id` or alias that a built-in model already uses, and a `localOffload.baselineModel` that isn't a GitHub model. These errors say `in the merged rates`.
+- Property names are case-sensitive, and each property can appear only once in its object.
+
+For example, this file leaves out a tier's `outputPer1M`:
+
+<!-- rates-error-example -->
+```json
+{
+  "schemaVersion": 1,
+  "foundryByok": {
+    "models": [
+      { "id": "gpt-6.1-sol", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1.75 } ] } ] }
+    ]
+  }
+}
+```
+
+CopilotLedger reports:
+
+```text
+/home/me/.copilot-ledger/rates.json: foundryByok.models[0].windows[0].tiers[0].outputPer1M: is required
+```
+<!-- /rates-error-example -->
+
+This file names a baseline model that doesn't exist:
+
+<!-- rates-error-example -->
+```json
+{
+  "schemaVersion": 1,
+  "localOffload": { "baselineModel": "gpt-missing" }
+}
+```
+
+CopilotLedger reports:
+
+```text
+/home/me/.copilot-ledger/rates.json: localOffload.baselineModel: does not resolve to a githubAiCredits model in the merged rates: gpt-missing
+```
+<!-- /rates-error-example -->
+
+This file has a comma after its last property, which JSON doesn't allow:
+
+<!-- rates-error-example -->
+```json
+{
+  "schemaVersion": 1,
+  "ratesVersion": "contoso-2026-11",
+}
+```
+
+CopilotLedger reports:
+
+```text
+/home/me/.copilot-ledger/rates.json: line 4, column 1: invalid JSON
+```
+<!-- /rates-error-example -->
+````
+
+In `tests/CopilotLedger.Tests/CopilotLedger.Tests.csproj`, add this item group so the docs test can read the file from its output directory:
+
+```xml
+<ItemGroup>
+  <None Include="..\..\docs\configuration.md" Link="docs\configuration.md" CopyToOutputDirectory="PreserveNewest" />
+</ItemGroup>
+```
+
+### Acceptance criteria
+
+- The public members of `JsonRateCardCalculator` and their exceptions are unchanged, and no package was added. `src/CopilotLedger.Core` doesn't call `JsonSerializer`.
+- The reader, the validation order, and every message match this section. Every overlay path points into the overlay.
+- `docs/configuration.md` has the new text, and `DocsExamples_MatchRealMessages` passes.
+- The Sprint 1 rates tests changed only as "Task 3 tests" says.
+- `dotnet build CopilotLedger.slnx` succeeds with 0 warnings, and `dotnet test CopilotLedger.slnx` passes everything from earlier tasks plus the 51 cases that "Task 3 tests" adds, with 0 failed and 0 skipped.
+
+### Verify
+
+```shell
+dotnet build CopilotLedger.slnx
+dotnet test CopilotLedger.slnx
+```
+
+Report the passed, failed, and skipped counts.
+
+## Task 4 specification: Kestrel OTLP Receiver & gh-ledger Daemon
 
 ### Files
 
@@ -1062,7 +1386,6 @@ src/CopilotLedger.Cli/Daemon/DaemonFiles.cs                    (internal)
 src/CopilotLedger.Cli/Daemon/DaemonHost.cs                     (internal)
 src/CopilotLedger.Cli/Daemon/DaemonCommands.cs                 (internal)
 src/CopilotLedger.Cli/Rates/RatesCommands.cs                   (internal)
-src/CopilotLedger.Cli/Rates/RatesErrorFormatter.cs             (internal)
 tests/CopilotLedger.Tests/TestSupport/FakeCliPlatform.cs
 tests/CopilotLedger.Tests/TestSupport/CliHarness.cs
 tests/CopilotLedger.Tests/Otlp/OtlpReceiverTests.cs
@@ -1120,7 +1443,7 @@ using CopilotLedger.Cli;
 return await GhLedgerCli.InvokeAsync(args, CliContext.CreateDefault(Console.Out, Console.Error));
 ```
 
-**Step 4.** Implement the contracts and rules below, update `docs/configuration.md`, and write the "Task 3 tests". These packages are pinned: `System.CommandLine` 2.0.15 and `Microsoft.AspNetCore.TestHost` 10.0.15. Don't take a 3.x or 11.x version.
+**Step 4.** Implement the contracts and rules below, update `docs/configuration.md`, and write the "Task 4 tests". These packages are pinned: `System.CommandLine` 2.0.15 and `Microsoft.AspNetCore.TestHost` 10.0.15. Don't take a 3.x or 11.x version.
 
 ASP.NET Core implicit usings aren't available in these projects, so add `using Microsoft.AspNetCore.Builder;`, `Microsoft.AspNetCore.Hosting`, `Microsoft.AspNetCore.Http`, and `Microsoft.Extensions.DependencyInjection` where needed.
 
@@ -1314,7 +1637,7 @@ gh-ledger rates validate [--file <path>]
 1. `Directory.CreateDirectory(DataDirectory)`.
 2. Acquire the lock. If another daemon holds it, log `gh-ledger daemon is already running.` and return 1.
 3. Delete a leftover `daemon.stop`.
-4. Load the calculator. If `RatesOverlayPath` exists, use `JsonRateCardCalculator.LoadEmbeddedWithOverlay(RatesOverlayPath)`; otherwise use `LoadEmbedded()`. Never use `LoadDefault()`, because the data directory can be overridden. On `InvalidDataException`, log `Invalid rates overlay: <RatesErrorFormatter.Format(ex)>` and return 1.
+4. Load the calculator. If `RatesOverlayPath` exists, use `JsonRateCardCalculator.LoadEmbeddedWithOverlay(RatesOverlayPath)`; otherwise use `LoadEmbedded()`. Never use `LoadDefault()`, because the data directory can be overridden. On `InvalidDataException`, log `Invalid rates overlay: <ex.Message>` and return 1.
 5. Create `new SqliteLedgerStore(DatabasePath, TimeProvider)` and `await InitializeAsync`. On failure, log `Cannot open the ledger at <path>: <message>` and return 1.
 6. Prune: `await store.PruneSpanLinksAsync(now - TimeSpan.FromDays(7))`.
 7. Create the ingestor: `new LedgerIngestor(store, calculator, new CachingGitContextResolver(new FileSystemGitContextResolver(), TimeProvider), new CopilotSessionWorkspaceLocator(CopilotHome, TimeProvider))`.
@@ -1382,46 +1705,7 @@ Then print `Created <path>. Add your prices, then run: gh-ledger rates validate`
 - If the default file doesn't exist, print `No rates overlay at <path>; using the built-in rates (<LoadEmbedded().RatesVersion>).` and return 0.
 - Otherwise call `JsonRateCardCalculator.LoadEmbeddedWithOverlay(path)`:
   - On success, print `<path> is valid. Rates version: <RatesVersion>.` and return 0.
-  - On `InvalidDataException`, write `Invalid rates overlay: <RatesErrorFormatter.Format(ex)>` to `Error` and return 1.
-
-### Rates error messages
-
-`RatesErrorFormatter` is an `internal static class` in `CopilotLedger.Cli.Rates` with one method, `public static string Format(InvalidDataException exception)`. It turns a merged Sprint 1 rates error into one line for people. It never throws for a non-null argument.
-
-1. `message = exception.Message`. Sprint 1 messages already start with the file path and the JSON path, for example `<file>: foundryByok.models[0]: …`.
-2. `json` is the first `JsonException` found by walking `exception.InnerException`, then its `InnerException`, and so on. If there's none, return `message` unchanged.
-3. If `json.Path`, `json.LineNumber`, and `json.BytePositionInLine` are all non-null, build System.Text.Json's suffix exactly: `string.Create(CultureInfo.InvariantCulture, $" Path: {json.Path} | LineNumber: {json.LineNumber} | BytePositionInLine: {json.BytePositionInLine}.")`. If `message` ends with it (ordinal), remove it.
-4. If `json.LineNumber` and `json.BytePositionInLine` are both non-null, append `string.Create(CultureInfo.InvariantCulture, $" (line {json.LineNumber + 1}, column {json.BytePositionInLine + 1})")`.
-5. Return `message`.
-
-Notes:
-
-- System.Text.Json counts both values from 0, and the column counts UTF-8 bytes. For an ASCII line, that's the character column.
-- Matching the exact suffix, instead of a pattern, means a property name that contains ` | ` can't truncate the message. If a future .NET changes the suffix, it's simply kept, and the position is still appended.
-- Merge and validation errors, such as `schemaVersion: must be 1`, have no `JsonException`, so they pass through unchanged.
-- Its only callers are `rates validate`, `daemon run` step 4, and `status` (Task 4).
-
-Verified against the merged loader (`1809dc8`). For example, this merged message:
-
-```text
-<file>: foundryByok.models[0]: '}' is an invalid start of a value. Path: $.foundryByok.models[0] | LineNumber: 1 | BytePositionInLine: 31.
-```
-
-becomes:
-
-```text
-<file>: foundryByok.models[0]: '}' is an invalid start of a value. (line 2, column 32)
-```
-
-More results. `<file>` is the path passed to `LoadEmbeddedWithOverlay`. File contents use C# string escapes, so `\n` is a newline, and the second line of the malformed file starts with two spaces:
-
-| Overlay file | `Format` result |
-|---|---|
-| `{ "schemaVersion": 2 }` | `<file>: schemaVersion: must be 1` (unchanged) |
-| `{ "schemaVersion": 1,\n  "foundryByok": { "models": [ }\n}\n` | `<file>: foundryByok.models[0]: '}' is an invalid start of a value. (line 2, column 32)` |
-| The same file with `\r\n` line endings | The same result |
-| `{ "schemaVersion": 1, "foundryBYOK": { } }` | `<file>: foundryBYOK: The JSON property 'foundryBYOK' could not be mapped to any .NET member contained in type 'CopilotLedger.Core.Pricing.RateCardDocument'. (line 1, column 37)` |
-| `{ "schemaVersion": 1, }` | `<file>: $: The JSON object contains a trailing comma at the end which is not supported in this mode. Change the reader options. (line 1, column 23)` |
+  - On `InvalidDataException`, write `Invalid rates overlay: <ex.Message>` to `Error` and return 1. Task 3 defines the message, which starts with the path.
 
 ### docs/configuration.md changes
 
@@ -1443,12 +1727,6 @@ More results. `<file>` is the path passed to `LoadEmbeddedWithOverlay`. File con
 
   ```text
   Run `gh-ledger rates init` to create a starter file, and `gh-ledger rates validate` to check it against the same rules the daemon uses.
-  ```
-
-- In the paragraph that starts `If the file is invalid`, insert this sentence before `It never silently ignores a broken file.`:
-
-  ```text
-  When the problem is in the JSON text itself, such as a syntax error or an unknown property, the error also gives its line and column.
   ```
 
 ### Test support
@@ -1476,7 +1754,7 @@ More results. `<file>` is the path passed to `LoadEmbeddedWithOverlay`. File con
 - `System.Diagnostics.Process` appears only in `src/CopilotLedger.Cli/SystemCliPlatform.cs`. `src/` contains no `double` or `float`.
 - No test opens a socket, starts a process, touches the network, or uses the real `~/.copilot-ledger` or `~/.copilot`. Receiver and daemon tests use `UseTestServer()`.
 - `docs/configuration.md` has the changes above.
-- `rates validate` and `daemon run` report rates errors through `RatesErrorFormatter.Format`, which matches "Rates error messages".
+- `rates validate`, `daemon run`, and their tests use the overlay messages exactly as Task 3 produces them, after `Invalid rates overlay: `.
 - `dotnet build CopilotLedger.slnx` succeeds with 0 warnings, and `dotnet test CopilotLedger.slnx` passes everything from earlier tasks plus RC1–RC12, DM1–DM5, and RT1–RT3, with 0 failed and 0 skipped.
 
 ### Verify
@@ -1489,7 +1767,7 @@ dotnet run --project src/CopilotLedger.Cli -- --help
 
 Report the passed, failed, and skipped counts. The last command must list the `daemon` and `rates` commands.
 
-## Task 4 specification: Reporting Commands, One-Command Install & Single-Binary Packaging
+## Task 5 specification: Reporting Commands, One-Command Install & Single-Binary Packaging
 
 ### Files
 
@@ -1569,7 +1847,7 @@ Every reporting command opens `new SqliteLedgerStore(context.DatabasePath, conte
 ### status
 
 1. **Daemon line.** If the lock is held, print `running (pid <pid>) on <endpoint> since <local startedAt>` from `daemon.json`, or just `running` if the file can't be read. Otherwise print `not running; start it with: gh-ledger daemon start`.
-2. **Rates line.** If `RatesOverlayPath` exists, load it with `LoadEmbeddedWithOverlay`. On success print its `RatesVersion`; on `InvalidDataException` print `invalid overlay: <RatesErrorFormatter.Format(ex)>`, which already starts with the path. Without an overlay, print `LoadEmbedded().RatesVersion`. An invalid overlay doesn't change the exit code.
+2. **Rates line.** If `RatesOverlayPath` exists, load it with `LoadEmbeddedWithOverlay`. On success print its `RatesVersion`; on `InvalidDataException` print `invalid overlay: <ex.Message>`, which starts with the path. Without an overlay, print `LoadEmbedded().RatesVersion`. An invalid overlay doesn't change the exit code.
 3. **Copilot line.** Look up each variable with `Platform.GetUserEnvironmentVariable(name) ?? Platform.GetEnvironmentVariable(name)`, then pick the first matching case:
    - `COPILOT_OTEL_ENABLED` is `true` (trimmed, case-insensitive): `OTel export enabled (COPILOT_OTEL_ENABLED=true)`.
    - `OTEL_EXPORTER_OTLP_ENDPOINT` is a local endpoint: `OTel export enabled (OTEL_EXPORTER_OTLP_ENDPOINT=<value>)`. A local endpoint is `http://localhost:4318` or `http://127.0.0.1:4318`, compared after trimming whitespace and trailing `/`, case-insensitive.
@@ -1620,7 +1898,7 @@ JSON output:
 }
 ```
 
-`periods` holds three objects, labeled `today`, `last 7 days`, and `last 30 days`. `ratesVersion` is null when the overlay is invalid, and `ratesError` then holds `RatesErrorFormatter.Format(ex)`.
+`periods` holds three objects, labeled `today`, `last 7 days`, and `last 30 days`. `ratesVersion` is null when the overlay is invalid, and `ratesError` then holds `ex.Message`.
 
 ### branch, agents, and top-prompts
 
@@ -2329,6 +2607,124 @@ These results were computed with the merged Sprint 1 calculator and `PicoUsd`.
 
 ### Task 3 tests
 
+Task 3 changes Sprint 1's rates tests in place, so each case is written once. Every other Sprint 1 test stays unchanged.
+
+#### Rates overlay: `RateOverlayTests`
+
+1. Replace `InvalidOverlays` and `InvalidOverlay_ThrowsWithFilePath` with the data below and the theory `InvalidOverlay_ReportsExactMessage(string overlay, string expected)`. It writes `overlay` with the existing `WriteOverlay` helper, calls `LoadEmbeddedWithOverlay`, and asserts that the `InvalidDataException`'s `Message` equals `expected` after replacing `<file>` with the file's path (ordinal). Copy the data exactly; the first six rows are Sprint 1's overlays.
+
+   ```csharp
+   // Each expected message uses <file> for the overlay's path.
+   public static TheoryData<string, string> InvalidOverlays => new()
+   {
+       // Sprint 1's invalid overlays, now with exact messages.
+       { """{ "schemaVersion": 2 }""", "<file>: schemaVersion: must be 1" },
+       { """{ "schemaVersion": 1, "foundryBYOK": { } }""", "<file>: foundryBYOK: is not a known property; did you mean foundryByok?" },
+       { """{ "schemaVersion": 1, "localOffload": { "baselineModel": "gpt-missing" } }""", "<file>: localOffload.baselineModel: does not resolve to a githubAiCredits model in the merged rates: gpt-missing" },
+       { """{ "schemaVersion": 1, "foundryByok": { "models": [ { "id": "gpt-6.1-sol", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1.75 } ] } ] } ] } }""", "<file>: foundryByok.models[0].windows[0].tiers[0].outputPer1M: is required" },
+       { """{ }""", "<file>: schemaVersion: is required" },
+       { """{ "schemaVersion": 1, "localOffload": { "models": [ { "id": "my-local", "aliases": ["qwen3.8:27b"] } ] } }""", "<file>: localOffload.models[0].aliases[0]: duplicate model identity in the merged rates: qwen3.8:27b (built-in model qwen3.8-27b)" },
+
+       // Invalid JSON, and a root that isn't an object.
+       { "{ \"schemaVersion\": 1,\n  \"foundryByok\": { \"models\": [ }\n}\n", "<file>: line 2, column 32: invalid JSON" },
+       { "{ \"schemaVersion\": 1,\r\n  \"foundryByok\": { \"models\": [ }\r\n}\r\n", "<file>: line 2, column 32: invalid JSON" },
+       { """{ "schemaVersion": 1, }""", "<file>: line 1, column 23: invalid JSON" },
+       { "", "<file>: line 1, column 1: invalid JSON" },
+       { """{ "schemaVersion": 1 } // note""", "<file>: line 1, column 24: invalid JSON" },
+       { "[]", "<file>: must contain a JSON object" },
+
+       // schemaVersion is checked first.
+       { """{ "schemaVersion": null }""", "<file>: schemaVersion: is required" },
+       { """{ "schemaVersion": "1" }""", "<file>: schemaVersion: must be an integer" },
+       { """{ "foundryBYOK": { }, "schemaVersion": 2 }""", "<file>: schemaVersion: must be 1" },
+
+       // Unknown and repeated properties.
+       { """{ "schemaVersion": 1, "currency": "USD" }""", "<file>: currency: is not a known property" },
+       { """{ "schemaVersion": 1, "foundryByok": { "models": [ { "id": "gpt-6.1-sol", "windows": [ { "tiers": [ { "name": "default", "inputPer1m": 1.75, "outputPer1M": 14 } ] } ] } ] } }""", "<file>: foundryByok.models[0].windows[0].tiers[0].inputPer1m: is not a known property; did you mean inputPer1M?" },
+       { """{ "schemaVersion": 1, "localOffload": { }, "localOffload": { } }""", "<file>: localOffload: is defined more than once" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "name": "other", "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].name: is defined more than once" },
+
+       // A missing required property is reported at its own path.
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new" } ] } }""", "<file>: githubAiCredits.models[0].windows: is required" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "effectiveFrom": null } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers: is required" },
+       { """{ "schemaVersion": 1, "localOffload": { "models": [ { "aliases": [] } ] } }""", "<file>: localOffload.models[0].id: is required" },
+
+       // Values of the wrong kind.
+       { """{ "schemaVersion": 1, "githubAiCredits": [] }""", "<file>: githubAiCredits: must be an object" },
+       { """{ "schemaVersion": 1, "foundryByok": { "hostSuffixes": "contoso.example" } }""", "<file>: foundryByok.hostSuffixes: must be an array" },
+       { """{ "schemaVersion": 1, "foundryByok": { "providerNames": [1] } }""", "<file>: foundryByok.providerNames[0]: must be a string" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": "1.75", "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be a number" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "small", "maxInputTokens": 1.5, "inputPer1M": 1, "outputPer1M": 1 }, { "name": "large", "inputPer1M": 2, "outputPer1M": 2 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].maxInputTokens: must be an integer" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "effectiveFrom": "May 2027", "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].effectiveFrom: must be a date and time, such as 2027-05-17T00:00:00Z" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": null, "windows": [] } ] } }""", "<file>: githubAiCredits.models[0].id: must be a string" },
+       { """{ "schemaVersion": 1, "localOffload": { "models": [ null ] } }""", "<file>: localOffload.models[0]: must be an object" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1e30, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: is too large" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": null } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].outputPer1M: must be a number" },
+       { """{ "schemaVersion": 1, "localOffload": { "models": [ { "id": "\ud800" } ] } }""", "<file>: localOffload.models[0].id: is not valid text" },
+       { """{ "schemaVersion": 1, "localOffload": { "\ud800": 1 } }""", "<file>: localOffload: contains a property name that is not valid text" },
+       { """{ "schemaVersion": 1, "localOffload": { "models": [ { "id": "my-local", "aliases": null } ] } }""", "<file>: localOffload.models[0].aliases: must be an array" },
+       { """{ "schemaVersion": 1, "notes": [null] }""", "<file>: notes[0]: must be a string" },
+       { """{ "schemaVersion": 1, "ratesVersion": 5 }""", "<file>: ratesVersion: must be a string" },
+
+       // Rule errors at paths into the overlay. Sprint 1 reported most of these at merged indexes.
+       { """{ "schemaVersion": 1, "localOffload": { "models": [ { "id": " " } ] } }""", "<file>: localOffload.models[0].id: must not be blank" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1.0000001 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].outputPer1M: must have no more than 6 decimal places" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "mai-code-2", "windows": [ { "effectiveFrom": "2027-05-17T00:00:00Z", "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 5 } ] }, { "effectiveUntil": "2027-05-17T00:00:00Z", "tiers": [ { "name": "default", "inputPer1M": 0.5, "outputPer1M": 2.5 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[1].effectiveFrom: windows must be sorted and must not overlap" },
+       { """{ "schemaVersion": 1, "foundryByok": { "hostSuffixes": [".contoso.example"] } }""", "<file>: foundryByok.hostSuffixes[0]: must be a host suffix without a leading '.', '/', or ':'" },
+       { """{ "schemaVersion": 1, "localOffload": { "baselineModel": " " } }""", "<file>: localOffload.baselineModel: must not be blank" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "maxInputTokens": 1000, "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].maxInputTokens: the last tier must be unbounded" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": -1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be greater than or equal to 0" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "aliases": ["Contoso New"], "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].aliases[0]: duplicate model identity: contoso-new" },
+
+       // Checks against the merged rates.
+       { """{ "schemaVersion": 1, "localOffload": { "models": [ { "id": "Qwen-3.8-27B" } ] } }""", "<file>: localOffload.models[0].id: duplicate model identity in the merged rates: qwen-3.8-27b (built-in model qwen3.8-27b)" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "claude-opus-5.5", "aliases": ["MAI Code 2"], "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 4, "outputPer1M": 20 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].aliases[0]: duplicate model identity in the merged rates: mai-code-2 (built-in model mai-code-2)" },
+       { """{ "schemaVersion": 1, "foundryByok": { "models": [ { "id": "gpt-6.1-sol", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1.75, "outputPer1M": 14 } ] } ] } ] }, "githubAiCredits": { "models": [ { "id": "my-sol", "aliases": ["gpt-6.1-sol"], "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].aliases[0]: duplicate model identity in the merged rates: gpt-6.1-sol (built-in model gpt-6.1-sol)" },
+
+       // Reporting order: reading, then the file's own rules, then the merged rates; document order while reading.
+       { """{ "schemaVersion": 1, "localOffload": { "additionalHosts": [" "], "providerNames": [1] } }""", "<file>: localOffload.providerNames[0]: must be a string" },
+       { """{ "schemaVersion": 1, "localOffload": { "baselineModel": "gpt-missing", "additionalHosts": [" "] } }""", "<file>: localOffload.additionalHosts[0]: must not be blank" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "outputPer1M": "x", "inputPer1M": "y", "name": "default" } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].outputPer1M: must be a number" },
+       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1 } ] } ] } ], "hostSuffixes": [".bad"] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].outputPer1M: is required" },
+   };
+   ```
+
+2. In `Overlay_DuplicateNormalizedIdsThrow`, replace both `Assert.Contains` calls with `Assert.Equal($"{path}: githubAiCredits.models[1].id: duplicate model identity: duplicate", exception.Message)`.
+3. Add `Overlay_ReplacingBuiltInModelFreesItsAliases`. It loads `{ "schemaVersion": 1, "localOffload": { "models": [ { "id": "qwen3.8-27b", "aliases": ["my-qwen-build"] }, { "id": "my-local", "aliases": ["qwen3.8:27b"] } ] } }` without an error. `Calculate(TestSpans.Chat(requestModel: "qwen3.8:27b", inputTokens: 400_000, outputTokens: 12_000))` has `Status` `LocalOffload` and `ModelId` `my-local`.
+4. Add `Overlay_BaselineCanNameAnOverlayModelByAlias`. It loads `{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "aliases": ["contoso-alias"], "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] }, "localOffload": { "baselineModel": "Contoso Alias" } }`. `Calculate(TestSpans.Chat(serverAddress: "127.0.0.1", requestModel: "qwen3.8:27b", inputTokens: 400_000, outputTokens: 12_000))` has `RateCardModelId` `contoso-new` and `EstimatedCloudSavedUsd` 0.412 (400,000 × $1 + 12,000 × $1 per 1M).
+5. Add `DocsExamples_MatchRealMessages`:
+   1. Read `Path.Combine(AppContext.BaseDirectory, "docs", "configuration.md")` with `File.ReadAllLines`, so line endings don't matter.
+   2. An example starts at a line equal to `<!-- rates-error-example -->` and ends at the next line equal to `<!-- /rates-error-example -->`. Its JSON is the lines after the first line equal to ```` ```json ```` up to the next line equal to ```` ``` ````. Its message is the single line after the next line equal to ```` ```text ````, which is followed by a ```` ``` ```` line.
+   3. Assert there are exactly 3 examples.
+   4. For each, write the JSON lines joined with `\n`, plus a final `\n`, to a new `TempDirectory`'s `rates.json`. Assert that `LoadEmbeddedWithOverlay` throws `InvalidDataException` whose `Message` equals the example's message with `/home/me/.copilot-ledger/rates.json` replaced by the file's path.
+
+#### Rates loading: `RateCardLoadingTests`
+
+1. Replace `InvalidDocuments` and `Parse_InvalidDocument_Throws` with this data and `Parse_InvalidDocument_ReportsExactMessage(string find, string replacement, string expected)`. It keeps the `Assert.Contains(find, json)` guard and asserts `Assert.Equal(expected, exception.Message)`. The last row is new.
+
+   ```csharp
+   public static TheoryData<string, string, string> InvalidDocuments => new()
+   {
+       { "\"schemaVersion\": 1,", "\"schemaVersion\": 2,", "schemaVersion: must be 1" },
+       { "\"inputPer1M\": 2.00,", "\"inputPer1M\": 2.0000001,", "githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must have no more than 6 decimal places" },
+       { "\"baselineModel\": \"claude-sonnet-5.5\"", "\"baselineModel\": \"gpt-missing\"", "localOffload.baselineModel: does not resolve to a githubAiCredits model: gpt-missing" },
+       { "\"schemaVersion\": 1,", "\"schemaVersion\": 1, \"currency\": \"USD\",", "currency: is not a known property" },
+       { "\"maxInputTokens\": null, \"inputPer1M\": 2.00", "\"maxInputTokens\": 1000, \"inputPer1M\": 2.00", "githubAiCredits.models[0].windows[0].tiers[0].maxInputTokens: the last tier must be unbounded" },
+       { "\"inputPer1M\": 2.00,", "\"inputPer1M\": -2.00,", "githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be greater than or equal to 0" },
+       { "\"ratesVersion\": \"test-fixture\",", string.Empty, "ratesVersion: is required" },
+       { ", \"retrievedOn\": \"2026-11-20\" }", " }", "source.retrievedOn: is required" },
+   };
+   ```
+
+2. `Parse_MalformedJson_Throws` also asserts the message `line 49, column 1: invalid JSON`.
+3. In `Parse_NullCollectionElement_ThrowsWithExactPath`, replace both assertions with `Assert.Equal("githubAiCredits.hostSuffixes[1]: must be a string", exception.Message)`.
+4. In `Parse_InvalidBaseWithOverlay_DoesNotAddOverlayPrefix`, replace both assertions with `Assert.Equal("githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be greater than or equal to 0", exception.Message)`.
+5. Add `Parse_InvalidOverlay_NamesTheOverlay`: `JsonRateCardCalculator.Parse(RateFixtures.ByokTestRatesJson, """{ "schemaVersion": 2 }""")` throws `InvalidDataException` with the message `overlay: schemaVersion: must be 1`.
+
+`InvalidOverlays` grows from 6 cases to 52 and `InvalidDocuments` from 7 to 8, and there are 4 new facts. Task 3 adds 51 test cases in all.
+
+### Task 4 tests
+
 #### Receiver: `OtlpReceiverTests`
 
 Build each receiver with `OtlpReceiverApp.Build(options, ingestor, b => b.UseTestServer())`, then `StartAsync`, and use `app.GetTestClient()`.
@@ -2360,7 +2756,7 @@ To change the `Host` header, set `HttpRequestMessage.Headers.Host`. TestServer p
 | DM2 | `daemon start`, with the harness's in-process `StartDetachedHandler` | Exit 0: `gh-ledger daemon started (pid <Environment.ProcessId>) on http://localhost:4318.`. `DetachedStarts` has one call: `/opt/gh-ledger/gh-ledger`, with the arguments `daemon run --port 4318 --log-file <root>/data/daemon.log` and working directory `<root>/data`. |
 | DM3 | `daemon start` where `StartDetachedHandler` returns 999999, which isn't running | Exit 1; `Error` is `gh-ledger daemon did not start; see <root>/data/daemon.log.` |
 | DM4 | (theory) `ProcessPath` of `/usr/bin/dotnet`; `C:\tools\GH-LEDGER.EXE`; `/opt/bin/gh-ledger` | Exit 1 with `Run this command from the gh-ledger executable (current process: /usr/bin/dotnet).`, then exit 0, then exit 0 |
-| DM5 | Create `<root>/data` and write the malformed overlay from RT3 (b) to `<root>/data/rates.json`. Run `daemon run`, then `daemon stop`. | `daemon run` exits 1. Its `Out` contains `Invalid rates overlay: <root>/data/rates.json: foundryByok.models[0]: '}' is an invalid start of a value. (line 2, column 32)` and doesn't contain `gh-ledger daemon stopped`. `daemon.json` doesn't exist. `daemon stop` exits 0 with `gh-ledger daemon is not running.`, which shows the lock was released. |
+| DM5 | Create `<root>/data` and write the malformed overlay from RT3 (b) to `<root>/data/rates.json`. Run `daemon run`, then `daemon stop`. | `daemon run` exits 1. Its `Out` contains `Invalid rates overlay: <root>/data/rates.json: line 2, column 32: invalid JSON` and doesn't contain `gh-ledger daemon stopped`. `daemon.json` doesn't exist. `daemon stop` exits 0 with `gh-ledger daemon is not running.`, which shows the lock was released. |
 
 #### Rates: `RatesCommandTests` (with `CliHarness`)
 
@@ -2368,9 +2764,9 @@ To change the `Host` header, set `HttpRequestMessage.Headers.Host`. TestServer p
 |---|---|---|
 | RT1 | `rates init`, then `rates init` again, then `rates init --force` | Exit 0. The file equals the scaffold byte for byte, and the output is `Created <path>. Add your prices, then run: gh-ledger rates validate`. The second run exits 1 with `<path> already exists. Use --force to replace it.`, and the file is unchanged. `--force` exits 0. |
 | RT2 | `rates validate` with no file, then after `rates init` | `No rates overlay at <path>; using the built-in rates (2026-11-20).`; then `<path> is valid. Rates version: 2026-11-20+user.` Both exit 0. |
-| RT3 | (theory) `rates validate --file <root>/bad.json`, where `bad.json` holds (C# string escapes, as in "Rates error messages"): (a) `{ "schemaVersion": 2 }`; (b) `{ "schemaVersion": 1,\n  "foundryByok": { "models": [ }\n}\n`; (c) `{ "schemaVersion": 1, "foundryBYOK": { } }`. Then (d) case (a)'s file with the relative `--file bad.json`, run with `RunInAsync(<root>, ...)`; and (e) `rates validate --file <root>/missing.json`. | Each exits 1 with an empty `Out`. `Error` is: (a) and (d) `Invalid rates overlay: <root>/bad.json: schemaVersion: must be 1`; (b) `Invalid rates overlay: <root>/bad.json: foundryByok.models[0]: '}' is an invalid start of a value. (line 2, column 32)`; (c) `Invalid rates overlay: <root>/bad.json: foundryBYOK: The JSON property 'foundryBYOK' could not be mapped to any .NET member contained in type 'CopilotLedger.Core.Pricing.RateCardDocument'. (line 1, column 37)`; (e) `<root>/missing.json does not exist.` |
+| RT3 | (theory) `rates validate --file <root>/bad.json`, where `bad.json` holds (C# string escapes, so `\n` is a newline): (a) `{ "schemaVersion": 2 }`; (b) `{ "schemaVersion": 1,\n  "foundryByok": { "models": [ }\n}\n`; (c) `{ "schemaVersion": 1, "foundryBYOK": { } }`. Then (d) case (a)'s file with the relative `--file bad.json`, run with `RunInAsync(<root>, ...)`; and (e) `rates validate --file <root>/missing.json`. | Each exits 1 with an empty `Out`. `Error` is: (a) and (d) `Invalid rates overlay: <root>/bad.json: schemaVersion: must be 1`; (b) `Invalid rates overlay: <root>/bad.json: line 2, column 32: invalid JSON`; (c) `Invalid rates overlay: <root>/bad.json: foundryBYOK: is not a known property; did you mean foundryByok?`; (e) `<root>/missing.json does not exist.` |
 
-### Task 4 tests
+### Task 5 tests
 
 #### Reports: `ReportCommandTests`
 
@@ -2409,7 +2805,7 @@ Last 30 days      4         0      342.00       $3.42     $0.32        $0.23
 | RP7 | `top-prompts --since all --limit 2` | Exit 0 and exactly the text below |
 | RP8 | `top-prompts --since all --json` | 4 rows with `rank` 1–4 and the T1–T4 values from SL7. Row 2: `agents` `["ledger-builder"]`, `models` `["mai-code-2","qwen3.8-27b"]`, `startTime` 2026-11-21T13:00:00Z, `endTime` 2026-11-21T13:05:02Z, `localSavedUsd` 0.23. Row 4: `repository` `(none)`, `unpricedSpans` 1. |
 | RP9 | (theory) `agents --since <v> --json` | See the list below |
-| RP10 | Write the malformed overlay from RT3 (b) to `<root>/data/rates.json`, then run `status` and `status --json` | Both exit 0. The text is RP1's, except the Rates line is `Rates:   invalid overlay: <root>/data/rates.json: foundryByok.models[0]: '}' is an invalid start of a value. (line 2, column 32)`. In the JSON, `ratesVersion` is null, `ratesError` is `<root>/data/rates.json: foundryByok.models[0]: '}' is an invalid start of a value. (line 2, column 32)`, and `periods` matches RP2's values. |
+| RP10 | Write the malformed overlay from RT3 (b) to `<root>/data/rates.json`, then run `status` and `status --json` | Both exit 0. The text is RP1's, except the Rates line is `Rates:   invalid overlay: <root>/data/rates.json: line 2, column 32: invalid JSON`. In the JSON, `ratesVersion` is null, `ratesError` is `<root>/data/rates.json: line 2, column 32: invalid JSON`, and `periods` matches RP2's values. |
 
 RP3 cases:
 
@@ -2535,7 +2931,7 @@ IN10 cases:
 - **The rest of GitHub's price table** (GPT-6 Sol, GPT-6.2 Astra and Sol, Claude Sonnet 5, Claude Haiku 5.5, MAI Code 2 Flash, MAI-Code-1.1-Flash, and others), delivered with a `rates.json` update command.
 - **More live captures:** a BYOK provider and a local provider (assumption A1: provider labels and `server.address`), and VS Code Local harness payloads (A3). Adjust the `rates.json` host and provider lists to match.
 - **File-exporter ingestion** (`COPILOT_OTEL_FILE_EXPORTER_PATH`, JSON lines) as an offline alternative to the daemon. Its line format is undocumented, so capture it first.
-- **Native AOT.** It needs source-generated System.Text.Json in Sprint 1's rates loader.
+- **Native AOT.** After Task 3 the rates loader has no reflection, but `daemon.json` and `install.json` still need source-generated System.Text.Json, and Microsoft.Data.Sqlite's native library still ships as a separate file.
 - **Overflow-safe rollups.** SQLite's `SUM` over `INTEGER` raises an error on 64-bit overflow, and then every report fails. With the token cap, a span at built-in rates costs at most $100,000 (10^17 pico-USD), so a rollup needs 93 such spans to overflow; an overlay with extreme rates needs fewer. If that ever matters, cap per-span cost at ingestion or aggregate in `decimal`, which changes Sprint 1's Storage.
-- **`Calculate`'s "never throws" contract.** Sprint 1's `ValidateRate` could reject rates above 1,000,000 USD per 1M tokens. A `long` token count times such a rate stays under 10^25, well inside `decimal`, so `Calculate` could never overflow. That changes Sprint 1 validation and `docs/configuration.md`, so it's left for a later decision. Sprint 2's ingestor guard works either way, and it's still needed for the pico-USD limit.
+- **`Calculate`'s "never throws" contract.** Sprint 1's `ValidateRate` could reject rates above 1,000,000 USD per 1M tokens. A `long` token count times such a rate stays under 10^25, well inside `decimal`, so `Calculate` could never overflow. Task 3 doesn't change which rates are accepted, so this bound is left for a later decision; it would also change `docs/configuration.md` and IG6's overflow case. Sprint 2's ingestor guard works either way, and it's still needed for the pico-USD limit.
 - **Sprints 3 and 4,** per the roadmap: the runaway-loop circuit breaker, the MCP server, PR receipts with the GitHub Action, and the rates update command.
