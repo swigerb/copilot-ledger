@@ -20,10 +20,13 @@ Each LLM request (an OpenTelemetry `chat` span) is attributed to one billing cha
 |---|---|---|
 | GitHub AI Credits | No endpoint on the span, or an endpoint under `githubcopilot.com` | AI credits and USD from GitHub's published prices (1 AI credit = $0.01) |
 | Microsoft Foundry BYOK | An endpoint under `services.ai.azure.com`, `openai.azure.com`, or `cognitiveservices.azure.com`, or provider `azure.ai.inference` | USD from **your** prices in `rates.json`, and 0 AI credits. Unpriced until you add prices. |
-| Local | An endpoint of `localhost`, `127.x.x.x`, `::1`, or a host you list; or a known local model, such as Qwen3.8-27B, with no endpoint | $0.00 billed, plus estimated savings: the same tokens priced at MAI Code 2's GitHub rates |
+| Local | An endpoint of `localhost`, `127.x.x.x`, `::1`, or a host you list; a local provider name (`ollama`, `lm_studio`, `foundry_local`, or `llama_cpp`, which Copilot CLI reports for models you bring or run yourself); or a known local model, such as Qwen3.8-27B, with no endpoint | $0.00 billed, plus estimated savings: the same tokens priced at MAI Code 2's GitHub rates |
 | Unpriced | Anything else | Tokens only, with a status that explains why |
 
-The built-in prices are GitHub's November 2026 rates for `claude-opus-5.5`, `claude-sonnet-5.5`, `gpt-6.1-sol`, `gpt-6-astra`, and `mai-code-2`.
+The built-in prices are GitHub's rates for every text model on [Models and pricing for GitHub Copilot](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing) as of 2026-11-20: 34 models, with their long-context tiers and promotional prices. A promotional price ends at 00:00 UTC on the date GitHub gives. Two models need your attention:
+
+- Claude Opus 4.8 (fast mode) isn't built in, because the model name Copilot reports for it isn't known yet. If you use it, add it under `githubAiCredits.models` with the model name Copilot reports.
+- GitHub hasn't published the prices that follow the promotions for Gemini 4 Argon (ending 2026-12-01) and Gemini 3.8 Flash (ending after 2026-12-31). Later requests for them are recorded with status `no_rate_for_date` until you add a price window or a CopilotLedger update adds the price.
 
 ### Pricing statuses
 

@@ -45,5 +45,25 @@ internal static class LedgerMigrations
             CREATE INDEX ix_spans_model       ON spans (model_id);
             CREATE INDEX ix_spans_agent       ON spans (agent_name);
             """),
+        (2, """
+            CREATE TABLE span_links (
+                trace_id            TEXT    NOT NULL,
+                span_id             TEXT    NOT NULL,
+                parent_span_id      TEXT,
+                operation_name      TEXT,
+                agent_name          TEXT,
+                conversation_id     TEXT,
+                git_repository_slug TEXT,
+                git_branch          TEXT,
+                git_commit_sha      TEXT,
+                start_time_unix_ms  INTEGER NOT NULL,
+                recorded_at_unix_ms INTEGER NOT NULL,
+                PRIMARY KEY (trace_id, span_id)
+            ) STRICT, WITHOUT ROWID;
+
+            CREATE INDEX ix_span_links_parent ON span_links (trace_id, parent_span_id);
+            CREATE INDEX ix_span_links_start  ON span_links (start_time_unix_ms);
+            CREATE INDEX ix_spans_trace       ON spans (trace_id);
+            """),
     ];
 }
