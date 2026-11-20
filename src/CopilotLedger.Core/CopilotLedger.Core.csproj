@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <EmbeddedResource Include="Pricing\rates.json" LogicalName="CopilotLedger.Core.Pricing.rates.json" />
+  </ItemGroup>
+</Project>
