@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "ratesVersion": "2026-11-20",
+  "source": {
+    "url": "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing",
+    "retrievedOn": "2026-11-20"
+  },
+  "notes": [
+    "Rates are USD per 1,000,000 tokens. 1 GitHub AI credit = 0.01 USD.",
+    "gen_ai.usage.input_tokens includes cache-read and cache-write tokens; uncached input = input - cache read - cache write.",
+    "A null cachedInputPer1M or cacheWritePer1M bills those tokens at inputPer1M.",
+    "maxInputTokens is an inclusive bound on total input tokens and selects the tier for the whole request; 272K = 272000.",
+    "Windows are [effectiveFrom, effectiveUntil) and match the span start time.",
+    "mai-code-2 promotional pricing ends 2027-05-17T00:00:00Z.",
+    "foundryByok.models is empty because Azure prices vary by region, deployment type, and agreement; add yours in ~/.copilot-ledger/rates.json (see docs/configuration.md).",
+    "Local spans bill 0 USD; savings price the same tokens at the GitHub rates of localOffload.baselineModel. localOffload.models maps local runtime ids to one canonical model."
+  ],
+  "githubAiCredits": {
+    "hostSuffixes": ["githubcopilot.com"],
+    "models": [
+      {
+        "id": "claude-opus-5.5",
+        "aliases": [],
+        "windows": [
+          {
+            "effectiveFrom": null,
+            "effectiveUntil": null,
+            "tiers": [
+              { "name": "default", "maxInputTokens": null, "inputPer1M": 4.00, "cachedInputPer1M": 0.20, "cacheWritePer1M": 5.00, "outputPer1M": 20.00 }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "claude-sonnet-5.5",
+        "aliases": [],
+        "windows": [
+          {
+            "effectiveFrom": null,
+            "effectiveUntil": null,
+            "tiers": [
+              { "name": "default", "maxInputTokens": null, "inputPer1M": 2.00, "cachedInputPer1M": 0.10, "cacheWritePer1M": 2.50, "outputPer1M": 10.00 }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "gpt-6.1-sol",
+        "aliases": [],
+        "windows": [
+          {
+            "effectiveFrom": null,
+            "effectiveUntil": null,
+            "tiers": [
+              { "name": "default", "maxInputTokens": 272000, "inputPer1M": 2.00, "cachedInputPer1M": 0.10, "cacheWritePer1M": 2.50, "outputPer1M": 10.00 },
+              { "name": "long_context", "maxInputTokens": null, "inputPer1M": 4.00, "cachedInputPer1M": 0.20, "cacheWritePer1M": 5.00, "outputPer1M": 15.00 }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "gpt-6-astra",
+        "aliases": [],
+        "windows": [
+          {
+            "effectiveFrom": null,
+            "effectiveUntil": null,
+            "tiers": [
+              { "name": "default", "maxInputTokens": 272000, "inputPer1M": 10.00, "cachedInputPer1M": 1.00, "cacheWritePer1M": 12.50, "outputPer1M": 50.00 },
+              { "name": "long_context", "maxInputTokens": null, "inputPer1M": 20.00, "cachedInputPer1M": 2.00, "cacheWritePer1M": 25.00, "outputPer1M": 75.00 }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "mai-code-2",
+        "aliases": [],
+        "windows": [
+          {
+            "effectiveFrom": null,
+            "effectiveUntil": "2027-05-17T00:00:00Z",
+            "tiers": [
+              { "name": "default", "maxInputTokens": null, "inputPer1M": 0.50, "cachedInputPer1M": 0.025, "cacheWritePer1M": null, "outputPer1M": 2.50 }
+            ]
+          },
+          {
+            "effectiveFrom": "2027-05-17T00:00:00Z",
+            "effectiveUntil": null,
+            "tiers": [
+              { "name": "default", "maxInputTokens": null, "inputPer1M": 1.00, "cachedInputPer1M": 0.05, "cacheWritePer1M": null, "outputPer1M": 5.00 }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "foundryByok": {
+    "hostSuffixes": ["services.ai.azure.com", "openai.azure.com", "cognitiveservices.azure.com"],
+    "providerNames": ["azure.ai.inference"],
+    "models": []
+  },
+  "localOffload": {
+    "baselineModel": "mai-code-2",
+    "models": [
+      { "id": "qwen3.8-27b", "aliases": ["qwen-3.8-27b", "qwen3.8:27b", "qwen3.8:27b-q4_k_m", "qwen3.8-27b-cuda-gpu:1"] }
+    ],
+    "additionalHosts": [],
+    "providerNames": []
+  }
+}

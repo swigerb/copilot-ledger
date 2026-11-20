@@ -1,7 +1,5 @@
 # Configuring CopilotLedger
 
-> Status: specified in Sprint 1. The rate engine that reads this configuration is built in Sprint 1, Task 2.
-
 CopilotLedger works with no configuration. This page explains how it prices usage and how to change that with one optional file.
 
 ## Where CopilotLedger keeps its files
