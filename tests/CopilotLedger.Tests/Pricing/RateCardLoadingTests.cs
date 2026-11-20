@@ -5,15 +5,17 @@ namespace CopilotLedger.Tests.Pricing;
 
 public sealed class RateCardLoadingTests
 {
-    public static TheoryData<string, string> InvalidDocuments => new()
+    public static TheoryData<string, string, string> InvalidDocuments => new()
     {
-        { "\"schemaVersion\": 1,", "\"schemaVersion\": 2," },
-        { "\"inputPer1M\": 2.00,", "\"inputPer1M\": 2.0000001," },
-        { "\"baselineModel\": \"claude-sonnet-5.5\"", "\"baselineModel\": \"gpt-missing\"" },
-        { "\"schemaVersion\": 1,", "\"schemaVersion\": 1, \"currency\": \"USD\"," },
-        { "\"maxInputTokens\": null, \"inputPer1M\": 2.00", "\"maxInputTokens\": 1000, \"inputPer1M\": 2.00" },
-        { "\"inputPer1M\": 2.00,", "\"inputPer1M\": -2.00," },
-        { "\"ratesVersion\": \"test-fixture\",", string.Empty },
+        { "\"schemaVersion\": 1,", "\"schemaVersion\": 2,", "schemaVersion: must be 1" },
+        { "\"inputPer1M\": 2.00,", "\"inputPer1M\": 2.0000001,", "githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must have no more than 6 decimal places" },
+        { "\"baselineModel\": \"claude-sonnet-5.5\"", "\"baselineModel\": \"gpt-missing\"", "localOffload.baselineModel: does not resolve to a githubAiCredits model: gpt-missing" },
+        { "\"schemaVersion\": 1,", "\"schemaVersion\": 1, \"currency\": \"USD\",", "currency: is not a known property" },
+        { "\"maxInputTokens\": null, \"inputPer1M\": 2.00", "\"maxInputTokens\": 1000, \"inputPer1M\": 2.00", "githubAiCredits.models[0].windows[0].tiers[0].maxInputTokens: the last tier must be unbounded" },
+        { "\"inputPer1M\": 2.00,", "\"inputPer1M\": -2.00,", "githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be greater than or equal to 0" },
+        { "\"ratesVersion\": \"test-fixture\",", string.Empty, "ratesVersion: is required" },
+        { ", \"retrievedOn\": \"2026-11-20\" }", " }", "source.retrievedOn: is required" },
+        { "\"inputPer1M\": 2.00,", "\"inputPer1M\": 1000000.000001,", "githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be less than or equal to 1000000" },
     };
 
     [Fact]
@@ -26,20 +28,24 @@ public sealed class RateCardLoadingTests
 
     [Theory]
     [MemberData(nameof(InvalidDocuments))]
-    public void Parse_InvalidDocument_Throws(string find, string replacement)
+    public void Parse_InvalidDocument_ReportsExactMessage(string find, string replacement, string expected)
     {
         string json = RateFixtures.ByokTestRatesJson;
         Assert.Contains(find, json);
         json = json.Replace(find, replacement, StringComparison.Ordinal);
 
-        Assert.Throws<InvalidDataException>(() => JsonRateCardCalculator.Parse(json));
+        InvalidDataException exception = Assert.Throws<InvalidDataException>(
+            () => JsonRateCardCalculator.Parse(json));
+        Assert.Equal(expected, exception.Message);
     }
 
     [Fact]
     public void Parse_MalformedJson_Throws()
     {
         string json = RateFixtures.ByokTestRatesJson[..^1];
-        Assert.Throws<InvalidDataException>(() => JsonRateCardCalculator.Parse(json));
+        InvalidDataException exception = Assert.Throws<InvalidDataException>(
+            () => JsonRateCardCalculator.Parse(json));
+        Assert.Equal("line 49, column 1: invalid JSON", exception.Message);
     }
 
     [Fact]
@@ -53,8 +59,7 @@ public sealed class RateCardLoadingTests
         InvalidDataException exception = Assert.Throws<InvalidDataException>(
             () => JsonRateCardCalculator.Parse(json));
 
-        Assert.Contains("githubAiCredits.hostSuffixes[1]", exception.Message);
-        Assert.DoesNotContain("$.githubAiCredits", exception.Message);
+        Assert.Equal("githubAiCredits.hostSuffixes[1]: must be a string", exception.Message);
     }
 
     [Fact]
@@ -68,9 +73,35 @@ public sealed class RateCardLoadingTests
         InvalidDataException exception = Assert.Throws<InvalidDataException>(
             () => JsonRateCardCalculator.Parse(json, """{ "schemaVersion": 1 }"""));
 
-        Assert.Contains(
-            "githubAiCredits.models[0].windows[0].tiers[0].inputPer1M",
+        Assert.Equal(
+            "githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be greater than or equal to 0",
             exception.Message);
-        Assert.False(exception.Message.StartsWith("overlay:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Parse_InvalidOverlay_NamesTheOverlay()
+    {
+        InvalidDataException exception = Assert.Throws<InvalidDataException>(
+            () => JsonRateCardCalculator.Parse(
+                RateFixtures.ByokTestRatesJson,
+                """{ "schemaVersion": 2 }"""));
+
+        Assert.Equal("overlay: schemaVersion: must be 1", exception.Message);
+    }
+
+    [Fact]
+    public void Parse_RateAtMaximum_Loads()
+    {
+        string json = RateFixtures.ByokTestRatesJson.Replace(
+            "\"inputPer1M\": 2.00,",
+            "\"inputPer1M\": 1000000,",
+            StringComparison.Ordinal);
+        JsonRateCardCalculator calculator = JsonRateCardCalculator.Parse(json);
+
+        CreditCalculationResult result = calculator.Calculate(
+            TestSpans.Chat(requestModel: "claude-sonnet-5.5", inputTokens: 1));
+
+        Assert.Equal(PricingStatus.Priced, result.Status);
+        Assert.Equal(1m, result.UsdCost);
     }
 }
