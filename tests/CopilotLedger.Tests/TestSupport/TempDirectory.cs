@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 namespace CopilotLedger.Tests.TestSupport;
 
 public sealed class TempDirectory : IDisposable
@@ -15,6 +17,7 @@ public sealed class TempDirectory : IDisposable
 
     public void Dispose()
     {
+        SqliteConnection.ClearAllPools();
         try
         {
             Directory.Delete(Path, recursive: true);
