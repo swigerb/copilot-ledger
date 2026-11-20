@@ -37,7 +37,7 @@ Every task ships with its tests, listed under "Test specifications". A task is d
   - Task 2: `src/CopilotLedger.Core/Pricing/rates.json` and `docs/configuration.md` (three models and four local provider names);
   - Task 2: `LedgerMigrations` (Migration 2), and test S1's expected `PRAGMA user_version`, which changes from 1 to 2;
   - Task 2: `SqliteLedgerStore` (four new public methods; existing members unchanged);
-  - Tasks 3 and 4: `docs/configuration.md` (the data-file table and the rates commands).
+  - Tasks 3 and 4: `docs/configuration.md` (the data-file table, the rates commands, and one sentence in the invalid-file paragraph).
 - The test project uses xUnit v2 (`xunit` 2.9.3).
 - When an acceptance criterion says `src/` contains no `double` or `float`, it means the C# keywords and the `GetDouble` and `TryGetDouble` calls. The enum member `OtlpValueKind.Double` names a protobuf wire type and is allowed.
 
