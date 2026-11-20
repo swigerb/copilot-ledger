@@ -39,7 +39,7 @@ internal static class OtlpJsonTraceReader
             {
                 RequireObject(resourceSpan, "resourceSpans element");
                 IReadOnlyList<OtlpAttribute> resourceAttributes = [];
-                if (resourceSpan.TryGetProperty("resource", out JsonElement resource))
+                if (TryFindProperty(resourceSpan, "resource", out JsonElement resource))
                 {
                     if (resource.ValueKind != JsonValueKind.Null)
                     {
@@ -98,7 +98,7 @@ internal static class OtlpJsonTraceReader
             }
 
             OtlpAnyValue value = OtlpAnyValue.Empty;
-            if (attribute.TryGetProperty("value", out JsonElement valueElement) &&
+            if (TryFindProperty(attribute, "value", out JsonElement valueElement) &&
                 valueElement.ValueKind == JsonValueKind.Object)
             {
                 value = ReadAnyValue(valueElement);
@@ -115,21 +115,21 @@ internal static class OtlpJsonTraceReader
         foreach (JsonProperty property in element.EnumerateObject())
         {
             JsonElement value = property.Value;
-            if (property.NameEquals("stringValue"))
+            if (NameIs(property, "stringValue"))
             {
                 return TryGetString(value, out string? text)
                     ? new OtlpAnyValue { Kind = OtlpValueKind.String, StringValue = text }
                     : OtlpAnyValue.Empty;
             }
 
-            if (property.NameEquals("boolValue"))
+            if (NameIs(property, "boolValue"))
             {
                 return value.ValueKind is JsonValueKind.True or JsonValueKind.False
                     ? new OtlpAnyValue { Kind = OtlpValueKind.Bool, BoolValue = value.GetBoolean() }
                     : OtlpAnyValue.Empty;
             }
 
-            if (property.NameEquals("intValue"))
+            if (NameIs(property, "intValue"))
             {
                 if (TryGetInt64(value, out long number))
                 {
@@ -139,22 +139,22 @@ internal static class OtlpJsonTraceReader
                 return OtlpAnyValue.Empty;
             }
 
-            if (property.NameEquals("doubleValue"))
+            if (NameIs(property, "doubleValue"))
             {
                 return new OtlpAnyValue { Kind = OtlpValueKind.Double };
             }
 
-            if (property.NameEquals("arrayValue"))
+            if (NameIs(property, "arrayValue"))
             {
                 return new OtlpAnyValue { Kind = OtlpValueKind.Array };
             }
 
-            if (property.NameEquals("kvlistValue"))
+            if (NameIs(property, "kvlistValue"))
             {
                 return new OtlpAnyValue { Kind = OtlpValueKind.KeyValueList };
             }
 
-            if (property.NameEquals("bytesValue"))
+            if (NameIs(property, "bytesValue"))
             {
                 return new OtlpAnyValue { Kind = OtlpValueKind.Bytes };
             }
@@ -165,7 +165,7 @@ internal static class OtlpJsonTraceReader
 
     private static JsonElement GetArray(JsonElement parent, string propertyName)
     {
-        if (!parent.TryGetProperty(propertyName, out JsonElement value) ||
+        if (!TryFindProperty(parent, propertyName, out JsonElement value) ||
             value.ValueKind == JsonValueKind.Null)
         {
             return EmptyArray;
@@ -210,7 +210,7 @@ internal static class OtlpJsonTraceReader
     private static bool TryReadStringProperty(JsonElement element, string propertyName, out string? value)
     {
         value = null;
-        return element.TryGetProperty(propertyName, out JsonElement property) &&
+        return TryFindProperty(element, propertyName, out JsonElement property) &&
                TryGetString(property, out value);
     }
 
@@ -235,7 +235,7 @@ internal static class OtlpJsonTraceReader
 
     private static ulong ReadUInt64Property(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out JsonElement property))
+        if (!TryFindProperty(element, propertyName, out JsonElement property))
         {
             return 0;
         }
@@ -249,6 +249,36 @@ internal static class OtlpJsonTraceReader
         return property.ValueKind == JsonValueKind.Number && property.TryGetUInt64(out ulong parsedNumber)
             ? parsedNumber
             : 0;
+    }
+
+    // NameEquals throws InvalidOperationException for some escaped lone surrogates; such a name is an unknown property.
+    private static bool NameIs(JsonProperty property, string name)
+    {
+        try
+        {
+            return property.NameEquals(name);
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    // Like TryGetProperty, including returning the last match for a repeated name, but it never throws for an unreadable name.
+    private static bool TryFindProperty(JsonElement element, string name, out JsonElement value)
+    {
+        value = default;
+        bool found = false;
+        foreach (JsonProperty property in element.EnumerateObject())
+        {
+            if (NameIs(property, name))
+            {
+                value = property.Value;
+                found = true;
+            }
+        }
+
+        return found;
     }
 
     private static bool TryGetInt64(JsonElement element, out long value)
