@@ -161,6 +161,40 @@ public sealed class OtlpJsonDecodingTests
                 "chat"));
     }
 
+    // JS9: an unreadable property name (an escaped lone surrogate, long enough that System.Text.Json throws when it
+    // compares the name) in every object, placed first and placed last.
+    public static TheoryData<string> UnreadableNameRequests => new()
+    {
+        """{"\ud800abcdefghijklmnop":1,"resourceSpans":[{"\ud800abcdefghijklmnop":1,"resource":{"\ud800abcdefghijklmnop":1,"attributes":[{"\ud800abcdefghijklmnop":1,"key":"service.name","value":{"\ud800abcdefghijklmnop":1,"stringValue":"github-copilot"}}]},"scopeSpans":[{"\ud800abcdefghijklmnop":1,"spans":[{"\ud800abcdefghijklmnop":1,"traceId":"5b8efff798038103d269b633813fc60c","spanId":"eee19b7ec3c1b174","name":"chat mai-code-2","startTimeUnixNano":"1795199712404000000","endTimeUnixNano":"1795199714391000000","attributes":[{"\ud800abcdefghijklmnop":1,"key":"gen_ai.operation.name","value":{"\ud800abcdefghijklmnop":1,"stringValue":"chat"}}]}]}]}]}""",
+        """{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"github-copilot","\ud800abcdefghijklmnop":1},"\ud800abcdefghijklmnop":1}],"\ud800abcdefghijklmnop":1},"scopeSpans":[{"spans":[{"traceId":"5b8efff798038103d269b633813fc60c","spanId":"eee19b7ec3c1b174","name":"chat mai-code-2","startTimeUnixNano":"1795199712404000000","endTimeUnixNano":"1795199714391000000","attributes":[{"key":"gen_ai.operation.name","value":{"stringValue":"chat","\ud800abcdefghijklmnop":1},"\ud800abcdefghijklmnop":1}],"\ud800abcdefghijklmnop":1}],"\ud800abcdefghijklmnop":1}],"\ud800abcdefghijklmnop":1}],"\ud800abcdefghijklmnop":1}""",
+    };
+
+    [Theory]
+    [MemberData(nameof(UnreadableNameRequests))]
+    public void JS9_UnreadablePropertyNames_AreIgnored(string json)
+    {
+        OtlpTraceRequest request = OtlpTraceDecoder.DecodeJson(OtlpFixtures.Utf8(json));
+        OtlpResourceSpans resourceSpans = Assert.Single(request.ResourceSpans);
+
+        OtlpFixtures.AssertAttribute(
+            Assert.Single(resourceSpans.ResourceAttributes),
+            "service.name",
+            OtlpValueKind.String,
+            "github-copilot");
+        OtlpSpan span = Assert.Single(resourceSpans.Spans);
+        Assert.Equal("5b8efff798038103d269b633813fc60c", span.TraceId);
+        Assert.Equal("eee19b7ec3c1b174", span.SpanId);
+        Assert.Null(span.ParentSpanId);
+        Assert.Equal("chat mai-code-2", span.Name);
+        Assert.Equal(1795199712404000000UL, span.StartTimeUnixNano);
+        Assert.Equal(1795199714391000000UL, span.EndTimeUnixNano);
+        OtlpFixtures.AssertAttribute(
+            Assert.Single(span.Attributes),
+            "gen_ai.operation.name",
+            OtlpValueKind.String,
+            "chat");
+    }
+
     private static OtlpSpan SingleSpan(string json) =>
         Assert.Single(Assert.Single(
             OtlpTraceDecoder.DecodeJson(OtlpFixtures.Utf8(json)).ResourceSpans).Spans);
