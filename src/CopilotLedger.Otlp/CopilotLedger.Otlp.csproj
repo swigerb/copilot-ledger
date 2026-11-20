@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\CopilotLedger.Core\CopilotLedger.Core.csproj" />
+    <ProjectReference Include="..\CopilotLedger.Storage\CopilotLedger.Storage.csproj" />
   </ItemGroup>
 </Project>

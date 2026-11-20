@@ -35,7 +35,7 @@ public sealed class SqliteLedgerStoreTests
             await using (SqliteCommand versionCommand = connection.CreateCommand())
             {
                 versionCommand.CommandText = "PRAGMA user_version;";
-                Assert.Equal(1L, await versionCommand.ExecuteScalarAsync());
+                Assert.Equal(2L, await versionCommand.ExecuteScalarAsync());
             }
         }
 
