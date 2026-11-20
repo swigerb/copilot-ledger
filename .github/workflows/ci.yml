@@ -19,7 +19,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: windows-latest
+            rid: win-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -28,3 +32,15 @@ jobs:
           dotnet-version: 10.0.x
       - run: dotnet build CopilotLedger.slnx
       - run: dotnet test CopilotLedger.slnx
+      - name: Publish single-file gh-ledger
+        run: dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release -r ${{ matrix.rid }} -o artifacts/gh-ledger
+      - name: Smoke-test the published binary
+        shell: bash
+        env:
+          COPILOT_LEDGER_HOME: ${{ runner.temp }}/copilot-ledger
+        run: |
+          ./artifacts/gh-ledger/gh-ledger --version
+          ./artifacts/gh-ledger/gh-ledger rates validate
+          ./artifacts/gh-ledger/gh-ledger daemon start
+          ./artifacts/gh-ledger/gh-ledger status
+          ./artifacts/gh-ledger/gh-ledger daemon stop

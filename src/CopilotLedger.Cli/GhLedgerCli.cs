@@ -1,7 +1,9 @@
 using System.CommandLine;
 using System.Reflection;
 using CopilotLedger.Cli.Daemon;
+using CopilotLedger.Cli.Install;
 using CopilotLedger.Cli.Rates;
+using CopilotLedger.Cli.Reporting;
 
 namespace CopilotLedger.Cli;
 
@@ -27,6 +29,16 @@ public static class GhLedgerCli
             "CopilotLedger: local AI spend ledger for GitHub Copilot");
         root.Add(DaemonCommands.Create(context));
         root.Add(RatesCommands.Create(context));
+        foreach (Command command in ReportCommands.Create(context))
+        {
+            root.Add(command);
+        }
+
+        foreach (Command command in InstallCommands.Create(context))
+        {
+            root.Add(command);
+        }
+
         return root.Parse(args).InvokeAsync(
             new InvocationConfiguration
             {
