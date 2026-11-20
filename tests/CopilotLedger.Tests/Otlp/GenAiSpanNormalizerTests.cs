@@ -283,6 +283,7 @@ public sealed class GenAiSpanNormalizerTests
                 Span(attributes:
                 [
                     Str(GenAiAttributeNames.OperationName, "chat"),
+                    Str(GenAiAttributeNames.ServerAddress, "127.0.0.1"),
                     Int(GenAiAttributeNames.ServerPort, 70000),
                 ]))).InferenceSpans);
 

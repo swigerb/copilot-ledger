@@ -21,6 +21,6 @@ public static class GenAiAttributeNames
     public const string LegacyRepoRemoteUrl = "copilot_chat.repo.remote_url";
     public const string LegacyRepoHeadBranchName = "copilot_chat.repo.head_branch_name";
     public const string LegacyRepoHeadCommitHash = "copilot_chat.repo.head_commit_hash";
-    public const string ServiceName = "service.name";
-    public const string ProcessWorkingDirectory = "process.working_directory";
+    public const string ServiceName = "service.name";                          // resource attribute
+    public const string ProcessWorkingDirectory = "process.working_directory"; // resource attribute
 }

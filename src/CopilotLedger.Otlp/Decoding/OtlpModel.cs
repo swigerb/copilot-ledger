@@ -16,27 +16,27 @@ public sealed record OtlpAnyValue
 {
     public static OtlpAnyValue Empty { get; } = new() { Kind = OtlpValueKind.Empty };
     public required OtlpValueKind Kind { get; init; }
-    public string? StringValue { get; init; }
-    public bool BoolValue { get; init; }
-    public long IntValue { get; init; }
+    public string? StringValue { get; init; }   // set when Kind is String
+    public bool BoolValue { get; init; }        // set when Kind is Bool
+    public long IntValue { get; init; }         // set when Kind is Int
 }
 
 public sealed record OtlpAttribute(string Key, OtlpAnyValue Value);
 
 public sealed record OtlpSpan
 {
-    public string? TraceId { get; init; }
-    public string? SpanId { get; init; }
-    public string? ParentSpanId { get; init; }
+    public string? TraceId { get; init; }                  // 32 lowercase hex chars; null when missing, the wrong length, not hex, or all zeros
+    public string? SpanId { get; init; }                   // 16 lowercase hex chars; null when missing, the wrong length, not hex, or all zeros
+    public string? ParentSpanId { get; init; }             // 16 lowercase hex chars; null when empty, missing, invalid, or all zeros
     public string Name { get; init; } = "";
-    public ulong StartTimeUnixNano { get; init; }
-    public ulong EndTimeUnixNano { get; init; }
+    public ulong StartTimeUnixNano { get; init; }          // 0 when missing or invalid
+    public ulong EndTimeUnixNano { get; init; }            // 0 when missing or invalid
     public IReadOnlyList<OtlpAttribute> Attributes { get; init; } = [];
 }
 
 public sealed record OtlpResourceSpans(
     IReadOnlyList<OtlpAttribute> ResourceAttributes,
-    IReadOnlyList<OtlpSpan> Spans);
+    IReadOnlyList<OtlpSpan> Spans);                        // the spans of every ScopeSpans entry, in order
 
 public sealed record OtlpTraceRequest(IReadOnlyList<OtlpResourceSpans> ResourceSpans)
 {
