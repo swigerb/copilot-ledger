@@ -1,0 +1,942 @@
+using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
+using System.Reflection;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using CopilotLedger.Core.Telemetry;
+
+namespace CopilotLedger.Core.Pricing;
+
+public sealed class JsonRateCardCalculator : ICreditCalculator
+{
+    public const string EmbeddedResourceName = "CopilotLedger.Core.Pricing.rates.json";
+
+    private static readonly JsonSerializerOptions SerializerOptions = new()
+    {
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+        RespectNullableAnnotations = true,
+        ReadCommentHandling = JsonCommentHandling.Disallow,
+        AllowTrailingCommas = false,
+        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.Strict,
+    };
+
+    private readonly IReadOnlyList<ModelRateCard> _githubModels;
+    private readonly IReadOnlyList<ModelRateCard> _foundryModels;
+    private readonly IReadOnlyList<LocalModelRate> _localModels;
+    private readonly IReadOnlyList<string> _githubHosts;
+    private readonly IReadOnlyList<string> _foundryHosts;
+    private readonly IReadOnlyList<string> _foundryProviders;
+    private readonly IReadOnlyList<string> _localHosts;
+    private readonly IReadOnlyList<string> _localProviders;
+    private readonly ModelRateCard _baselineCard;
+
+    private JsonRateCardCalculator(
+        string ratesVersion,
+        IReadOnlyList<ModelRateCard> githubModels,
+        IReadOnlyList<ModelRateCard> foundryModels,
+        IReadOnlyList<LocalModelRate> localModels,
+        IReadOnlyList<string> githubHosts,
+        IReadOnlyList<string> foundryHosts,
+        IReadOnlyList<string> foundryProviders,
+        IReadOnlyList<string> localHosts,
+        IReadOnlyList<string> localProviders,
+        ModelRateCard baselineCard)
+    {
+        RatesVersion = ratesVersion;
+        _githubModels = githubModels;
+        _foundryModels = foundryModels;
+        _localModels = localModels;
+        _githubHosts = githubHosts;
+        _foundryHosts = foundryHosts;
+        _foundryProviders = foundryProviders;
+        _localHosts = localHosts;
+        _localProviders = localProviders;
+        _baselineCard = baselineCard;
+    }
+
+    public string RatesVersion { get; }
+
+    public static JsonRateCardCalculator LoadEmbedded() =>
+        Create(ReadEmbedded(), null, null);
+
+    public static JsonRateCardCalculator LoadEmbeddedWithOverlay(string overlayPath)
+    {
+        ArgumentNullException.ThrowIfNull(overlayPath);
+
+        if (!File.Exists(overlayPath))
+        {
+            throw new FileNotFoundException("The rates overlay file was not found.", overlayPath);
+        }
+
+        try
+        {
+            return Create(ReadEmbedded(), File.ReadAllText(overlayPath), overlayPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidDataException($"{overlayPath}: could not read rates overlay.", ex);
+        }
+    }
+
+    public static JsonRateCardCalculator LoadDefault()
+    {
+        return File.Exists(LedgerPaths.DefaultRatesOverlayPath)
+            ? LoadEmbeddedWithOverlay(LedgerPaths.DefaultRatesOverlayPath)
+            : LoadEmbedded();
+    }
+
+    public static JsonRateCardCalculator Parse(string json, string? overlayJson = null)
+    {
+        ArgumentNullException.ThrowIfNull(json);
+        return Create(json, overlayJson, overlayJson is null ? null : "overlay");
+    }
+
+    public CreditCalculationResult Calculate(NormalizedGenAiSpan span)
+    {
+        ArgumentNullException.ThrowIfNull(span);
+
+        string? model = NormalizeModel(
+            !string.IsNullOrWhiteSpace(span.ResponseModel)
+                ? span.ResponseModel
+                : span.RequestModel);
+
+        if (!GenAiOperationNames.IsInference(span.OperationName))
+        {
+            return Result(BillingChannel.Unpriced, PricingStatus.NotBillableOperation, model);
+        }
+
+        if (span.InputTokens < 0 ||
+            span.OutputTokens < 0 ||
+            span.CacheReadInputTokens < 0 ||
+            span.CacheWriteInputTokens < 0 ||
+            span.CacheReadInputTokens > span.InputTokens ||
+            span.CacheWriteInputTokens > span.InputTokens - span.CacheReadInputTokens)
+        {
+            return Result(BillingChannel.Unpriced, PricingStatus.InvalidUsage, model);
+        }
+
+        long uncached = span.InputTokens - span.CacheReadInputTokens - span.CacheWriteInputTokens;
+        string host = NormalizeHost(span.ServerAddress);
+
+        LocalModelRate? localModel = model is null ? null : _localModels.FirstOrDefault(item => item.Matches(model));
+        bool localByKnownModel = string.IsNullOrWhiteSpace(host) && localModel is not null;
+        if (IsLoopback(host) ||
+            MatchesValue(host, _localHosts) ||
+            MatchesValue(span.ProviderName, _localProviders) ||
+            localByKnownModel)
+        {
+            string? localModelId = localModel?.ModelId ?? model;
+            PricedSelection? selection = Select(_baselineCard, span.StartTime, span.InputTokens);
+            if (selection is null)
+            {
+                return Result(
+                    BillingChannel.Local,
+                    PricingStatus.NoRateForDate,
+                    localModelId,
+                    uncachedInputTokens: uncached);
+            }
+
+            TokenCostBreakdown breakdown = Price(span, selection.Tier, uncached);
+            return Result(
+                BillingChannel.Local,
+                PricingStatus.LocalOffload,
+                localModelId,
+                _baselineCard.ModelId,
+                selection.Tier.Name,
+                uncached,
+                breakdown,
+                estimatedCloudSavedUsd: breakdown.TotalUsd);
+        }
+
+        if (MatchesHost(host, _foundryHosts) || MatchesValue(span.ProviderName, _foundryProviders))
+        {
+            if (model is null)
+            {
+                return Result(
+                    BillingChannel.FoundryByok,
+                    PricingStatus.UnknownModel,
+                    null,
+                    uncachedInputTokens: uncached);
+            }
+
+            ModelRateCard? card = FindModel(_foundryModels, model);
+            if (card is null)
+            {
+                return Result(
+                    BillingChannel.FoundryByok,
+                    PricingStatus.ByokUnpriced,
+                    model,
+                    uncachedInputTokens: uncached);
+            }
+
+            PricedSelection? selection = Select(card, span.StartTime, span.InputTokens);
+            if (selection is null)
+            {
+                return Result(
+                    BillingChannel.FoundryByok,
+                    PricingStatus.NoRateForDate,
+                    card.ModelId,
+                    uncachedInputTokens: uncached);
+            }
+
+            TokenCostBreakdown breakdown = Price(span, selection.Tier, uncached);
+            return Result(
+                BillingChannel.FoundryByok,
+                PricingStatus.Priced,
+                card.ModelId,
+                card.ModelId,
+                selection.Tier.Name,
+                uncached,
+                breakdown,
+                usdCost: breakdown.TotalUsd);
+        }
+
+        if (string.IsNullOrWhiteSpace(host) || MatchesHost(host, _githubHosts))
+        {
+            if (model is null)
+            {
+                return Result(
+                    BillingChannel.GitHubAiCredits,
+                    PricingStatus.UnknownModel,
+                    null,
+                    uncachedInputTokens: uncached);
+            }
+
+            ModelRateCard? card = FindModel(_githubModels, model);
+            if (card is null)
+            {
+                return Result(
+                    BillingChannel.GitHubAiCredits,
+                    PricingStatus.UnknownModel,
+                    model,
+                    uncachedInputTokens: uncached);
+            }
+
+            PricedSelection? selection = Select(card, span.StartTime, span.InputTokens);
+            if (selection is null)
+            {
+                return Result(
+                    BillingChannel.GitHubAiCredits,
+                    PricingStatus.NoRateForDate,
+                    card.ModelId,
+                    uncachedInputTokens: uncached);
+            }
+
+            TokenCostBreakdown breakdown = Price(span, selection.Tier, uncached);
+            return Result(
+                BillingChannel.GitHubAiCredits,
+                PricingStatus.Priced,
+                card.ModelId,
+                card.ModelId,
+                selection.Tier.Name,
+                uncached,
+                breakdown,
+                breakdown.TotalUsd,
+                AiCreditMath.UsdToAiCredits(breakdown.TotalUsd));
+        }
+
+        return Result(
+            BillingChannel.Unpriced,
+            PricingStatus.UnrecognizedEndpoint,
+            model,
+            uncachedInputTokens: uncached);
+    }
+
+    private static JsonRateCardCalculator Create(string baseJson, string? overlayJson, string? overlayName)
+    {
+        RateCardDocument baseDocument = Deserialize(baseJson, null, isBase: true);
+        ValidateOverlayShape(baseDocument);
+        _ = Validate(baseDocument);
+        RateCardDocument? overlay = overlayJson is null
+            ? null
+            : Deserialize(overlayJson, overlayName, isBase: false);
+        try
+        {
+            RateCardDocument merged = overlay is null
+                ? baseDocument
+                : Merge(baseDocument, overlay);
+            return Validate(merged);
+        }
+        catch (InvalidDataException ex) when (overlayName is not null)
+        {
+            throw new InvalidDataException($"{overlayName}: {ex.Message}", ex);
+        }
+    }
+
+    private static RateCardDocument Deserialize(string json, string? source, bool isBase)
+    {
+        RateCardDocument? document;
+        try
+        {
+            document = JsonSerializer.Deserialize<RateCardDocument>(json, SerializerOptions);
+        }
+        catch (JsonException ex)
+        {
+            string path = ex.Path ?? "$";
+            if (path.StartsWith("$.", StringComparison.Ordinal))
+            {
+                path = path[2..];
+            }
+
+            throw Invalid(source, path, ex.Message, ex);
+        }
+
+        if (document is null)
+        {
+            throw Invalid(source, "$", "expected a JSON object.");
+        }
+
+        Require(document.SchemaVersion is not null, source, "schemaVersion", "is required");
+        if (document.SchemaVersion != 1)
+        {
+            throw Invalid(source, "schemaVersion", "must be 1");
+        }
+
+        if (isBase)
+        {
+            Require(document.RatesVersion is not null, source, "ratesVersion", "is required");
+            Require(document.Source is not null, source, "source", "is required");
+            Require(document.Source!.Url is not null, source, "source.url", "is required");
+            Require(document.Source!.RetrievedOn is not null, source, "source.retrievedOn", "is required");
+            Require(document.GithubAiCredits?.HostSuffixes is not null, source, "githubAiCredits.hostSuffixes", "is required");
+            Require(document.GithubAiCredits?.Models is not null, source, "githubAiCredits.models", "is required");
+            Require(document.FoundryByok?.HostSuffixes is not null, source, "foundryByok.hostSuffixes", "is required");
+            Require(document.FoundryByok?.ProviderNames is not null, source, "foundryByok.providerNames", "is required");
+            Require(document.FoundryByok?.Models is not null, source, "foundryByok.models", "is required");
+            Require(document.LocalOffload?.BaselineModel is not null, source, "localOffload.baselineModel", "is required");
+            Require(document.LocalOffload?.Models is not null, source, "localOffload.models", "is required");
+            Require(document.LocalOffload?.AdditionalHosts is not null, source, "localOffload.additionalHosts", "is required");
+            Require(document.LocalOffload?.ProviderNames is not null, source, "localOffload.providerNames", "is required");
+        }
+
+        return document;
+    }
+
+    private static RateCardDocument Merge(RateCardDocument baseDocument, RateCardDocument overlay)
+    {
+        ValidateOverlayShape(overlay);
+        string ratesVersion = $"{baseDocument.RatesVersion}+{(string.IsNullOrWhiteSpace(overlay.RatesVersion) ? "user" : overlay.RatesVersion)}";
+
+        return new RateCardDocument
+        {
+            SchemaVersion = 1,
+            RatesVersion = ratesVersion,
+            Source = baseDocument.Source,
+            Notes = baseDocument.Notes,
+            GithubAiCredits = new PricedRateSection
+            {
+                HostSuffixes = MergeStrings(baseDocument.GithubAiCredits!.HostSuffixes!, overlay.GithubAiCredits?.HostSuffixes),
+                Models = MergeModels(baseDocument.GithubAiCredits.Models!, overlay.GithubAiCredits?.Models),
+            },
+            FoundryByok = new FoundryRateSection
+            {
+                HostSuffixes = MergeStrings(baseDocument.FoundryByok!.HostSuffixes!, overlay.FoundryByok?.HostSuffixes),
+                ProviderNames = MergeStrings(baseDocument.FoundryByok.ProviderNames!, overlay.FoundryByok?.ProviderNames),
+                Models = MergeModels(baseDocument.FoundryByok.Models!, overlay.FoundryByok?.Models),
+            },
+            LocalOffload = new LocalRateSection
+            {
+                BaselineModel = overlay.LocalOffload?.BaselineModel ?? baseDocument.LocalOffload!.BaselineModel,
+                Models = MergeModels(baseDocument.LocalOffload!.Models!, overlay.LocalOffload?.Models),
+                AdditionalHosts = MergeStrings(baseDocument.LocalOffload!.AdditionalHosts!, overlay.LocalOffload?.AdditionalHosts),
+                ProviderNames = MergeStrings(baseDocument.LocalOffload!.ProviderNames!, overlay.LocalOffload?.ProviderNames),
+            },
+        };
+    }
+
+    private static JsonRateCardCalculator Validate(RateCardDocument document)
+    {
+        if (string.IsNullOrWhiteSpace(document.RatesVersion))
+        {
+            throw Invalid(null, "ratesVersion", "must not be blank");
+        }
+
+        IReadOnlyList<ModelRateCard> githubModels = ValidateModels(
+            document.GithubAiCredits!.Models!,
+            BillingChannel.GitHubAiCredits,
+            "githubAiCredits.models");
+        IReadOnlyList<ModelRateCard> foundryModels = ValidateModels(
+            document.FoundryByok!.Models!,
+            BillingChannel.FoundryByok,
+            "foundryByok.models");
+        IReadOnlyList<LocalModelRate> localModels = ValidateLocalModels(
+            document.LocalOffload!.Models!,
+            "localOffload.models");
+
+        string normalizedBaseline = NormalizeModel(document.LocalOffload.BaselineModel)
+            ?? throw Invalid(null, "localOffload.baselineModel", "must not be blank");
+        ModelRateCard? baseline = FindModel(githubModels, normalizedBaseline);
+        if (baseline is null)
+        {
+            throw Invalid(null, "localOffload.baselineModel", $"does not resolve to a githubAiCredits model: {normalizedBaseline}");
+        }
+
+        return new JsonRateCardCalculator(
+            document.RatesVersion,
+            githubModels,
+            foundryModels,
+            localModels,
+            ValidateHosts(document.GithubAiCredits.HostSuffixes!, "githubAiCredits.hostSuffixes"),
+            ValidateHosts(document.FoundryByok.HostSuffixes!, "foundryByok.hostSuffixes"),
+            ValidateNames(document.FoundryByok.ProviderNames!, "foundryByok.providerNames"),
+            ValidateNames(document.LocalOffload.AdditionalHosts!, "localOffload.additionalHosts"),
+            ValidateNames(document.LocalOffload.ProviderNames!, "localOffload.providerNames"),
+            baseline);
+    }
+
+    private static void ValidateOverlayShape(RateCardDocument overlay)
+    {
+        ValidateOptionalStringElements(overlay.GithubAiCredits?.HostSuffixes, "githubAiCredits.hostSuffixes");
+        ValidateOptionalStringElements(overlay.FoundryByok?.HostSuffixes, "foundryByok.hostSuffixes");
+        ValidateOptionalStringElements(overlay.FoundryByok?.ProviderNames, "foundryByok.providerNames");
+        ValidateOptionalStringElements(overlay.LocalOffload?.AdditionalHosts, "localOffload.additionalHosts");
+        ValidateOptionalStringElements(overlay.LocalOffload?.ProviderNames, "localOffload.providerNames");
+
+        ValidateOverlayModels(overlay.GithubAiCredits?.Models, "githubAiCredits.models");
+        ValidateOverlayModels(overlay.FoundryByok?.Models, "foundryByok.models");
+        ValidateOverlayModels(overlay.LocalOffload?.Models, "localOffload.models");
+    }
+
+    private static void ValidateOverlayModels(
+        IReadOnlyList<PricedModelDocument>? models,
+        string path)
+    {
+        if (models is null)
+        {
+            return;
+        }
+
+        HashSet<string> ids = new(StringComparer.Ordinal);
+        for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
+        {
+            string modelPath = $"{path}[{modelIndex}]";
+            PricedModelDocument model = models[modelIndex]
+                ?? throw Invalid(null, modelPath, "must not be null");
+            string? id = NormalizeModel(model!.Id);
+            if (id is not null && !ids.Add(id))
+            {
+                throw Invalid(null, $"{modelPath}.id", $"duplicate model identity: {id}");
+            }
+
+            ValidateOptionalStringElements(model.Aliases, $"{modelPath}.aliases");
+            Require(model.Windows is not null, null, $"{modelPath}.windows", "must not be null");
+            for (int windowIndex = 0; windowIndex < model.Windows!.Count; windowIndex++)
+            {
+                string windowPath = $"{modelPath}.windows[{windowIndex}]";
+                RateWindowDocument window = model.Windows[windowIndex]
+                    ?? throw Invalid(null, windowPath, "must not be null");
+                Require(window!.Tiers is not null, null, $"{windowPath}.tiers", "must not be null");
+                for (int tierIndex = 0; tierIndex < window.Tiers!.Count; tierIndex++)
+                {
+                    Require(
+                        window.Tiers[tierIndex] is not null,
+                        null,
+                        $"{windowPath}.tiers[{tierIndex}]",
+                        "must not be null");
+                }
+            }
+        }
+    }
+
+    private static void ValidateOverlayModels(
+        IReadOnlyList<LocalModelDocument>? models,
+        string path)
+    {
+        if (models is null)
+        {
+            return;
+        }
+
+        HashSet<string> ids = new(StringComparer.Ordinal);
+        for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
+        {
+            LocalModelDocument? model = models[modelIndex];
+            string modelPath = $"{path}[{modelIndex}]";
+            Require(model is not null, null, modelPath, "must not be null");
+            string? id = NormalizeModel(model!.Id);
+            if (id is not null && !ids.Add(id))
+            {
+                throw Invalid(null, $"{modelPath}.id", $"duplicate model identity: {id}");
+            }
+
+            ValidateOptionalStringElements(model.Aliases, $"{modelPath}.aliases");
+        }
+    }
+
+    private static void ValidateOptionalStringElements(IReadOnlyList<string>? values, string path)
+    {
+        if (values is null)
+        {
+            return;
+        }
+
+        for (int index = 0; index < values.Count; index++)
+        {
+            Require(values[index] is not null, null, $"{path}[{index}]", "must not be null");
+        }
+    }
+
+    private static IReadOnlyList<ModelRateCard> ValidateModels(
+        IReadOnlyList<PricedModelDocument> models,
+        BillingChannel channel,
+        string path)
+    {
+        HashSet<string> identities = new(StringComparer.Ordinal);
+        List<ModelRateCard> result = [];
+        for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
+        {
+            string modelPath = $"{path}[{modelIndex}]";
+            PricedModelDocument model = models[modelIndex]
+                ?? throw Invalid(null, modelPath, "must not be null");
+            string id = NormalizeModel(model.Id)
+                ?? throw Invalid(null, $"{modelPath}.id", "must not be blank");
+            AddIdentity(identities, id, $"{modelPath}.id");
+
+            List<string> aliases = [];
+            IReadOnlyList<string> modelAliases = model.Aliases
+                ?? throw Invalid(null, $"{modelPath}.aliases", "must not be null");
+            for (int aliasIndex = 0; aliasIndex < modelAliases.Count; aliasIndex++)
+            {
+                string aliasPath = $"{modelPath}.aliases[{aliasIndex}]";
+                string? rawAlias = modelAliases[aliasIndex];
+                Require(rawAlias is not null, null, aliasPath, "must not be null");
+                string alias = NormalizeModel(rawAlias)
+                    ?? throw Invalid(null, aliasPath, "must not be blank");
+                AddIdentity(identities, alias, aliasPath);
+                aliases.Add(alias);
+            }
+
+            if (model.Windows.Count == 0)
+            {
+                throw Invalid(null, $"{modelPath}.windows", "must contain at least one window");
+            }
+
+            List<RateWindow> windows = [];
+            for (int windowIndex = 0; windowIndex < model.Windows.Count; windowIndex++)
+            {
+                string windowPath = $"{modelPath}.windows[{windowIndex}]";
+                RateWindowDocument window = model.Windows[windowIndex]
+                    ?? throw Invalid(null, windowPath, "must not be null");
+                if (window.EffectiveFrom is not null &&
+                    window.EffectiveUntil is not null &&
+                    window.EffectiveFrom >= window.EffectiveUntil)
+                {
+                    throw Invalid(null, $"{windowPath}.effectiveUntil", "must be later than effectiveFrom");
+                }
+
+                if (windowIndex > 0)
+                {
+                    RateWindowDocument previous = model.Windows[windowIndex - 1]
+                        ?? throw Invalid(null, $"{modelPath}.windows[{windowIndex - 1}]", "must not be null");
+                    if (window.EffectiveFrom is null ||
+                        previous.EffectiveUntil is null ||
+                        previous.EffectiveUntil > window.EffectiveFrom)
+                    {
+                        throw Invalid(null, $"{windowPath}.effectiveFrom", "windows must be sorted and must not overlap");
+                    }
+                }
+
+                if (window.Tiers.Count == 0)
+                {
+                    throw Invalid(null, $"{windowPath}.tiers", "must contain at least one tier");
+                }
+
+                HashSet<string> tierNames = new(StringComparer.Ordinal);
+                List<RateTier> tiers = [];
+                long? previousMax = null;
+                for (int tierIndex = 0; tierIndex < window.Tiers.Count; tierIndex++)
+                {
+                    string tierPath = $"{windowPath}.tiers[{tierIndex}]";
+                    RateTierDocument tier = window.Tiers[tierIndex]
+                        ?? throw Invalid(null, tierPath, "must not be null");
+                    if (string.IsNullOrWhiteSpace(tier.Name))
+                    {
+                        throw Invalid(null, $"{tierPath}.name", "must not be blank");
+                    }
+
+                    if (!tierNames.Add(tier.Name))
+                    {
+                        throw Invalid(null, $"{tierPath}.name", "must be unique within the window");
+                    }
+
+                    bool last = tierIndex == window.Tiers.Count - 1;
+                    if (last && tier.MaxInputTokens is not null)
+                    {
+                        throw Invalid(null, $"{tierPath}.maxInputTokens", "the last tier must be unbounded");
+                    }
+
+                    if (!last)
+                    {
+                        if (tier.MaxInputTokens is null or <= 0)
+                        {
+                            throw Invalid(null, $"{tierPath}.maxInputTokens", "must be greater than 0 for every tier except the last");
+                        }
+
+                        if (previousMax is not null && tier.MaxInputTokens <= previousMax)
+                        {
+                            throw Invalid(null, $"{tierPath}.maxInputTokens", "must be strictly ascending");
+                        }
+
+                        previousMax = tier.MaxInputTokens;
+                    }
+
+                    ValidateRate(tier.InputPer1M, $"{tierPath}.inputPer1M");
+                    ValidateOptionalRate(tier.CachedInputPer1M, $"{tierPath}.cachedInputPer1M");
+                    ValidateOptionalRate(tier.CacheWritePer1M, $"{tierPath}.cacheWritePer1M");
+                    ValidateRate(tier.OutputPer1M, $"{tierPath}.outputPer1M");
+                    tiers.Add(new RateTier(
+                        tier.Name,
+                        tier.MaxInputTokens,
+                        tier.InputPer1M,
+                        tier.CachedInputPer1M,
+                        tier.CacheWritePer1M,
+                        tier.OutputPer1M));
+                }
+
+                windows.Add(new RateWindow(window.EffectiveFrom, window.EffectiveUntil, tiers));
+            }
+
+            result.Add(new ModelRateCard(id, channel, aliases, windows));
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<LocalModelRate> ValidateLocalModels(
+        IReadOnlyList<LocalModelDocument> models,
+        string path)
+    {
+        HashSet<string> identities = new(StringComparer.Ordinal);
+        List<LocalModelRate> result = [];
+        for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
+        {
+            string modelPath = $"{path}[{modelIndex}]";
+            LocalModelDocument model = models[modelIndex]
+                ?? throw Invalid(null, modelPath, "must not be null");
+            string id = NormalizeModel(model.Id)
+                ?? throw Invalid(null, $"{modelPath}.id", "must not be blank");
+            AddIdentity(identities, id, $"{modelPath}.id");
+
+            List<string> aliases = [];
+            IReadOnlyList<string> modelAliases = model.Aliases
+                ?? throw Invalid(null, $"{modelPath}.aliases", "must not be null");
+            for (int aliasIndex = 0; aliasIndex < modelAliases.Count; aliasIndex++)
+            {
+                string aliasPath = $"{modelPath}.aliases[{aliasIndex}]";
+                string? rawAlias = modelAliases[aliasIndex];
+                Require(rawAlias is not null, null, aliasPath, "must not be null");
+                string alias = NormalizeModel(rawAlias)
+                    ?? throw Invalid(null, aliasPath, "must not be blank");
+                AddIdentity(identities, alias, aliasPath);
+                aliases.Add(alias);
+            }
+
+            result.Add(new LocalModelRate(id, aliases));
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<string> ValidateHosts(IReadOnlyList<string> values, string path)
+    {
+        List<string> result = [];
+        for (int index = 0; index < values.Count; index++)
+        {
+            Require(values[index] is not null, null, $"{path}[{index}]", "must not be null");
+            string value = values[index].Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(value) ||
+                value.StartsWith('.') ||
+                value.Contains('/') ||
+                value.Contains(':'))
+            {
+                throw Invalid(null, $"{path}[{index}]", "must be a host suffix without a leading '.', '/', or ':'");
+            }
+
+            result.Add(value);
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<string> ValidateNames(IReadOnlyList<string> values, string path)
+    {
+        List<string> result = [];
+        for (int index = 0; index < values.Count; index++)
+        {
+            Require(values[index] is not null, null, $"{path}[{index}]", "must not be null");
+            string value = values[index].Trim();
+            if (value.Length == 0)
+            {
+                throw Invalid(null, $"{path}[{index}]", "must not be blank");
+            }
+
+            result.Add(value);
+        }
+
+        return result;
+    }
+
+    private static void AddIdentity(HashSet<string> identities, string value, string path)
+    {
+        if (!identities.Add(value))
+        {
+            throw Invalid(null, path, $"duplicate model identity: {value}");
+        }
+    }
+
+    private static void ValidateOptionalRate(decimal? rate, string path)
+    {
+        if (rate is not null)
+        {
+            ValidateRate(rate.Value, path);
+        }
+    }
+
+    private static void ValidateRate(decimal rate, string path)
+    {
+        if (rate < 0)
+        {
+            throw Invalid(null, path, "must be greater than or equal to 0");
+        }
+
+        try
+        {
+            if (rate * 1_000_000m % 1m != 0m)
+            {
+                throw Invalid(null, path, "must have no more than 6 decimal places");
+            }
+        }
+        catch (OverflowException ex)
+        {
+            throw Invalid(null, path, "is too large", ex);
+        }
+    }
+
+    private static IReadOnlyList<string> MergeStrings(
+        IReadOnlyList<string> baseValues,
+        IReadOnlyList<string>? overlayValues)
+    {
+        List<string> result = [.. baseValues];
+        if (overlayValues is not null)
+        {
+            foreach (string value in overlayValues)
+            {
+                if (!result.Contains(value, StringComparer.OrdinalIgnoreCase))
+                {
+                    result.Add(value);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<PricedModelDocument> MergeModels(
+        IReadOnlyList<PricedModelDocument> baseModels,
+        IReadOnlyList<PricedModelDocument>? overlayModels)
+    {
+        List<PricedModelDocument> result = [.. baseModels];
+        if (overlayModels is not null)
+        {
+            foreach (PricedModelDocument model in overlayModels)
+            {
+                string? normalized = NormalizeModel(model.Id);
+                int index = normalized is null
+                    ? -1
+                    : result.FindIndex(existing =>
+                        string.Equals(NormalizeModel(existing.Id), normalized, StringComparison.Ordinal));
+                if (index >= 0)
+                {
+                    result[index] = model;
+                }
+                else
+                {
+                    result.Add(model);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<LocalModelDocument> MergeModels(
+        IReadOnlyList<LocalModelDocument> baseModels,
+        IReadOnlyList<LocalModelDocument>? overlayModels)
+    {
+        List<LocalModelDocument> result = [.. baseModels];
+        if (overlayModels is not null)
+        {
+            foreach (LocalModelDocument model in overlayModels)
+            {
+                string? normalized = NormalizeModel(model.Id);
+                int index = normalized is null
+                    ? -1
+                    : result.FindIndex(existing =>
+                        string.Equals(NormalizeModel(existing.Id), normalized, StringComparison.Ordinal));
+                if (index >= 0)
+                {
+                    result[index] = model;
+                }
+                else
+                {
+                    result.Add(model);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static string? NormalizeModel(string? model)
+    {
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return null;
+        }
+
+        StringBuilder result = new();
+        bool separator = false;
+        foreach (char character in model.Trim().ToLowerInvariant())
+        {
+            if (char.IsWhiteSpace(character))
+            {
+                if (result.Length > 0)
+                {
+                    separator = true;
+                }
+
+                continue;
+            }
+
+            if (separator)
+            {
+                result.Append('-');
+                separator = false;
+            }
+
+            result.Append(character);
+        }
+
+        return result.Length == 0 ? null : result.ToString();
+    }
+
+    private static string NormalizeHost(string? host)
+    {
+        string normalized = host?.Trim() ?? string.Empty;
+        if (normalized.Length >= 2 && normalized[0] == '[' && normalized[^1] == ']')
+        {
+            normalized = normalized[1..^1];
+        }
+
+        return normalized;
+    }
+
+    private static bool IsLoopback(string host)
+    {
+        return host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+            IPAddress.TryParse(host, out IPAddress? address) && IPAddress.IsLoopback(address);
+    }
+
+    private static bool MatchesHost(string host, IReadOnlyList<string> suffixes)
+    {
+        return !string.IsNullOrWhiteSpace(host) &&
+            suffixes.Any(suffix =>
+                host.Equals(suffix, StringComparison.OrdinalIgnoreCase) ||
+                host.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool MatchesValue(string? value, IReadOnlyList<string> values) =>
+        value is not null && values.Contains(value.Trim(), StringComparer.OrdinalIgnoreCase);
+
+    private static ModelRateCard? FindModel(IEnumerable<ModelRateCard> models, string model) =>
+        models.FirstOrDefault(card =>
+            card.ModelId.Equals(model, StringComparison.Ordinal) ||
+            card.Aliases.Contains(model, StringComparer.Ordinal));
+
+    private static PricedSelection? Select(ModelRateCard card, DateTimeOffset instant, long inputTokens)
+    {
+        RateWindow? window = card.Windows.FirstOrDefault(item =>
+            (item.EffectiveFrom is null || item.EffectiveFrom <= instant) &&
+            (item.EffectiveUntil is null || instant < item.EffectiveUntil));
+        if (window is null)
+        {
+            return null;
+        }
+
+        RateTier? tier = window.Tiers.FirstOrDefault(item =>
+            item.MaxInputTokens is null || inputTokens <= item.MaxInputTokens);
+        return tier is null ? null : new PricedSelection(tier);
+    }
+
+    private static TokenCostBreakdown Price(NormalizedGenAiSpan span, RateTier tier, long uncached) =>
+        new(
+            AiCreditMath.CostUsd(uncached, tier.InputPer1M),
+            AiCreditMath.CostUsd(span.CacheReadInputTokens, tier.CachedInputPer1M ?? tier.InputPer1M),
+            AiCreditMath.CostUsd(span.CacheWriteInputTokens, tier.CacheWritePer1M ?? tier.InputPer1M),
+            AiCreditMath.CostUsd(span.OutputTokens, tier.OutputPer1M));
+
+    private CreditCalculationResult Result(
+        BillingChannel channel,
+        PricingStatus status,
+        string? modelId,
+        string? rateCardModelId = null,
+        string? tierName = null,
+        long uncachedInputTokens = 0,
+        TokenCostBreakdown? breakdown = null,
+        decimal usdCost = 0m,
+        decimal aiCredits = 0m,
+        decimal estimatedCloudSavedUsd = 0m) =>
+        new()
+        {
+            Channel = channel,
+            Status = status,
+            RatesVersion = RatesVersion,
+            ModelId = modelId,
+            RateCardModelId = rateCardModelId,
+            TierName = tierName,
+            UncachedInputTokens = uncachedInputTokens,
+            Breakdown = breakdown,
+            UsdCost = usdCost,
+            AiCredits = aiCredits,
+            EstimatedCloudSavedUsd = estimatedCloudSavedUsd,
+        };
+
+    private static string ReadEmbedded()
+    {
+        Assembly assembly = typeof(JsonRateCardCalculator).Assembly;
+        using Stream stream = assembly.GetManifestResourceStream(EmbeddedResourceName)
+            ?? throw new InvalidDataException($"Embedded rate resource was not found: {EmbeddedResourceName}");
+        using StreamReader reader = new(stream);
+        return reader.ReadToEnd();
+    }
+
+    private static void Require(bool condition, string? source, string path, string message)
+    {
+        if (!condition)
+        {
+            throw Invalid(source, path, message);
+        }
+    }
+
+    private static InvalidDataException Invalid(
+        string? source,
+        string path,
+        string message,
+        Exception? innerException = null)
+    {
+        string displayPath = path.StartsWith("$.", StringComparison.Ordinal) || path == "$" ? path : path;
+        string prefix = source is null ? string.Empty : $"{source}: ";
+        return new InvalidDataException($"{prefix}{displayPath}: {message}", innerException);
+    }
+
+    private sealed record LocalModelRate(string ModelId, IReadOnlyList<string> Aliases)
+    {
+        public bool Matches(string model) =>
+            ModelId.Equals(model, StringComparison.Ordinal) ||
+            Aliases.Contains(model, StringComparer.Ordinal);
+    }
+
+    private sealed record PricedSelection(RateTier Tier);
+}
