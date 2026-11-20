@@ -60,7 +60,7 @@ public sealed class LedgerIngestor : ILedgerIngestor
                 catch (Exception ex) when (
                     ex is OverflowException or ArgumentOutOfRangeException)
                 {
-                    costRejected++;
+                    costRejected++;   // "cost out of range": this span gets no ledger entry
                     continue;
                 }
 

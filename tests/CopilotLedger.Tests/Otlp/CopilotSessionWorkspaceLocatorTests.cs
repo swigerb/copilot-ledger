@@ -32,7 +32,7 @@ public sealed class CopilotSessionWorkspaceLocatorTests
         "id: " + SessionId + "\nbranch: x\n",
         "cwd: relative/path\n",
         "cwd:\n",
-        "  cwd: /not-at-column-zero\n",
+        "  cwd: {dir}\n",
     };
 
     [Theory]
@@ -43,7 +43,12 @@ public sealed class CopilotSessionWorkspaceLocatorTests
         string home = Path.Combine(temp.Path, "copilot-home");
         if (contents is not null)
         {
-            Write(home, contents);
+            Write(
+                home,
+                contents.Replace(
+                    "{dir}",
+                    Path.Combine(temp.Path, "work"),
+                    StringComparison.Ordinal));
         }
 
         Assert.Null(new CopilotSessionWorkspaceLocator(home)
@@ -59,7 +64,13 @@ public sealed class CopilotSessionWorkspaceLocatorTests
     public void WL3_InvalidSessionIds_ReturnNull(string id)
     {
         using TempDirectory temp = new();
-        Assert.Null(new CopilotSessionWorkspaceLocator(temp.Path)
+        string home = Path.Combine(temp.Path, "copilot-home");
+        string directory = Path.Combine(temp.Path, "work");
+        string decoy = WorkspaceFile(home, id);
+        Directory.CreateDirectory(Path.GetDirectoryName(decoy)!);
+        File.WriteAllText(decoy, $"cwd: {directory}\n");
+
+        Assert.Null(new CopilotSessionWorkspaceLocator(home)
             .GetWorkingDirectory(id));
     }
 
@@ -67,7 +78,8 @@ public sealed class CopilotSessionWorkspaceLocatorTests
     public void WL3_TooLongSessionId_ReturnsNull()
     {
         using TempDirectory temp = new();
-        Assert.Null(new CopilotSessionWorkspaceLocator(temp.Path)
+        string home = Path.Combine(temp.Path, "copilot-home");
+        Assert.Null(new CopilotSessionWorkspaceLocator(home)
             .GetWorkingDirectory(new string('a', 129)));
     }
 
@@ -108,4 +120,7 @@ public sealed class CopilotSessionWorkspaceLocatorTests
 
     private static string WorkspaceFile(string home) =>
         Path.Combine(home, "session-state", SessionId, "workspace.yaml");
+
+    private static string WorkspaceFile(string home, string conversationId) =>
+        Path.Combine(home, "session-state", conversationId, "workspace.yaml");
 }

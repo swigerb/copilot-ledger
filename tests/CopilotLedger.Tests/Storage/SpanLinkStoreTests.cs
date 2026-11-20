@@ -383,7 +383,12 @@ public sealed class SpanLinkStoreTests
         NormalizedGenAiSpan span = TestSpans.Chat(
             requestModel: model,
             inputTokens: input,
-            outputTokens: output);
+            outputTokens: output) with
+        {
+            TraceId = "5b8efff798038103d269b633813fc60c",
+            SpanId = "eee19b7ec3c1b174",
+            ParentSpanId = "eee19b7ec3c1b173",
+        };
         return new LedgerEntry(span, Calculator.Calculate(span), null);
     }
 

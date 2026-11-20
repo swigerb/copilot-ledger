@@ -27,6 +27,8 @@ public sealed class CachingGitContextResolverTests
         CachingGitContextResolver resolver = new(inner, time);
 
         resolver.Resolve("/r");
+        time.Advance(TimeSpan.FromSeconds(4));
+        resolver.Resolve("/r");
         time.Advance(TimeSpan.FromSeconds(5));
         resolver.Resolve("/r");
         Assert.Equal(2, inner.Calls);

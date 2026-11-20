@@ -40,11 +40,6 @@ public sealed class CopilotSessionWorkspaceLocator
         }
 
         _timeToLive = timeToLive ?? DefaultTimeToLive;
-        if (_timeToLive <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(timeToLive));
-        }
-
         CopilotHome = copilotHome;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }

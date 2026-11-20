@@ -294,9 +294,10 @@ public sealed class LedgerIngestorTests
     public async Task IG7_GitResolutionIOException_RecordsWithoutGit()
     {
         using TempDirectory temp = new();
+        ThrowingGitResolver git = new();
         Harness harness = await Harness.CreateAsync(
             temp,
-            gitResolver: new ThrowingGitResolver());
+            gitResolver: git);
         OtlpSpan span = IgSpan("0000000000000002",
             Str("gen_ai.request.model", "mai-code-2"),
             Int("gen_ai.usage.input_tokens", 1000),
@@ -311,7 +312,9 @@ public sealed class LedgerIngestorTests
             LedgerFilter.All));
         Assert.Equal("(none)", row.Repository);
         Assert.Equal("(none)", row.Branch);
+        Assert.Equal(1, row.SpanCount);
         Assert.Equal(0.075m, row.AiCredits);
+        Assert.Equal(temp.Path, Assert.Single(git.Calls));
     }
 
     [Fact]
@@ -520,8 +523,13 @@ public sealed class LedgerIngestorTests
 
     private sealed class ThrowingGitResolver : IGitContextResolver
     {
-        public GitWorkspaceContext? Resolve(string workingDirectory) =>
+        public List<string> Calls { get; } = [];
+
+        public GitWorkspaceContext? Resolve(string workingDirectory)
+        {
+            Calls.Add(workingDirectory);
             throw new IOException("unavailable");
+        }
     }
 
     private sealed class OverflowingCalculator : ICreditCalculator
