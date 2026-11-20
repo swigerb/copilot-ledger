@@ -9,6 +9,11 @@ CopilotLedger works with no configuration. This page explains how it prices usag
 | `~/.copilot-ledger/` | Data directory (`%USERPROFILE%\.copilot-ledger\` on Windows) |
 | `~/.copilot-ledger/ledger.db` | The local SQLite ledger (WAL mode) |
 | `~/.copilot-ledger/rates.json` | Optional rates overlay, which you create |
+| `~/.copilot-ledger/daemon.json` | Written while the daemon runs: process ID, endpoint, start time, and database path |
+| `~/.copilot-ledger/daemon.lock` | Held while the daemon runs, so only one daemon runs at a time |
+| `~/.copilot-ledger/daemon.log` | The daemon's log when it's started with `gh-ledger daemon start` |
+
+Set the `COPILOT_LEDGER_HOME` environment variable to keep these files in another directory.
 
 CopilotLedger never stores prompt or response content, and it strips credentials from Git remote URLs before saving them.
 
@@ -49,6 +54,8 @@ Until you add prices, BYOK requests are still counted and attributed to reposito
 ## The rates overlay: `~/.copilot-ledger/rates.json`
 
 To change pricing, create `~/.copilot-ledger/rates.json`. CopilotLedger merges it over the built-in rates when it loads them, so you only write what you want to change.
+
+Run `gh-ledger rates init` to create a starter file, and `gh-ledger rates validate` to check it against the same rules the daemon uses.
 
 - Every section is optional except `"schemaVersion": 1`.
 - A model with a new `id` is added. A model with the same `id` as a built-in one replaces it.
