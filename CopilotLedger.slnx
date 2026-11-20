@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/CopilotLedger.Core/CopilotLedger.Core.csproj" />
+    <Project Path="src/CopilotLedger.Otlp/CopilotLedger.Otlp.csproj" />
     <Project Path="src/CopilotLedger.Storage/CopilotLedger.Storage.csproj" />
   </Folder>
   <Folder Name="/tests/">
