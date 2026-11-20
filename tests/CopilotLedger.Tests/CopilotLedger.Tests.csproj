@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\CopilotLedger.Core\CopilotLedger.Core.csproj" />
+    <ProjectReference Include="..\..\src\CopilotLedger.Storage\CopilotLedger.Storage.csproj" />
   </ItemGroup>
 
 </Project>
