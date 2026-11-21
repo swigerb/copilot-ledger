@@ -485,7 +485,7 @@ public sealed class SpanLinkStoreTests
             await version.ExecuteNonQueryAsync();
         }
 
-        await held.CommitAsync();
+        held.Commit();
         await init;
 
         await using SqliteConnection check = await OpenAsync(DatabasePath(temp));

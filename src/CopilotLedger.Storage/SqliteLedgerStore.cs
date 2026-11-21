@@ -267,6 +267,7 @@ public sealed class SqliteLedgerStore
         return inserted;
     }
 
+    // One trace's breaker inputs, from the five queries below on one connection. Throws ArgumentException for a blank traceId.
     public async Task<TraceActivity> GetTraceActivityAsync(
         string traceId,
         CancellationToken cancellationToken = default)
@@ -382,12 +383,13 @@ public sealed class SqliteLedgerStore
         };
     }
 
+    // Inserts the trip unless (Rule, TraceId) already has one, and returns the new id, or null when it was skipped.
+    // Throws ArgumentException for a blank TraceId, Repository, Branch, or Detail; ArgumentOutOfRangeException for a negative WindowCostUsd.
     public async Task<long?> RecordBreakerTripAsync(
         NewBreakerTrip trip,
         CancellationToken cancellationToken = default)
     {
         EnsureInitialized();
-        ArgumentNullException.ThrowIfNull(trip);
         if (string.IsNullOrWhiteSpace(trip.TraceId))
         {
             throw new ArgumentException("Trace ID cannot be blank.", nameof(trip));
@@ -437,6 +439,7 @@ public sealed class SqliteLedgerStore
         return value is null or DBNull ? null : (long)value;
     }
 
+    // Open trips (reset_at_unix_ms IS NULL) that match every non-null filter property, newest first.
     public async Task<IReadOnlyList<BreakerTrip>> GetOpenBreakerTripsAsync(
         BreakerTripFilter filter,
         CancellationToken cancellationToken = default)
@@ -451,6 +454,7 @@ public sealed class SqliteLedgerStore
         return await ReadTripsAsync(command, cancellationToken);
     }
 
+    // Resets the open trips that match the filter and returns them, with ResetAt set, in ascending Id order.
     public async Task<IReadOnlyList<BreakerTrip>> ResetBreakerTripsAsync(
         BreakerTripFilter filter,
         CancellationToken cancellationToken = default)
@@ -468,6 +472,7 @@ public sealed class SqliteLedgerStore
         return trips;
     }
 
+    // Sets notified_at_unix_ms when it's NULL. Returns true when a row changed.
     public async Task<bool> MarkBreakerTripNotifiedAsync(
         long id,
         CancellationToken cancellationToken = default)
@@ -483,6 +488,7 @@ public sealed class SqliteLedgerStore
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
 
+    // Open, never-notified trips recorded at or after recordedSince, oldest first.
     public async Task<IReadOnlyList<BreakerTrip>> GetUnnotifiedBreakerTripsAsync(
         DateTimeOffset recordedSince,
         CancellationToken cancellationToken = default)
@@ -497,6 +503,7 @@ public sealed class SqliteLedgerStore
         return await ReadTripsAsync(command, cancellationToken);
     }
 
+    // The settings row; BreakerSettings.Default if the row is missing.
     public async Task<BreakerSettings> GetBreakerSettingsAsync(
         CancellationToken cancellationToken = default)
     {
@@ -522,6 +529,7 @@ public sealed class SqliteLedgerStore
         };
     }
 
+    // Throws ArgumentNullException for null; ArgumentOutOfRangeException when !settings.IsValid, without writing.
     public async Task UpdateBreakerSettingsAsync(
         BreakerSettings settings,
         CancellationToken cancellationToken = default)
@@ -547,6 +555,8 @@ public sealed class SqliteLedgerStore
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    // Inserts or replaces the budget and clears alerted_at and notified_at. Throws ArgumentException for a blank key, and
+    // ArgumentOutOfRangeException unless 0 < aiCredits <= 1,000,000 and aiCredits % 0.01m == 0m.
     public async Task SetBranchBudgetAsync(
         string repository,
         string branch,
@@ -574,6 +584,7 @@ public sealed class SqliteLedgerStore
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    // Returns true when a budget was deleted.
     public async Task<bool> ClearBranchBudgetAsync(
         string repository,
         string branch,
@@ -590,6 +601,7 @@ public sealed class SqliteLedgerStore
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
 
+    // Budgets with their spend, ordered by repository, then branch (SQLite BINARY collation). A null argument matches every value.
     public async Task<IReadOnlyList<BranchBudgetRow>> GetBranchBudgetsAsync(
         string? repository = null,
         string? branch = null,
@@ -611,6 +623,8 @@ public sealed class SqliteLedgerStore
         return await ReadBranchBudgetsAsync(command, cancellationToken);
     }
 
+    // Sets alerted_at_unix_ms when it's NULL and the key's spend, summed in the same statement, exceeds the stored budget.
+    // Returns true when a row changed. Checking in the UPDATE means a budget re-set after the caller's read is never marked.
     public async Task<bool> MarkBranchBudgetAlertedAsync(
         string repository,
         string branch,
@@ -628,6 +642,7 @@ public sealed class SqliteLedgerStore
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
 
+    // Sets notified_at_unix_ms when alerted_at_unix_ms is set and notified_at_unix_ms is NULL. Returns true when a row changed.
     public async Task<bool> MarkBranchBudgetNotifiedAsync(
         string repository,
         string branch,
@@ -645,6 +660,7 @@ public sealed class SqliteLedgerStore
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
 
+    // Budgets alerted at or after alertedSince and never notified, ordered by alerted_at, then repository, then branch.
     public async Task<IReadOnlyList<BranchBudgetRow>> GetUnnotifiedBudgetAlertsAsync(
         DateTimeOffset alertedSince,
         CancellationToken cancellationToken = default)
@@ -664,6 +680,8 @@ public sealed class SqliteLedgerStore
         return await ReadBranchBudgetsAsync(command, cancellationToken);
     }
 
+    // For each given trace with at least one failed execute_tool link (an exit code other than 0, or status 2), that count.
+    // Traces without failures are absent. An empty input returns an empty dictionary without a query.
     public async Task<IReadOnlyDictionary<string, long>> GetFailedToolCallCountsAsync(
         IEnumerable<string> traceIds,
         CancellationToken cancellationToken = default)

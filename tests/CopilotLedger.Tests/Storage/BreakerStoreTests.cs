@@ -343,9 +343,16 @@ public sealed class BreakerStoreTests
                 NOW,
                 null,
                 null));
-        Assert.Equal(
+        AssertBudget(
+            Assert.Single(await store.GetBranchBudgetsAsync("contoso/api")),
             "contoso/api",
-            Assert.Single(await store.GetBranchBudgetsAsync("contoso/api")).Repository);
+            "main",
+            40.5m,
+            31.5m,
+            false,
+            NOW,
+            null,
+            null);
         Assert.Empty(await store.GetBranchBudgetsAsync(
             "swigerb/copilot-ledger",
             "main"));
@@ -359,6 +366,8 @@ public sealed class BreakerStoreTests
         Assert.False(await store.MarkBranchBudgetAlertedAsync("x", "y"));
         BranchBudgetRow alerted = Assert.Single(
             await store.GetUnnotifiedBudgetAlertsAsync(NOW.AddHours(-1)));
+        Assert.Equal("swigerb/copilot-ledger", alerted.Repository);
+        Assert.Equal("feature/ledger", alerted.Branch);
         Assert.Equal(NOW, alerted.AlertedAt);
         Assert.True(await store.MarkBranchBudgetNotifiedAsync(
             "swigerb/copilot-ledger",
@@ -441,28 +450,28 @@ public sealed class BreakerStoreTests
     {
         using TempDirectory temp = new();
         SqliteLedgerStore store = await StoreAsync(temp);
-        const string x = "77777777777777777777777777777777";
-        const string y = "88888888888888888888888888888888";
-        const string z = "99999999999999999999999999999999";
+        string X = new('7', 32);
+        string Y = new('8', 32);
+        string Z = new('9', 32);
         await store.RecordSpanLinksAsync(
         [
-            ToolLink(x, "7777777777777771", T0, "powershell", 1, 0),
-            ToolLink(x, "7777777777777772", T0.AddSeconds(1), "powershell", -1, 0),
-            ToolLink(x, "7777777777777773", T0.AddSeconds(2), Hash, null, 2),
-            ToolLink(x, "7777777777777774", T0.AddSeconds(3), "powershell", 0, 0),
-            ToolLink(x, "7777777777777775", T0.AddSeconds(4), "powershell", 0, 2),
-            ToolLink(x, "7777777777777776", T0.AddSeconds(5), "apply_patch", null, 0),
-            ToolLink(y, "8888888888888881", T0, "bash", 2, 0),
-            ToolLink(z, "9999999999999991", T0, "powershell", 0, 0),
+            ToolLink(X, "7777777777777771", T0, "powershell", 1, 0),
+            ToolLink(X, "7777777777777772", T0.AddSeconds(1), "powershell", -1, 0),
+            ToolLink(X, "7777777777777773", T0.AddSeconds(2), Hash, null, 2),
+            ToolLink(X, "7777777777777774", T0.AddSeconds(3), "powershell", 0, 0),
+            ToolLink(X, "7777777777777775", T0.AddSeconds(4), "powershell", 0, 2),
+            ToolLink(X, "7777777777777776", T0.AddSeconds(5), "apply_patch", null, 0),
+            ToolLink(Y, "8888888888888881", T0, "bash", 2, 0),
+            ToolLink(Z, "9999999999999991", T0, "powershell", 0, 0),
         ]);
 
         IReadOnlyDictionary<string, long> counts =
             await store.GetFailedToolCallCountsAsync(
-                [x, y, z, new string('6', 32)]);
+                [X, Y, Z, new string('6', 32)]);
 
         Assert.Equal(2, counts.Count);
-        Assert.Equal(4, counts[x]);
-        Assert.Equal(1, counts[y]);
+        Assert.Equal(4, counts[X]);
+        Assert.Equal(1, counts[Y]);
         Assert.Empty(await store.GetFailedToolCallCountsAsync([]));
     }
 
