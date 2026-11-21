@@ -24,6 +24,7 @@
     <ProjectReference Include="..\..\src\CopilotLedger.Core\CopilotLedger.Core.csproj" />
     <ProjectReference Include="..\..\src\CopilotLedger.Storage\CopilotLedger.Storage.csproj" />
     <ProjectReference Include="..\..\src\CopilotLedger.Otlp\CopilotLedger.Otlp.csproj" />
+    <ProjectReference Include="..\..\src\CopilotLedger.Mcp\CopilotLedger.Mcp.csproj" />
     <ProjectReference Include="..\..\src\CopilotLedger.Cli\CopilotLedger.Cli.csproj" />
   </ItemGroup>
 
