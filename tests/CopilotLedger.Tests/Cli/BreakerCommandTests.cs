@@ -170,9 +170,11 @@ public sealed class BreakerCommandTests
             timeProvider: new ManualTimeProvider(Now, ManualTimeProvider.UtcMinus5));
         SqliteLedgerStore store = await StoreAsync(harness);
 
+        CliRun configured = await harness.RunAsync("breaker", "config");
+        Assert.Equal(0, configured.ExitCode);
         Assert.Equal(
             $"{Rules}\nFlag file: off. Notifications: on.\n",
-            (await harness.RunAsync("breaker", "config")).Out);
+            configured.Out);
         CliRun updated = await harness.RunAsync(
             "breaker",
             "config",
@@ -286,25 +288,31 @@ public sealed class BreakerCommandTests
             temp.Path,
             timeProvider: new ManualTimeProvider(Now, ManualTimeProvider.UtcMinus5));
 
-        Assert.Equal(
-            "No branch budgets are set.\n",
-            (await harness.RunAsync("budget", "list")).Out);
+        CliRun empty = await harness.RunAsync("budget", "list");
+        Assert.Equal(0, empty.ExitCode);
+        Assert.Equal("No branch budgets are set.\n", empty.Out);
         SqliteLedgerStore store = await StoreAsync(harness);
         await LedgerSeeds.SeedChainsAsync(
             store,
             repo,
             Path.Combine(temp.Path, "api"));
 
+        CliRun exactBudget = await harness.RunInAsync(
+            repo, "budget", "set", "56");
+        Assert.Equal(0, exactBudget.ExitCode);
         Assert.Equal(
             "Budget for swigerb/copilot-ledger @ feature/ledger: 56.00 AI credits. Spent so far: 56.00.\n",
-            (await harness.RunInAsync(repo, "budget", "set", "56")).Out);
+            exactBudget.Out);
+        CliRun exceededBudget = await harness.RunInAsync(
+            repo, "budget", "set", "50");
+        Assert.Equal(0, exceededBudget.ExitCode);
         Assert.Equal(
             """
             Budget for swigerb/copilot-ledger @ feature/ledger: 50.00 AI credits. Spent so far: 56.00.
             This branch is already over its budget.
 
             """.ReplaceLineEndings("\n"),
-            (await harness.RunInAsync(repo, "budget", "set", "50")).Out);
+            exceededBudget.Out);
         Assert.Equal(
             "Budget for contoso/api @ main: 40.50 AI credits. Spent so far: 31.50.\n",
             (await harness.RunAsync(

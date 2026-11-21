@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Globalization;
 using System.Net.Http;
-using System.Text;
+using System.Net.Http.Headers;
 using CopilotLedger.Cli;
 using CopilotLedger.Core.Breaker;
 using CopilotLedger.Storage;
@@ -32,8 +32,7 @@ public sealed class AlertDaemonTests
         using HttpClient client = harness.CreateDaemonClient();
         using StringContent content = new(
             BreakerTraces.TraceVJson(repo),
-            Encoding.UTF8,
-            "application/json");
+            new MediaTypeHeaderValue("application/json"));
         using HttpResponseMessage response =
             await client.PostAsync("/v1/traces", content);
         Assert.Equal(200, (int)response.StatusCode);
@@ -51,9 +50,11 @@ public sealed class AlertDaemonTests
                 await store.GetOpenBreakerTripsAsync(BreakerTripFilter.All);
             return trips.Count == 1 && trips[0].NotifiedAt is not null;
         });
+        CliRun status = await harness.RunAsync("breaker", "status");
+        Assert.Equal(0, status.ExitCode);
         Assert.StartsWith(
             "Circuit breaker: open (1 trip)\n",
-            (await harness.RunAsync("breaker", "status")).Out);
+            status.Out);
         await StopAsync(harness);
 
         var process = Assert.Single(platform.ProcessRuns);
@@ -81,9 +82,11 @@ public sealed class AlertDaemonTests
         Assert.False(File.Exists(flag));
         Assert.True(
             File.Exists(Path.Combine(repo, ".copilot-ledger", ".gitignore")));
+        CliRun closed = await harness.RunAsync("breaker", "status");
+        Assert.Equal(0, closed.ExitCode);
         Assert.StartsWith(
-            "Circuit breaker: closed",
-            (await harness.RunAsync("breaker", "status")).Out);
+            "Circuit breaker: closed\n",
+            closed.Out);
     }
 
     [Fact]
@@ -368,7 +371,8 @@ public sealed class AlertDaemonTests
 
     private static async Task WaitUntilAsync(Func<Task<bool>> condition)
     {
-        for (int index = 0; index < 400; index++)
+        DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTime.UtcNow < deadline)
         {
             if (await condition())
             {
@@ -378,7 +382,10 @@ public sealed class AlertDaemonTests
             await Task.Delay(25);
         }
 
-        throw new TimeoutException();
+        if (!await condition())
+        {
+            throw new TimeoutException();
+        }
     }
 
     private static string Script(string path)
