@@ -6,4 +6,5 @@ public enum LedgerGrouping
     Branch,
     Model,
     Agent,
+    ChannelModel,
 }

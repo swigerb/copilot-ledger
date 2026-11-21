@@ -181,11 +181,14 @@ public sealed class SqliteLedgerStore
                 Branch = grouping == LedgerGrouping.Branch
                     ? reader.GetString(reader.GetOrdinal("branch"))
                     : null,
-                Model = grouping == LedgerGrouping.Model
+                Model = grouping is LedgerGrouping.Model or LedgerGrouping.ChannelModel
                     ? reader.GetString(reader.GetOrdinal("model"))
                     : null,
                 Agent = grouping == LedgerGrouping.Agent
                     ? reader.GetString(reader.GetOrdinal("agent"))
+                    : null,
+                Channel = grouping == LedgerGrouping.ChannelModel
+                    ? ToBillingChannel(reader.GetString(reader.GetOrdinal("channel")))
                     : null,
                 SpanCount = reader.GetInt64(reader.GetOrdinal("span_count")),
                 UnpricedSpanCount = reader.GetInt64(reader.GetOrdinal("unpriced_span_count")),
@@ -501,6 +504,23 @@ public sealed class SqliteLedgerStore
             """;
         command.Parameters.AddWithValue("@since", recordedSince.ToUnixTimeMilliseconds());
         return await ReadTripsAsync(command, cancellationToken);
+    }
+
+    // Trips, open or reset, whose repository and branch keys equal the arguments (ordinal).
+    public async Task<long> CountBreakerTripsAsync(
+        string repository,
+        string branch,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(*) FROM breaker_trips WHERE repository = @repository AND branch = @branch;
+            """;
+        command.Parameters.AddWithValue("@repository", repository);
+        command.Parameters.AddWithValue("@branch", branch);
+        return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
     }
 
     // The settings row; BreakerSettings.Default if the row is missing.
@@ -999,6 +1019,29 @@ public sealed class SqliteLedgerStore
         return rows;
     }
 
+    // Distinct trace_id values (prompts) among the spans that match the filter.
+    public async Task<long> GetPromptCountAsync(
+        LedgerFilter filter,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(DISTINCT trace_id)
+            FROM spans
+            WHERE (@from IS NULL OR start_time_unix_ms >= @from)
+              AND (@to IS NULL OR start_time_unix_ms < @to)
+              AND (@repository IS NULL OR COALESCE(repo_slug, repo_root, '(none)') = @repository)
+              AND (@branch IS NULL OR COALESCE(branch_name, '(none)') = @branch);
+            """;
+        command.Parameters.AddWithValue("@from", OrDbNull(filter.From?.ToUnixTimeMilliseconds()));
+        command.Parameters.AddWithValue("@to", OrDbNull(filter.To?.ToUnixTimeMilliseconds()));
+        command.Parameters.AddWithValue("@repository", OrDbNull(filter.Repository));
+        command.Parameters.AddWithValue("@branch", OrDbNull(filter.Branch));
+        return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
+    }
+
     private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
         SqliteConnection connection = new(_connectionString);
@@ -1216,6 +1259,12 @@ public sealed class SqliteLedgerStore
             LedgerGrouping.Agent =>
                 ("COALESCE(agent_name, '(none)') AS agent",
                  "agent"),
+            LedgerGrouping.ChannelModel =>
+                ("""
+                 billing_channel AS channel,
+                          COALESCE(model_id, '(none)') AS model
+                 """,
+                 "channel, model"),
             _ => throw new ArgumentOutOfRangeException(nameof(grouping), grouping, null),
         };
 
@@ -1247,6 +1296,15 @@ public sealed class SqliteLedgerStore
         BillingChannel.Local => "local",
         BillingChannel.Unpriced => "unpriced",
         _ => throw new ArgumentOutOfRangeException(nameof(channel), channel, null),
+    };
+
+    private static BillingChannel ToBillingChannel(string value) => value switch
+    {
+        "github_ai_credits" => BillingChannel.GitHubAiCredits,
+        "foundry_byok" => BillingChannel.FoundryByok,
+        "local" => BillingChannel.Local,
+        "unpriced" => BillingChannel.Unpriced,
+        _ => throw new InvalidDataException($"Unknown billing channel '{value}'."),
     };
 
     private static string ToDatabaseString(PricingStatus status) => status switch
