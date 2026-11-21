@@ -1,6 +1,6 @@
 # Getting the most from CopilotLedger
 
-Use CopilotLedger to see where AI spend goes, budget a branch, and notice runaway agent loops. This guide covers common tasks. See [Using gh-ledger](cli.md) for the full options and [Configuring CopilotLedger](configuration.md) for pricing.
+Use CopilotLedger to see where AI spend goes, budget a branch, and notice runaway agent loops. This guide covers common tasks. See [Using gh-ledger](cli.md) for the full options and [Configuring CopilotLedger](configuration.md) for pricing. Commands are shown as `gh-ledger <command>`. After `install`, `gh ledger <command>` also works; otherwise run the binary by its full path or add its folder to your PATH.
 
 ## Enable it
 
@@ -132,7 +132,13 @@ gh-ledger breaker config --flag-file on
 
 During an open trip, CopilotLedger writes `.copilot-ledger/CIRCUIT_OPEN` in the local repository root. It contains JSON describing the trips. Resetting the last open trip removes it, and the directory's `.gitignore` keeps it out of commits.
 
-This Bash wrapper stops Copilot when the file appears:
+This wrapper is for unattended prompt-mode runs started from the repository root, for example:
+
+```shell
+./copilot-guard.sh -p "fix the failing tests"
+```
+
+It cannot use an interactive terminal because Copilot runs as a background job. The script checks the flag file relative to the current directory, so start it from the repository root. The wrapper is:
 
 ```shell
 #!/usr/bin/env bash
@@ -154,13 +160,11 @@ Trips without a known local repository root do not get a flag file.
 ## Budget a branch
 
 A branch budget is a soft cap in AI credits. It does not block work.
-
 ```shell
 gh-ledger budget set 50
 gh-ledger budget list
 gh-ledger budget clear
 ```
-
 The daemon alerts once when all-time branch spend exceeds the budget. Setting it again re-arms the alert. BYOK USD counts toward the budget at $0.01 per AI credit.
 
 Use `--repo <key> --branch <name>` with `set` or `clear` to target another branch. Add `--json` to `budget list` for scripts.
@@ -178,11 +182,9 @@ VS Code's Copilot agent harness reads the same Copilot MCP configuration. The Gi
 The server provides `get_branch_ledger`, `get_top_expensive_prompts`, `get_agent_breakdown`, and `set_branch_budget`.
 
 Ask an agent:
-
 - "How much have I spent on this branch today?"
 - "Which agent and prompt have cost the most here?"
 - "Is the circuit breaker open? Do not continue if it is."
-
 The read tools need no prompt-mode approval. Allow the budget-writing tool in prompt mode with:
 
 ```shell
@@ -202,18 +204,15 @@ No MCP tool can reset the breaker.
 Foundry BYOK requests are attributed but unpriced by default because Foundry bills you directly and CopilotLedger cannot know your agreement's rates.
 
 Create and check an optional overlay:
-
 ```shell
 gh-ledger rates init
 gh-ledger rates validate
 ```
-
 Add Foundry model and deployment prices to `~/.copilot-ledger/rates.json`. See [configuration.md](configuration.md) for the schema, matching rules, custom hosts, and examples.
 
 Recognized local models cost $0.00 billed. CopilotLedger estimates their cloud cost at the configured GitHub baseline and reports it as local savings, not billed spend.
 
 ## Tips
-
 - Use one branch per feature because spend and budgets are per branch.
 - Keep the daemon running; spans exported while it is down are not recovered.
 - Review `top-prompts` regularly for the prompts driving most spend.

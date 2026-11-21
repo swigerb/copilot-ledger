@@ -21,11 +21,13 @@ you catch runaway loops.
 ## Requirements
 
 - .NET 10 SDK to build from source
-- Git for repository attribution
+- Projects in Git repositories, for per-branch attribution. CopilotLedger reads
+  `.git` directly and doesn't run `git`.
 - One of the supported runtime identifiers: `win-x64`, `win-arm64`,
   `linux-x64`, `linux-arm64`, `osx-x64`, or `osx-arm64`
-- GitHub CLI and Git for Windows if you want to use the `gh ledger` alias on
-  Windows
+- GitHub CLI (`gh`) for the `gh ledger` alias. On Windows, the alias also needs
+  Git for Windows (`sh.exe`).
+- Copilot CLI, the GitHub Copilot app, or VS Code with Copilot
 
 ## How it works
 
@@ -48,7 +50,8 @@ dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release \
 Use one of the runtime identifiers listed above. Move the binary to a permanent
 folder. `install` records that location.
 
-Install Copilot export, the `gh ledger` alias, and the daemon:
+Turn on Copilot's telemetry export, add the `gh ledger` alias, and start the
+daemon:
 
 ```shell
 /path/to/gh-ledger install
@@ -61,17 +64,17 @@ Restart the GitHub Copilot app, VS Code, and your open terminals. Send one
 Copilot prompt, then check the receiver and export configuration:
 
 ```shell
-gh-ledger status
+gh ledger status
 ```
 
-The `gh ledger` form also works after `install`.
-You can use the `gh-ledger` binary directly if you do not use the alias.
+If you don't use the GitHub CLI alias, run the binary by its full path, or add
+its folder to your PATH and run `gh-ledger <command>`.
 Run `gh-ledger --help` for the current command list.
 
 See branch spend:
 
 ```shell
-gh-ledger branch
+gh ledger branch
 ```
 
 ## Documentation
