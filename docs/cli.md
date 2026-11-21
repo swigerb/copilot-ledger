@@ -76,6 +76,17 @@ A budget is a soft cap in AI credits for one branch. When the branch's billed sp
 - `gh-ledger budget clear` removes it, and `gh-ledger budget list [--json]` lists every budget with its spend.
 - `budget set` and `budget clear` accept `--repo <key> --branch <name>` for another branch.
 
+## Pull request receipts
+
+`gh-ledger export-pr` writes the current branch's receipt for its pull request to `.github/copilot-ledger/receipts/<branch>-<hash>.md` in the repository root, where `<branch>` is the branch name with characters other than letters, digits, `.`, `_`, and `-` replaced by `-`. Commit that file on the branch and push it.
+
+The receipt covers all spend recorded on the branch. It lists GitHub AI Credits by model, Foundry BYOK spend, local-model tokens and the cloud spend they avoided, requests that couldn't be priced, the number of circuit-breaker trips, and the most expensive prompt in AI credits. A collapsible section holds a table by billing channel and model, and the receipt's data as JSON. Its totals equal the branch's row in `gh-ledger branch --since all --json`.
+
+- `--stdout` writes the Markdown to standard output instead of the file.
+- `--json` writes the JSON data to standard output instead of the file.
+
+A receipt can be at most 65,536 bytes, the most the CopilotLedger action posts; `export-pr` refuses a larger one, with or without `--stdout`. `export-pr` needs a branch with at least one commit and a GitHub remote named `origin`. A turn is one model request. Branch and model names appear in code spans, so they never become mentions or links.
+
 ## MCP server
 
 `gh-ledger mcp` runs an MCP server on standard input and output, so Copilot can read the ledger and see the circuit breaker. Register it once with Copilot CLI:

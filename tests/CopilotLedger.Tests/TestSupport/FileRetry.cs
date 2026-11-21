@@ -19,4 +19,21 @@ public static class FileRetry
             }
         }
     }
+
+    // Like ReadAllTextAsync, for the file's bytes.
+    public static async Task<byte[]> ReadAllBytesAsync(string path)
+    {
+        DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (true)
+        {
+            try
+            {
+                return await File.ReadAllBytesAsync(path);
+            }
+            catch (IOException) when (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(25);
+            }
+        }
+    }
 }

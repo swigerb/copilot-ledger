@@ -6,6 +6,7 @@ using CopilotLedger.Cli.Install;
 using CopilotLedger.Cli.Mcp;
 using CopilotLedger.Cli.Rates;
 using CopilotLedger.Cli.Reporting;
+using CopilotLedger.Cli.Receipts;
 
 namespace CopilotLedger.Cli;
 
@@ -46,6 +47,7 @@ public static class GhLedgerCli
             root.Add(command);
         }
 
+        root.Add(ReceiptCommands.Create(context));
         root.Add(McpCommand.Create(context));
 
         return root.Parse(args).InvokeAsync(
