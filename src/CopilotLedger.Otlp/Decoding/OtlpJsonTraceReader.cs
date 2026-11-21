@@ -81,8 +81,23 @@ internal static class OtlpJsonTraceReader
             Name = ReadStringProperty(element, "name") ?? "",
             StartTimeUnixNano = ReadUInt64Property(element, "startTimeUnixNano"),
             EndTimeUnixNano = ReadUInt64Property(element, "endTimeUnixNano"),
+            StatusCode = ReadStatusCode(element),
             Attributes = ReadAttributes(GetArray(element, "attributes")),
         };
+    }
+
+    private static int ReadStatusCode(JsonElement element)
+    {
+        if (!TryFindProperty(element, "status", out JsonElement status) ||
+            status.ValueKind != JsonValueKind.Object ||
+            !TryFindProperty(status, "code", out JsonElement code) ||
+            code.ValueKind != JsonValueKind.Number ||
+            !code.TryGetInt32(out int value))
+        {
+            return 0;
+        }
+
+        return value is 1 or 2 ? value : 0;
     }
 
     private static IReadOnlyList<OtlpAttribute> ReadAttributes(JsonElement attributes)

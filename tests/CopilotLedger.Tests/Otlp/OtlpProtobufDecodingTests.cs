@@ -112,6 +112,52 @@ public sealed class OtlpProtobufDecodingTests
         Assert.Equal("eee19b7ec3c1b174", decoded.SpanId);
     }
 
+    public static TheoryData<string, int> PB8Statuses => new()
+    {
+        { "error", 2 },
+        { "ok", 1 },
+        { "empty", 0 },
+        { "unknown-code", 0 },
+        { "last-wins", 1 },
+        { "status-wrong-wire-type", 0 },
+        { "code-wrong-wire-type", 0 },
+        { "missing", 0 },
+    };
+
+    [Theory]
+    [MemberData(nameof(PB8Statuses))]
+    public void PB8_Status_IsDecodedInEverySupportedShape(
+        string caseName,
+        int expectedStatusCode)
+    {
+        OtlpProtoWriter writer = new OtlpProtoWriter()
+            .Bytes(2, Convert.FromHexString("eee19b7ec3c1b174"));
+        writer = caseName switch
+        {
+            "error" => writer.Message(
+                15,
+                new OtlpProtoWriter().String(2, "Tool failed").Varint(3, 2)),
+            "ok" => writer.Message(15, new OtlpProtoWriter().Varint(3, 1)),
+            "empty" => writer.Message(15, new OtlpProtoWriter()),
+            "unknown-code" => writer.Message(15, new OtlpProtoWriter().Varint(3, 7)),
+            "last-wins" => writer.Message(
+                15,
+                new OtlpProtoWriter().Varint(3, 2).Varint(3, 1)),
+            "status-wrong-wire-type" => writer.Varint(15, 2),
+            "code-wrong-wire-type" => writer.Message(
+                15,
+                new OtlpProtoWriter().String(3, "2")),
+            "missing" => writer,
+            _ => throw new ArgumentOutOfRangeException(nameof(caseName)),
+        };
+
+        OtlpSpan span = Assert.Single(Assert.Single(
+            DecodeSingleSpan(writer).ResourceSpans).Spans);
+
+        Assert.Equal("eee19b7ec3c1b174", span.SpanId);
+        Assert.Equal(expectedStatusCode, span.StatusCode);
+    }
+
     private static OtlpTraceRequest DecodeSingleSpan(OtlpProtoWriter span)
     {
         OtlpProtoWriter scopeSpans = new OtlpProtoWriter().Message(2, span);

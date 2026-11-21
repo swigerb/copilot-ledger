@@ -3,6 +3,8 @@ namespace CopilotLedger.Otlp.Normalization;
 public static class GenAiAttributeNames
 {
     public const string OperationName = "gen_ai.operation.name";
+    public const string ToolName = "gen_ai.tool.name";
+    public const string ProcessExitCode = "process.exit.code";
     public const string ProviderName = "gen_ai.provider.name";
     public const string RequestModel = "gen_ai.request.model";
     public const string ResponseModel = "gen_ai.response.model";

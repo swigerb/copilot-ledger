@@ -168,6 +168,13 @@ public static class GenAiSpanNormalizer
                     ?? Text(attributes, GenAiAttributeNames.LegacyRepoHeadBranchName),
                 GitCommitSha = IsCommitSha(commitSha) ? commitSha!.ToLowerInvariant() : null,
                 StartTime = start,
+                ToolName = string.Equals(operation, GenAiOperationNames.ExecuteTool, StringComparison.Ordinal)
+                    ? Text(attributes, GenAiAttributeNames.ToolName)
+                    : null,
+                ToolExitCode = string.Equals(operation, GenAiOperationNames.ExecuteTool, StringComparison.Ordinal)
+                    ? ReadInt(attributes, GenAiAttributeNames.ProcessExitCode)
+                    : null,
+                StatusCode = span.StatusCode,
             };
         }
 
@@ -270,6 +277,14 @@ public static class GenAiSpanNormalizer
                attribute.Value.Kind == OtlpValueKind.Int &&
                attribute.Value.IntValue is >= 1 and <= 65535
             ? (int)attribute.Value.IntValue
+            : null;
+    }
+
+    private static long? ReadInt(IReadOnlyList<OtlpAttribute> attributes, string key)
+    {
+        OtlpAttribute? attribute = FindAttribute(attributes, key);
+        return attribute?.Value.Kind == OtlpValueKind.Int
+            ? attribute.Value.IntValue
             : null;
     }
 
