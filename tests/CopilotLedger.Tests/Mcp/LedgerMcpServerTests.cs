@@ -690,10 +690,10 @@ public sealed class LedgerMcpServerTests
         JsonNode expectedNode = expected.DeepClone();
         Assert.True(JsonNode.DeepEquals(
             expectedNode,
-            JsonNode.Parse(structured.GetRawText())));
+            JsonNode.Parse(lines[^1])));
         Assert.True(JsonNode.DeepEquals(
             expectedNode,
-            JsonNode.Parse(lines[^1])));
+            JsonNode.Parse(structured.GetRawText())));
         string[] expectedWarnings = expectedNode["warnings"]!
             .AsArray()
             .Select(node => node!.GetValue<string>())
@@ -715,7 +715,7 @@ public sealed class LedgerMcpServerTests
         Tool tool = clientTool.ProtocolTool;
         Assert.Equal(name, clientTool.Name);
         Assert.Equal(title, tool.Title);
-        Assert.Equal(description, clientTool.Description);
+        Assert.Equal(description, tool.Description);
         Assert.True(JsonNode.DeepEquals(
             JsonNode.Parse(schema),
             JsonNode.Parse(tool.InputSchema.GetRawText())));

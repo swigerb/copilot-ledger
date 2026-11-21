@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -174,7 +175,7 @@ internal sealed class LedgerMcpTools(LedgerMcpContext context)
                     scope.Branch!,
                     values.AiCredits,
                     cancellationToken),
-                _ => throw new InvalidOperationException(),
+                _ => throw new UnreachableException(),
             };
             return Success(result);
         }
@@ -321,11 +322,6 @@ internal sealed class LedgerMcpTools(LedgerMcpContext context)
     private async Task<SqliteLedgerStore> OpenStoreAsync(
         CancellationToken cancellationToken)
     {
-        if (_store is not null)
-        {
-            return _store;
-        }
-
         await _storeGate.WaitAsync(cancellationToken);
         try
         {
