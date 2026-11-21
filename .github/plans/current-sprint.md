@@ -1,12 +1,12 @@
-# Sprint 2: Zero-Docker OTLP Receiver & gh-ledger CLI
+# Sprint 3: Runaway-Loop Circuit Breaker & MCP Server
 
 | | |
 |---|---|
 | Architect | `ledger-architect` (Claude Opus 5.5) |
 | Builder | `ledger-builder` (MAI Code 2) |
 | Target | .NET 10 (`net10.0`), SDK 10.0.x, zero Docker |
-| Plan written | 2026-11-20, revised against merged Sprint 1 (`main` at `1809dc8`) |
-| Status | Current sprint. Sprint 1 is complete and archived at `.github/plans/archive/sprint-1.md`. |
+| Plan written | 2026-11-21, against merged Sprint 2 (`main` at `40843c9`) |
+| Status | Current sprint. Sprint 2 is complete and archived at `.github/plans/archive/sprint-2.md`. |
 
 ## How to use this plan
 
@@ -14,3537 +14,2080 @@
 
 Every task ships with its tests, listed under "Test specifications". A task is done only when `dotnet test` runs the whole suite, including its new cases, with 0 failed and 0 skipped.
 
+Each test case lists every assertion it makes. Write all of them, in the order given; don't drop one because it looks redundant. Where a case says "exactly", compare whole values, not substrings.
+
 ## Tasks
 
-- [x] Task 1: OTLP Trace Decoding & gen_ai Span Normalization (CopilotLedger.Otlp). Create `src/CopilotLedger.Otlp`. Add `GenAiSpanLink` to Core, a dependency-free protobuf reader and a System.Text.Json reader for OTLP `ExportTraceServiceRequest`, and `GenAiSpanNormalizer`, which applies the gen_ai.* extraction rules to turn OTLP spans into `NormalizedGenAiSpan`s (inference spans only) and `GenAiSpanLink`s (trace structure). Tests use golden protobuf bytes, Copilot-shaped JSON, and malformed payloads.
-- [x] Task 2: Ledger Ingestion, Session Attribution & Rates Refresh (CopilotLedger.Otlp, Storage & Core). Add Migration 2 (`span_links`) and store methods for span links, agent back-fill, pruning, and prompt chains; `CachingGitContextResolver`; `CopilotSessionWorkspaceLocator`, which finds a Copilot session's working directory; and `LedgerIngestor`. Price every text model on GitHub's Copilot price table in `rates.json` (29 more models, with long-context tiers and promotional windows), and add the local provider names. Tests replay real Copilot trace shapes, including custom agents, reconcile with GitHub's own nano-AIU figures, and check every new price against an independent transcription of GitHub's table.
-- [x] Task 3: Rates Overlay Error Reporting (CopilotLedger.Core). Replace the rates loader's reflection-based deserialization with `RateCardReader`, a `JsonDocument` reader that owns every message. Validate the overlay by itself, so every error path points into the user's file, and label the two checks that need the built-in rates. A missing property gets its own path, and invalid JSON gets a line and column. Rates above 1,000,000 USD per 1M tokens are rejected, so `Calculate` never throws. Tests assert exact messages, and a test keeps the examples in `docs/configuration.md` identical to real output.
-- [x] Task 4: Kestrel OTLP Receiver & gh-ledger Daemon (CopilotLedger.Otlp & CopilotLedger.Cli). Add the loopback OTLP/HTTP receiver: `POST /v1/traces` as protobuf and JSON, with gzip, size limits, and spec status codes; `/v1/metrics` and `/v1/logs` are accepted and discarded. Create `src/CopilotLedger.Cli` (`gh-ledger`) on System.CommandLine with `daemon run|start|stop` and `rates init|validate`. Tests use `Microsoft.AspNetCore.TestHost`.
-- [x] Task 5: Reporting Commands, One-Command Install & Single-Binary Packaging (CopilotLedger.Cli). Add `status`, `branch`, `agents`, and `top-prompts` (tables and `--json`); `install` and `uninstall` (`COPILOT_OTEL_ENABLED`, the `gh ledger` alias, and the daemon); single-file self-contained publish settings; a CI publish smoke test; and `docs/cli.md`.
+- [ ] Task 1: Tool-Call Signals & Breaker Storage (CopilotLedger.Otlp, Storage & Core). Decode OTLP span status in both encodings, keep `gen_ai.tool.name` and `process.exit.code` on `execute_tool` links, and add Migration 3: tool columns on `span_links` plus the `breaker_trips`, `branch_budgets`, and `breaker_settings` tables. Add the Core breaker contracts and the store methods that the breaker, the CLI, and the MCP server use. Tests decode status, normalize Copilot's real tool spans, and exercise every new store method.
+- [ ] Task 2: Circuit Breaker Engine & Flag File (CopilotLedger.Core & Otlp). Add the two rules, credit velocity and retry churn, as pure functions, and `CircuitBreakerMonitor`, which runs inside the ingestor's gate after back-fill, records each trip once, raises budget alerts, and keeps the opt-in `.copilot-ledger/CIRCUIT_OPEN` flag file in step with the ledger. Tests replay live run A, a five-failure retry loop, batch by batch, plus velocity, commit-reset, budget, and flag-file cases.
+- [ ] Task 3: Breaker Alerts and the Breaker & Budget Commands (CopilotLedger.Cli). The daemon logs each alert and shows a desktop notification: a Windows toast, a macOS notification, or `notify-send`. It re-sends alerts it missed while stopped. Add `breaker status|reset|config` and `budget set|clear|list`. Tests drive an in-process daemon over TestServer with the fake platform.
+- [ ] Task 4: MCP Server (CopilotLedger.Mcp & Cli). Create `src/CopilotLedger.Mcp` on ModelContextProtocol 2.4.0 with `get_branch_ledger`, `get_top_expensive_prompts`, `get_agent_breakdown`, and `set_branch_budget`, closed input schemas, and breaker and budget warnings in every result; add `gh-ledger mcp`. Tests connect the SDK's client to the server over in-memory pipes.
+- [ ] Task 5: Start at Sign-in, Version 0.3.0 & CI (CopilotLedger.Cli). `install` registers a per-user sign-in item (a Windows Run value, a macOS LaunchAgent, or an XDG autostart entry), and `uninstall` removes it. An application manifest stops Windows from opening a console window at sign-in. Bump the version to 0.3.0, extend the CI smoke test with the breaker, budget, and MCP commands, and finish `docs/cli.md`.
 
 ## Starting point
 
-- Sprint 1 is complete. Tasks 1–3 merged in PRs #4, #5, and #6 (`main` at `1809dc8`). `dotnet test CopilotLedger.slnx` passes 143 tests (0 failed, 0 skipped), and CI is green on `ubuntu-latest` and `windows-latest`. Sprint 2 builds on the Core contracts, `JsonRateCardCalculator`, `FileSystemGitContextResolver`, `GitRemoteUrl`, `LedgerPaths`, `SqliteLedgerStore` with Migration 1, and the test support (`TempDirectory` with its `Path` property, `TestSpans.Chat(...)`, and `RateFixtures.ByokTestRatesJson`).
-- Merged Sprint 1 behavior that this plan depends on (read from the code at `1809dc8`):
-  - `SqliteLedgerStore.RecordAsync` validates the whole batch before writing. It throws `ArgumentException` if any entry has status `NotBillableOperation` or a negative token count, so nothing is written.
-  - It then inserts every row in one transaction, converting `UsdCost` and `EstimatedCloudSavedUsd` with `PicoUsd.FromUsd`. That throws `ArgumentOutOfRangeException` for an amount above `long.MaxValue` pico-USD (about $9.22 million), which rolls back the whole batch.
-  - `JsonRateCardCalculator.Calculate` can throw `OverflowException` when an overlay rate is extreme. That contradicts `ICreditCalculator`'s contract ("Throws only ArgumentNullException") and the archived Sprint 1 plan's "`Calculate` never throws" (Task 2 specification, `JsonRateCardCalculator`, step 1). `ValidateRate` bounds a rate's size only by requiring `rate × 1,000,000` to fit in a `decimal`, so a rate such as 10^22 per 1M tokens loads, and pricing 10,000,000 tokens with it overflows. The usage checks can't overflow `long`, so rate size is the only way `Calculate` throws. Task 3 restores the contract by rejecting rates above 1,000,000 USD per 1M tokens (decision 18). Task 2's ingestor, which lands first, catches `OverflowException`, and it keeps that catch afterward as defense in depth.
-  - Inserts end with `ON CONFLICT (trace_id, span_id) DO NOTHING`, so re-sending a span never duplicates it.
-  - Task 2's "Filtering and per-span errors" keeps every one of these failures away from `RecordAsync`.
-  - Rates errors are `InvalidDataException`s whose message is `<file>: <JSON path>: <problem>`. The loader validates the *merged* document, so a path into the user's overlay uses merged indices: the overlay's `localOffload.models[0]` is reported as `localOffload.models[1]`, behind the built-in model. Errors that System.Text.Json finds pass its text through, with .NET type names and a ` Path: $.… | LineNumber: … | BytePositionInLine: ….` suffix, and a missing required property is reported at its object's path. Task 3 replaces all of this.
-  - `TempDirectory.Dispose()` calls `SqliteConnection.ClearAllPools()` before deleting its folder. On Windows a pooled connection keeps the SQLite file open, so the folder can't be deleted otherwise. `Dispose` ignores delete failures, so the symptom would be leftover temp folders, not failing tests. The shared test rules extend this pattern to every new test.
-- `.github/workflows/ci.yml` was added in Sprint 1 Task 1 as an architect amendment. It runs `dotnet build CopilotLedger.slnx` and `dotnet test CopilotLedger.slnx` on `ubuntu-latest` and `windows-latest` for pushes to `main`, pull requests, and manual runs. Task 5 extends it.
-- Sprint 1's public contracts are fixed. Sprint 2 adds types and members. It changes only these Sprint 1 artifacts, each called out in its task:
-  - Task 2: `src/CopilotLedger.Core/Pricing/rates.json` (29 models, three notes, and four local provider names) and `docs/configuration.md` (the Local row and the built-in prices);
-  - Task 2: `LedgerMigrations` (Migration 2), and test S1's expected `PRAGMA user_version`, which changes from 1 to 2;
-  - Task 2: `SqliteLedgerStore` (four new public methods; existing members unchanged);
-  - Task 3: the rates loader's internals in `JsonRateCardCalculator` and `RateCardDocument` (its public API is unchanged, and it now rejects rates above 1,000,000), `docs/configuration.md` (the price-range sentence and the invalid-file paragraph), the Sprint 1 rates tests in `RateOverlayTests` and `RateCardLoadingTests` (they now assert exact messages), and the test project file (it copies the docs into the test output);
-  - Tasks 4 and 5: `docs/configuration.md` (the data-file table and the rates commands).
-- The test project uses xUnit v2 (`xunit` 2.9.3).
-- When an acceptance criterion says `src/` contains no `double` or `float`, it means the C# keywords and the `GetDouble` and `TryGetDouble` calls. The enum member `OtlpValueKind.Double` names a protobuf wire type and is allowed.
+- Sprint 2 is complete. Tasks 1–5 merged in PRs #13, #14, #15, #18, and #19, with fix #17 (`main` at `40843c9`). `dotnet test CopilotLedger.slnx` passes 440 tests (0 failed, 0 skipped), and CI is green on `ubuntu-latest` and `windows-latest`, including the published single-file smoke test. Sprint 2's plan, with its amendments, is archived at `.github/plans/archive/sprint-2.md`.
+- Merged Sprint 2 behavior that this plan depends on (read from the code at `40843c9`):
+  - `GenAiSpanNormalizer` emits a `GenAiSpanLink` for every valid span that has `gen_ai.operation.name` or comes from a Copilot resource (`service.name` `github-copilot` or `copilot-chat`). So Copilot's `execute_tool` spans already reach `span_links`, with their conversation ID. Its private `Text()` helper ignores attributes that aren't non-blank strings.
+  - `OtlpProtobufTraceReader.ReadSpan` reads `Span` fields 1, 2, 4, 5, 7, 8, and 9 and skips the rest. `OtlpJsonTraceReader` ignores unknown properties and finds properties with its non-throwing `TryFindProperty` helper (last match wins). The JSON decoding tests have a `SingleSpan(json)` helper, and the protobuf tests have `DecodeSingleSpan(OtlpProtoWriter)`.
+  - `LedgerIngestor.IngestAsync` normalizes outside its `SemaphoreSlim(1, 1)` gate. Inside the gate it records billable entries, records links, and back-fills every trace ID in the batch. Store exceptions propagate, and the receiver answers `503` with `Retry-After: 5`, so the exporter retries; inserts are idempotent.
+  - `span_links` stores `start_time_unix_ms` only (no end time). `spans` stores start and end in milliseconds.
+  - `PromptChainRow`'s keys are `MAX(COALESCE(repo_slug, repo_root, '(none)'))` and `MAX(COALESCE(branch_name, '(none)'))` over the trace's `spans` rows, the same keys as the Branch rollup.
+  - `SqliteLedgerStore` opens a new pooled connection per call (WAL, `busy_timeout = 5000`). Every public method except `InitializeAsync` throws `InvalidOperationException` until `InitializeAsync` has run. It stamps `recorded_at_unix_ms` from its `TimeProvider`.
+  - `DaemonHost.RunAsync` logs `{UtcNow:O} {message}` lines to `--log-file` or to `context.Out`, polls for `daemon.stop` every `DaemonPollInterval`, and prunes `span_links` older than 7 days every 6 hours.
+  - `ReportCommands` writes JSON with `JsonWriterOptions { Indented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }`, money with `LedgerFormat.WriteMoney` (format `0.############`), and times with `LedgerFormat.WriteTime` (`ToUniversalTime().ToString("O")`, for example `2026-11-21T00:17:17.2600000+00:00`). `LedgerFormat.Credits` rounds to 2 places with `MidpointRounding.AwayFromZero` and formats `N2` (`1,234.50`). `LedgerFormat.LocalTime` formats `yyyy-MM-dd HH:mm` in `TimeProvider.LocalTimeZone`.
+  - `CliHarness` runs `GhLedgerCli.InvokeAsync` in-process with `FakeCliPlatform`, `UseTestServer()`, `DataDirectory = <root>/data`, `CopilotHome = <root>/copilot-home`, and `WorkingDirectory = <root>`. Its `StartInProcessDaemonAsync` waits for `daemon.json`. `FakeCliPlatform.RunAsync` records every call in `ProcessRuns` and returns exit code 0 unless `RunHandler` is set.
+  - Every `InstallManifest` property is `required`. `install` prints its warnings, the variable or profile line, the alias lines, the `sh.exe` warning, the daemon line, and then the final line.
+  - `GhLedgerCli.Version` is the informational version, `0.2.0`. `DaemonState.Version` and the first line of `status` show it.
+- Sprint 2's public contracts are fixed. Sprint 3 adds types and members, and it changes only these Sprint 2 artifacts, each called out in its task:
+  - Task 1: `OtlpSpan` (`StatusCode`), `GenAiSpanLink` (three properties), `GenAiAttributeNames` (two constants), both trace readers, the normalizer's link construction, `LedgerMigrations` (Migration 3), `SqliteLedgerStore.RecordSpanLinksAsync` (three more columns), and the tests SL1 and S1, whose expected `PRAGMA user_version` changes from 2 to 3;
+  - Task 2: `LedgerIngestor` (a second constructor; the existing one is unchanged);
+  - Task 3: `DaemonHost`, `GhLedgerCli` (registration), `FakeCliPlatform.RunAsync` (a lock), `CliHarness` (a TestServer capture and two members), and `docs/cli.md`;
+  - Task 4: `CliContext` (two optional streams), `GhLedgerCli`, `CopilotLedger.slnx`, the Cli and test project files, and `docs/cli.md`;
+  - Task 5: `ICliPlatform` and `SystemCliPlatform` (two members), `FakeCliPlatform`, `InstallManifest` (one optional property), `InstallCommands`, the Cli project file, `GhLedgerCli` (version fallback), `.github/workflows/ci.yml`, `docs/cli.md`, and the tests IN1, IN2, IN3, IN9, DM1, and the `status` text test in `ReportCommandTests`.
+- The test project uses xUnit v2 (`xunit` 2.9.3), and tests use only public APIs, with no `InternalsVisibleTo`.
+- When an acceptance criterion says `src/` contains no `double` or `float`, it means the C# keywords and the `GetDouble` and `TryGetDouble` calls. The enum member `OtlpValueKind.Double` is allowed.
 
-## Verified facts (retrieved 2026-11-20)
+## Verified facts (retrieved 2026-11-21)
 
-### OTLP/HTTP
+### Live capture: Copilot tool calls
 
-Source: [OTLP Specification 1.11.1](https://opentelemetry.io/docs/specs/otlp/).
+On 2026-11-21 (UTC) the architect ran the scratch loopback receiver from Sprint 2 and Copilot CLI 1.0.112 on Windows 11 ARM64 (build 28000) with `mai-code-2-flash`, in a scratch Git repository outside this one. Only `COPILOT_OTEL_ENABLED=true` was set, and only for those processes; no user-level Copilot configuration was changed. The scratch repository held `calc.txt` and `test.ps1`, a script that exits 1 on its first five runs and 0 afterward. The four runs below cost 0.644379 AI credits: `--usage-output-file` totals of 372,181,000, 118,518,000, 139,029,000, and 14,651,000 nano-AIU.
 
-- Clients `POST` to `/v1/traces`, `/v1/metrics`, and `/v1/logs`. The default port is 4318.
-- Binary protobuf uses `Content-Type: application/x-protobuf`, and JSON uses `application/json`. "The server MUST use the same Content-Type in the response as it received in the request." Servers SHOULD accept both encodings on the same port.
-- "All server components MUST support" no compression and gzip (`Content-Encoding: gzip`).
-- The server "MUST limit the size of the request body when parsing it, including after decompression"; 64 MiB is RECOMMENDED. When the limit is exceeded, the server "MUST respond with `HTTP 413 Content Too Large`".
-- Full success is `200 OK` with an `ExportTraceServiceResponse` whose `partial_success` is unset. An empty request SHOULD succeed.
-- Partial success is `200 OK` with `partial_success.rejected_spans` and `error_message` set. The client MUST NOT retry it.
-- Every 4xx and 5xx response body is a `google.rpc.Status` message. The spec calls it "Protobuf-encoded", and the same-Content-Type rule above applies, so CopilotLedger writes it as JSON for JSON requests. The server MAY omit `Status.code`, and `Status.message` SHOULD be a developer-facing message. Undecodable data gets `400 Bad Request`, which the client must not retry. `429`, `502`, `503`, and `504` are retryable, optionally with `Retry-After`.
-- OTLP/JSON deviates from the standard proto3 JSON mapping:
-  - `traceId` and `spanId` are case-insensitive hex strings;
-  - enum values are integers;
-  - receivers MUST ignore unknown fields;
-  - keys are lowerCamelCase only, and the original field names "are not valid".
+1. **Run A, a retry loop.** The prompt asked the agent to edit `calc.txt` until `test.ps1` passed, then commit. One trace (`89f2977b97c7d0a8d05fc3580e3e167e`, conversation `982f73ad-18f4-49ef-a1f9-70748fa013fb`) held one root `invoke_agent`, 14 `chat` spans, and 13 `execute_tool` spans, all children of the root. They arrived in 7 export requests (spans shown in time order):
 
-  64-bit integers are decimal strings, and "either numbers or strings are accepted when decoding".
-- Decoders SHOULD replace invalid UTF-8 with U+FFFD. Clients may resend data, so duplicates are expected.
+   | Request | Spans |
+   |---|---|
+   | 1 | chat 1, `apply_patch` |
+   | 2 | chat 2, `powershell` (exit 1), chat 3, `apply_patch` |
+   | 3 | chat 4, `powershell` (exit 1), chat 5, `apply_patch` |
+   | 4 | chat 6, `powershell` (exit 1), chat 7, `apply_patch` |
+   | 5 | chat 8, `powershell` (exit 1), chat 9, `apply_patch` |
+   | 6 | chat 10, `powershell` (exit 1), chat 11, `apply_patch` |
+   | 7 | chat 12, `powershell` (exit 0, the test passed), chat 13, `powershell` (exit 0, `git commit`), chat 14, the root |
 
-### OTLP protobuf schema
+   - A shell call's span is named `execute_tool powershell pwsh.exe`. Its attributes are `gen_ai.operation.name` = `execute_tool`, `gen_ai.conversation.id`, `gen_ai.tool.name` = `powershell`, `gen_ai.tool.call.id`, `gen_ai.tool.type` = `function`, `gen_ai.provider.name` = `github`, `process.executable.name` = `pwsh.exe` (the shell, not the command it ran), and `process.exit.code`, an `intValue` (JSON string `"1"`).
+   - The span `status` stayed `{"message": "", "code": 0}` (unset) even when the command exited 1.
+   - The edit tool's span is `execute_tool apply_patch`, with `gen_ai.tool.name` = `apply_patch` and no file path. With content capture off, no tool arguments or results are exported.
+   - Each `chat` span's `github.copilot.nano_aiu` equaled Sprint 1's formula at `mai-code-2-flash`'s promotional price. The 14 sum to 372,181,000 nano-AIU, the usage file's total.
+2. **Run B, an MCP server without approval.** A scratch stdio MCP server, `ledgerprobe`, was configured for that run only, through a scratch MCP configuration file named on the command line. It offered `probe_read` (`readOnlyHint: true`) and `probe_write` (`readOnlyHint: false`). In prompt mode (`-p`), `probe_read` ran without approval and `probe_write` was denied.
+   - An MCP tool's `gen_ai.tool.name` is `<SHA-256 of the server name>/<SHA-256 of the tool name>`, both lowercase hex of the UTF-8 name: `ledgerprobe` gives `c3d1fe831856c77818bb8c1242d32d6efa6c37366eb902e56c5fd0054c1dcbc3`, and `probe_write` gives `918a44e755cc5eee09b08d214831e8339a645158ef1f831a0fa02bd43999700f`.
+   - The denied call's span had status `{"code": 2, "message": "Tool failed"}`, `error.type` = `denied`, and the event `gen_ai.client.operation.exception`. A child `permission` span (no `gen_ai.operation.name`) carried `github.copilot.permission.result` = `denied-no-approval-rule-and-could-not-request-from-user`.
+3. **Run C, an MCP tool error.** With `--allow-tool 'ledgerprobe(probe_write)'`, the tool ran and returned `isError: true`. Its span had status code 2 and `error.type` = `tool_error`. Copilot showed the result's text to the model.
+4. **The MCP client.** Copilot CLI spoke protocol 2026-07-28 (`server/discover`, then `tools/list` and `tools/call`) with `clientInfo` `copilot-cli` `1.0.112`. `tools/call` carried `_meta` `com.github.copilot/toolCallId`, equal to the span's `gen_ai.tool.call.id`. The server process ran in the session's working directory, and its environment held `COPILOT_AGENT_SESSION_ID` (the conversation ID) and `COPILOT_SESSION_CWD`.
+5. **Run D, a `sessionStart` hook.** A repository hook (`.github/hooks/probe.json`, `type: command`, `exec` and `args`) ran with the repository root as its working directory, received `{"sessionId": …, "timestamp": …, "cwd": …, "source": "new", "initialPrompt": …}` on stdin, and had `COPILOT_PROJECT_DIR` and `COPILOT_HOOK_DIR` set. It started a detached child the same way `SystemCliPlatform.StartDetached` does (`UseShellExecute = false`, `CreateNoWindow = true`). The child wrote a heartbeat every second. It stopped about 4 seconds before Copilot CLI exited at the end of the prompt, and its process was gone. **A hook can't start a long-lived daemon on Windows.**
 
-Sources: `open-telemetry/opentelemetry-proto` v1.11.1 (`trace/v1/trace.proto`, `common/v1/common.proto`, `resource/v1/resource.proto`, and `collector/trace/v1/trace_service.proto`) and `googleapis/google/rpc/status.proto`.
-
-| Message | Fields used by CopilotLedger (number: name, wire type) |
-|---|---|
-| `ExportTraceServiceRequest` | 1: `resource_spans` (LEN, repeated) |
-| `ResourceSpans` | 1: `resource` (LEN); 2: `scope_spans` (LEN, repeated); 3: `schema_url` is skipped |
-| `Resource` | 1: `attributes` (LEN, repeated `KeyValue`) |
-| `ScopeSpans` | 2: `spans` (LEN, repeated); 1: `scope` and 3: `schema_url` are skipped |
-| `Span` | 1: `trace_id` (LEN, 16 bytes); 2: `span_id` (LEN, 8 bytes); 4: `parent_span_id` (LEN, 8 bytes); 5: `name` (LEN); 7: `start_time_unix_nano` (I64, `fixed64`); 8: `end_time_unix_nano` (I64); 9: `attributes` (LEN, repeated `KeyValue`) |
-| `KeyValue` | 1: `key` (LEN); 2: `value` (LEN, `AnyValue`) |
-| `AnyValue` (oneof) | 1: `string_value` (LEN); 2: `bool_value` (VARINT); 3: `int_value` (VARINT, `int64`); 4: `double_value` (I64); 5: `array_value` (LEN); 6: `kvlist_value` (LEN); 7: `bytes_value` (LEN) |
-| `ExportTraceServiceResponse` | 1: `partial_success` (LEN, `ExportTracePartialSuccess`) |
-| `ExportTracePartialSuccess` | 1: `rejected_spans` (VARINT, `int64`); 2: `error_message` (LEN) |
-| `google.rpc.Status` | 1: `code` (VARINT, omitted); 2: `message` (LEN) |
-
-Wire types: 0 = VARINT, 1 = I64, 2 = LEN, 5 = I32. Types 3 and 4 are the deprecated groups. A trace ID that is all zeros or not 16 bytes is invalid, and so is a span ID that is all zeros or not 8 bytes. An empty `parent_span_id` marks a root span.
-
-### GitHub Copilot OpenTelemetry
+### Copilot MCP configuration and hooks
 
 Sources:
 
-- GitHub Docs, [OpenTelemetry reference](https://docs.github.com/en/copilot/reference/enterprise-administrators/opentelemetry-reference);
-- the Copilot CLI's built-in `copilot help monitoring` (version 1.0.112);
-- GitHub Docs, the [Copilot CLI command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) and [configuration directory reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference);
-- GitHub Docs, [Enterprise managed settings](https://docs.github.com/en/copilot/reference/enterprise-administrators/enterprise-managed-settings);
-- VS Code, [Monitor agent usage with OpenTelemetry](https://code.visualstudio.com/docs/agents/guides/monitoring-agents).
+- GitHub Docs, [Adding MCP servers for GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers);
+- VS Code, [MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration);
+- GitHub Docs, [Using hooks with GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/copilot-cli/use-hooks) and the [hooks reference](https://docs.github.com/copilot/reference/hooks-configuration).
 
-The shared Copilot runtime serves Copilot CLI, the GitHub Copilot app, and VS Code Agent Host sessions:
+Facts:
 
-- OTel is off by default. It turns on when `COPILOT_OTEL_ENABLED=true`, `OTEL_EXPORTER_OTLP_ENDPOINT`, or `COPILOT_OTEL_FILE_EXPORTER_PATH` is set.
-- The default exporter is `otlp-http`. The default protocol is `http/json`, and `http/protobuf` is the alternative; `grpc` "warn[s] and fall[s] back". The default endpoint is `http://localhost:4318`.
-- The GitHub Docs page warns that export to an `http://` endpoint is disabled. The CLI's own help narrows the condition: "When any of these TLS variables is set and the otlp-http exporter is in use but the endpoint resolves to http:// (including the default http://localhost:4318), export is disabled". The TLS variables are `OTEL_EXPORTER_OTLP_CERTIFICATE`, `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE`, `OTEL_EXPORTER_OTLP_CLIENT_KEY`, and their `_TRACES_` variants. The live capture below confirms plain HTTP export when none of them is set.
-- The OTLP exporter is a "native (Rust) HTTP transport".
-- Personal configuration uses environment variables. The `telemetry` settings object exists only in device-wide enterprise managed settings.
-- Content capture is off by default.
-- `gen_ai.conversation.id` is the session identifier. `~/.copilot/session-state/` holds session data "organized by session ID", and `COPILOT_HOME` replaces `~/.copilot`.
-- "To measure AI unit consumption, read `github.copilot.nano_aiu` from the root `invoke_agent` span only." The custom-agent capture below found a root span whose total left out a subagent's spend.
-- For bring-your-own-key and local models, `providers[].modelProvider` in Copilot CLI's `providers.json` is "a provider label used only for telemetry". Its recognized values are `openai`, `anthropic`, `azure_openai`, `ollama`, `lm_studio`, `foundry_local`, and `llama_cpp`.
-- VS Code's Local agent harness is configured differently:
-  - `COPILOT_OTEL_ENDPOINT` takes precedence over `OTEL_EXPORTER_OTLP_ENDPOINT`, and environment variables take precedence over settings.
-  - `COPILOT_OTEL_ENABLED=true` turns OTel on. The default endpoint is `http://localhost:4318` and the default protocol is `http/protobuf`.
-  - `service.name` is `copilot-chat`.
-  - `invoke_agent` spans carry `github.copilot.git.repository`, `github.copilot.git.branch`, and `github.copilot.git.commit_sha`. The legacy names are `copilot_chat.repo.remote_url`, `copilot_chat.repo.head_branch_name`, and `copilot_chat.repo.head_commit_hash`.
-  - `chat` spans report `gen_ai.usage.cache_creation.input_tokens`.
+- `copilot mcp add SERVER-NAME -- COMMAND [ARGS...]` adds a local (stdio) server to the user configuration, `~/.copilot/mcp-config.json`, under a top-level `mcpServers` object. The file can also be edited by hand. Project files `.mcp.json` and `.github/mcp.json` take precedence over it.
+- VS Code's Copilot harness reads the same user file, `$COPILOT_HOME/mcp-config.json` (default `~/.copilot/mcp-config.json`), labeled "Copilot Global". VS Code's own `mcp.json` uses a top-level `servers` object instead.
+- Copilot CLI permission rules name an MCP tool as `SERVER(TOOL)`, for example `--allow-tool 'ledger(set_branch_budget)'` (confirmed by run C).
+- User hooks live in `~/.copilot/hooks/*.json` (`$COPILOT_HOME/hooks`). `sessionStart` hooks run when a session starts and are bounded by `timeoutSec`. Hooks can be disabled with `disableAllHooks` or restricted by enterprise managed settings.
 
-### Live capture
+### MCP protocol and the C# SDK
 
-On 2026-11-20 the architect ran a scratch loopback receiver on `localhost:4318`, outside the repository, and sent two prompts with Copilot CLI 1.0.112 on Windows 11 ARM64. Only `COPILOT_OTEL_ENABLED=true` was set for those processes. The first prompt used `mai-code-2`. The second used `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` and an `explore` subagent.
+Sources: [MCP specification 2026-07-28, key changes](https://modelcontextprotocol.io/specification/2026-07-28/changelog); [Tools](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2025-11-25/server/tools.mdx) (2025-11-25, unchanged in 2026-07-28 for the points used here); NuGet `ModelContextProtocol` 2.4.0, checked by reflection and an in-memory server-and-client probe.
 
-1. Copilot sent `POST /v1/traces` and `POST /v1/metrics` with `Host: localhost:4318` over HTTP/1.1, uncompressed (no `Content-Encoding`), as `application/json` by default or `application/x-protobuf`. The User-Agent was `OTel-OTLP-Exporter-Rust/0.33.1`.
-2. In JSON, `intValue`, `startTimeUnixNano`, and `endTimeUnixNano` were strings, `kind` was an integer, and a root span's `parentSpanId` was `""`. IDs were lowercase hex. Fields CopilotLedger doesn't use were present, such as `entityRefs`, `flags`, `events`, `links`, and `status`.
-3. Resource attributes were `service.name` (`github-copilot`), `service.version`, and `service.instance.id`. The scope was `github.copilot`.
-4. On `chat` spans:
-   - There was no `server.address` or `server.port` for GitHub-hosted models.
-   - `gen_ai.provider.name` was `github`, and the request and response models were `mai-code-2` and `gpt-6-luna`.
-   - `gen_ai.usage.cache_read.input_tokens` and `gen_ai.usage.cache_write.input_tokens` appeared only when non-zero.
-   - There was no `gen_ai.agent.name`.
-   - `github.copilot.nano_aiu` and `github.copilot.cost` were `doubleValue`.
-5. The default top-level agent's `invoke_agent` span had no `gen_ai.agent.name`, only `github.copilot.agent.type: builtin`. The subagent's `invoke_agent` span had `gen_ai.agent.name: explore` and was a child of an `execute_tool task` span. The subagent's `execute_tool` spans also carried `gen_ai.agent.name`.
-6. Spans are exported as they end. `chat` spans arrived before their `invoke_agent` ancestors, and the root `invoke_agent` arrived in a later request.
-7. `gen_ai.conversation.id` equaled the `--session-id` passed to the CLI. `~/.copilot/session-state/<id>/workspace.yaml` held a top-level `cwd:` line with the session's working directory as a plain YAML scalar. The GitHub Copilot app's sessions (`client_name: github/autopilot`) have the same file.
-8. **Billing reconciliation.** For each `chat` span, `nano_aiu / 10^9` equaled the AI credits from Sprint 1's formula at GitHub's published rates: `mai-code-2` 0.69071, 0.13053, and 0.69766; `gpt-6-luna` 0.047955 and 0.0051795. Copilot's `--usage-output-file` totals of 690,710,000 and 881,324,500 nano-AIU agree.
-9. `input_tokens` includes cache reads and writes. For example, the subagent's `gpt-6-luna` input of 7,429 = 6 uncached + 3,662 cache read + 3,761 cache write.
+- `ModelContextProtocol` 2.4.0 is on the configured feed. It depends on `ModelContextProtocol.Core` [2.4.0], `Microsoft.Extensions.Caching.Abstractions` 10.0.14, and `Microsoft.Extensions.Hosting.Abstractions` 10.0.14; Core depends on `Microsoft.Extensions.AI.Abstractions` 10.11.0 and `Microsoft.Extensions.Logging.Abstractions` 10.0.14. A `net10.0` project with `TreatWarningsAsErrors` restores it with no `NU190x` warning.
+- The low-level server API (namespace `ModelContextProtocol.Server`, with protocol types in `ModelContextProtocol.Protocol`):
+  - `McpServer.Create(ITransport transport, McpServerOptions options, ILoggerFactory? loggerFactory = null, IServiceProvider? serviceProvider = null)`, then `RunAsync(CancellationToken)`.
+  - `McpServerOptions { ServerInfo = new Implementation { Name, Version }, ServerInstructions, Handlers = new McpServerHandlers { ListToolsHandler, CallToolHandler } }`. Setting `ListToolsHandler` advertises the `tools` capability.
+  - Handlers are `(RequestContext<TParams> request, CancellationToken cancellationToken) => ValueTask<TResult>`. `request.Params` is `ListToolsRequestParams?` or `CallToolRequestParams?` (`Name`, and `Arguments` as `IDictionary<string, JsonElement>?`).
+  - `Tool { Name, Title, Description, InputSchema (JsonElement), Annotations = new ToolAnnotations { ReadOnlyHint, DestructiveHint, IdempotentHint, OpenWorldHint } }`, `ListToolsResult { Tools }`, `CallToolResult { Content, StructuredContent (JsonElement?), IsError (bool?) }`, and `TextContentBlock { Text }`.
+  - `StreamServerTransport(Stream inputStream, Stream outputStream, string? serverName = null, ILoggerFactory? loggerFactory = null)`.
+  - The client (namespace `ModelContextProtocol.Client`): `McpClient.CreateAsync(new StreamClientTransport(Stream serverInput, Stream serverOutput), McpClientOptions?)`, `ListToolsAsync()` (items expose `ProtocolTool`), and `CallToolAsync(string name, IReadOnlyDictionary<string, object?>? arguments)`.
+- Behavior observed in the probe:
+  - The SDK doesn't validate arguments against `inputSchema`; extra arguments reach the handler.
+  - A handler that throws any other exception produces `isError: true` with the text `An error occurred invoking '<name>'.`; the exception's message isn't sent.
+  - `throw new McpProtocolException("Unknown tool: x", McpErrorCode.InvalidParams)` produces JSON-RPC error `-32602` with that message. The client throws `McpProtocolException` whose `ErrorCode` is `McpErrorCode.InvalidParams`.
+  - The SDK's serializer escapes non-ASCII characters, `+`, `<`, and `'` on the wire, and clients unescape them, so `TextContentBlock.Text` arrives unchanged. `StructuredContent.GetRawText()` on the client keeps the escapes, so tests compare structured content as parsed JSON, not raw text.
+  - The server negotiates 2026-07-28 (`server/discover`; results carry `resultType`, and list results carry `ttlMs` and `cacheScope`) and answers a legacy `initialize` with 2025-06-18. A `tools/list` request whose `_meta` declares `io.modelcontextprotocol/protocolVersion` `2026-07-28` and `io.modelcontextprotocol/clientCapabilities` `{}` is answered directly. When standard input closes, `RunAsync` returns.
+- The spec: input validation errors are tool execution errors (`isError: true`), so the model can correct itself, and an unknown tool is protocol error `-32602`. Annotations are hints, and clients treat them as untrusted. 2026-07-28 deprecates Roots (SEP-2577) and suggests passing directories as tool parameters instead. The SDK reports any use of `ClientCapabilities.Roots` as diagnostic `MCP9005`.
 
-### Live capture: custom agents
+### Desktop notifications
 
-On 2026-11-20 the architect repeated the capture for custom agents. It used Copilot CLI 1.0.112 with `mai-code-2-flash`, the scratch receiver, and a scratch Git repository outside this one, with `COPILOT_OTEL_ENABLED=true` set only for those processes. User-level Copilot configuration wasn't changed. The probe agent `.github/agents/ledger-probe.agent.md` declared `name: Ledger Probe Display`; a second probe, `ledger-probe-noname.agent.md`, declared no `name`. The three runs cost 0.103028 AI credits: `--usage-output-file` totals of 24,095,000, 62,080,000, and 16,853,000 nano-AIU.
+- **Windows** (verified 2026-11-21, without administrator rights, from a `net10.0` program): `powershell.exe -NoProfile -NonInteractive -Command <script>`. The script loads `Windows.UI.Notifications.ToastNotificationManager` and `Windows.Data.Xml.Dom.XmlDocument` as WinRT types, reads toast XML from a UTF-8 file, and shows it with Windows PowerShell's application ID, `{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe`. It exited 0 in about 1.5–1.9 seconds, and the toast appeared in the notification history with its tag and group; the check removed it afterward. A data directory containing `'` works because the script doubles it. The exact script is in Task 3.
+- `-EncodedCommand`, `-WindowStyle Hidden`, and `-ExecutionPolicy Bypass` are deliberately not used, because endpoint-protection products flag that combination.
+- **macOS** and **Linux** use `/usr/bin/osascript` with `display notification` and `notify-send`. Neither was run live (see Assumptions).
 
-1. **Run A,** `copilot --agent ledger-probe`. The root span was `invoke_agent Ledger Probe Display`, with `gen_ai.agent.name` = `Ledger Probe Display` (the agent's `name`, not its file ID), `gen_ai.agent.description`, and `github.copilot.agent.type` = `custom`. Its one `chat` span was the root's child and had no `gen_ai.agent.name`.
-2. **Run B,** the default agent calling the probe agent with the `task` tool. The root `invoke_agent` had no `gen_ai.agent.name`, and `github.copilot.agent.type` was `builtin`. The main agent's two `chat` spans were the root's children. So was `execute_tool task`, which carried `gen_ai.transfer.target.name` = `Ledger Probe Display`. Its child was `invoke_agent Ledger Probe Display`, with `gen_ai.agent.name` = `Ledger Probe Display` and type `custom`, and that span's one `chat` child again had no agent name.
-3. **Run C,** `copilot --agent ledger-probe-noname`. `gen_ai.agent.name` was `ledger-probe-noname`: the file name without `.agent.md`.
-4. Each run's spans arrived in one export request. Every `chat` span's `nano_aiu / 10^9` equaled Sprint 1's formula at `mai-code-2-flash`'s promotional price: 0.024095 (run A); 0.02885, 0.028335, and 0.004895 (run B); and 0.016853 (run C).
-5. Run B's root `invoke_agent` reported `github.copilot.nano_aiu` 57,185,000, which covers only the main agent's two `chat` spans. The subagent's 4,895,000 appeared only on its own `invoke_agent` and `chat` spans. The usage file's total of 62,080,000 is the sum of all three `chat` spans. So Copilot's advice to read the root span "only" would have missed the custom subagent's spend. CopilotLedger prices `chat` spans, so it counts that spend.
+### Start at sign-in
 
-The design already matches these runs. The normalizer reads `gen_ai.agent.name` only into links, and back-fill gives each `chat` row the name of its nearest `invoke_agent` ancestor without crossing a nested one. A custom agent's spend therefore appears under its `name`, or its file ID when it has no `name`, and the default agent's spend appears under `(none)`. This repository's agents declare `name: ledger-architect` and `name: ledger-builder`, so their spend appears under those names. IG9 replays runs A and B.
+Sources: Microsoft Learn, [Run and RunOnce registry keys](https://learn.microsoft.com/en-us/windows/win32/setupapi/run-and-runonce-registry-keys) and [Console allocation policy](https://learn.microsoft.com/en-us/windows/console/console-allocation-policy); Apple, [Creating Launch Daemons and Agents](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html); freedesktop.org, [Desktop Application Autostart Specification](https://specifications.freedesktop.org/autostart-spec/latest/) and [Desktop Entry Specification](https://specifications.freedesktop.org/desktop-entry-spec/latest/).
 
-### GitHub price table
+- `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run` runs each value's command line at every sign-in of that user. "The data value for a key is a command line no longer than 260 characters." Writing it needs no administrator rights.
+- A console program started outside a terminal gets a console window. The application manifest element `<consoleAllocationPolicy xmlns="http://schemas.microsoft.com/SMI/2024/WindowsSettings">detached</consoleAllocationPolicy>` skips that allocation, while a program started in a terminal still uses the terminal. It needs Windows 11 24H2 (build 26100) or Windows Server 2025; older Windows ignores it.
+- Verified 2026-11-21: with `<ApplicationManifest>app.manifest</ApplicationManifest>` in `CopilotLedger.Cli.csproj`, `dotnet build` and the single-file publishes for `win-arm64` and `linux-x64` (from Windows) succeed with 0 warnings. The manifest is embedded in the single-file `gh-ledger.exe`, and the binary still prints `--version` in a terminal. A test program with the same manifest, published single-file and started from Explorer, ran with no console window.
+- A per-user launchd agent is a property list in `~/Library/LaunchAgents`, loaded at sign-in. `RunAtLoad` starts it when it's loaded, and a launchd job must not daemonize itself.
+- An autostart entry is a `.desktop` file in `$XDG_CONFIG_HOME/autostart` (default `~/.config/autostart`). `$XDG_CONFIG_HOME` must be an absolute path. In `Exec`, a quoted argument escapes `"`, `` ` ``, `$`, and `\` with a backslash, and `%` starts a field code.
 
-Source: [Models and pricing for GitHub Copilot](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing), retrieved 2026-11-20. Prices are USD per 1M tokens.
+### .NET
 
-The architect transcribed the page twice, once by parsing its HTML and once from a separate Markdown rendering, and the two transcriptions agree on all 48 rows below. RR1's expected values were computed from that transcription with decimal math, independently of `rates.json`. They agree with a second computation, and with the merged Sprint 1 calculator loading the Task 2 `rates.json`.
-
-The table lists every text model; the page's one image model, GPT Image 2.5 Flare, is left out, and its "Fine-tuned (GitHub)" table is empty. **Cache write** "none" means the page gives no cache-write price, so cache writes bill at the input price, which is Sprint 1's rule for a null `cacheWritePer1M`. **ID source** is explained after the table. **Built in** says which sprint prices the model.
-
-| Provider | Model on the page | Model ID | ID source | Built in | Tier | Threshold | Input | Cached input | Cache write | Output |
-|---|---|---|---|---|---|---|---|---|---|---|
-| OpenAI | GPT-5.3-Codex | `gpt-5.3-codex` | model picker | Task 2 | Default | Not applicable | 1.75 | 0.175 | none | 14.00 |
-| OpenAI | GPT-5.4 nano | `gpt-5.4-nano` | display name | Task 2 | Default | Not applicable | 0.20 | 0.02 | none | 1.25 |
-| OpenAI | GPT-5.6 Luna | `gpt-5.6-luna` | model picker | Task 2 | Default | ≤ 200K | 0.20 | 0.02 | 0.25 | 1.20 |
-| OpenAI | GPT-5.6 Luna | `gpt-5.6-luna` | model picker | Task 2 | Long context | > 200K | 0.40 | 0.04 | 0.50 | 1.80 |
-| OpenAI | GPT-5.6 Sol | `gpt-5.6-sol` | model picker | Task 2 | Default | ≤ 272K | 4.00 | 0.40 | 5.00 | 20.00 |
-| OpenAI | GPT-5.6 Sol | `gpt-5.6-sol` | model picker | Task 2 | Long context | > 272K | 8.00 | 0.80 | 10.00 | 30.00 |
-| OpenAI | GPT-6 Astra | `gpt-6-astra` | model picker | Sprint 1 | Default | ≤ 272K | 10.00 | 1.00 | 12.50 | 50.00 |
-| OpenAI | GPT-6 Astra | `gpt-6-astra` | model picker | Sprint 1 | Long context | > 272K | 20.00 | 2.00 | 25.00 | 75.00 |
-| OpenAI | GPT-6 Luna | `gpt-6-luna` | model picker | Task 2 | Default | ≤ 272K | 0.10 | 0.01 | 0.125 | 0.50 |
-| OpenAI | GPT-6 Luna | `gpt-6-luna` | model picker | Task 2 | Long context | > 272K | 0.20 | 0.02 | 0.25 | 0.75 |
-| OpenAI | GPT-6 Sol | `gpt-6-sol` | model picker | Task 2 | Default | ≤ 272K | 2.00 | 0.20 | 2.50 | 10.00 |
-| OpenAI | GPT-6 Sol | `gpt-6-sol` | model picker | Task 2 | Long context | > 272K | 4.00 | 0.40 | 5.00 | 15.00 |
-| OpenAI | GPT-6.1 Sol | `gpt-6.1-sol` | model picker | Sprint 1 | Default | ≤ 272K | 2.00 | 0.10 | 2.50 | 10.00 |
-| OpenAI | GPT-6.1 Sol | `gpt-6.1-sol` | model picker | Sprint 1 | Long context | > 272K | 4.00 | 0.20 | 5.00 | 15.00 |
-| OpenAI | GPT-6.1 Terra | `gpt-6.1-terra` | model picker | Task 2 | Default | ≤ 272K | 1.00 | 0.05 | 1.25 | 5.00 |
-| OpenAI | GPT-6.1 Terra | `gpt-6.1-terra` | model picker | Task 2 | Long context | > 272K | 2.00 | 0.10 | 2.50 | 7.50 |
-| OpenAI | GPT-6.2 Astra | `gpt-6.2-astra` | model picker | Task 2 | Default | ≤ 272K | 8.00 | 0.40 | 10.00 | 40.00 |
-| OpenAI | GPT-6.2 Astra | `gpt-6.2-astra` | model picker | Task 2 | Long context | > 272K | 16.00 | 0.80 | 20.00 | 60.00 |
-| OpenAI | GPT-6.2 Sol | `gpt-6.2-sol` | model picker | Task 2 | Default | ≤ 272K | 2.00 | 0.10 | 2.50 | 10.00 |
-| OpenAI | GPT-6.2 Sol | `gpt-6.2-sol` | model picker | Task 2 | Long context | > 272K | 4.00 | 0.20 | 5.00 | 15.00 |
-| Anthropic | Claude Haiku 4.5 | `claude-haiku-4.5` | model picker | Task 2 | Default | Not applicable | 1.00 | 0.10 | 1.25 | 5.00 |
-| Anthropic | Claude Haiku 5.5 | `claude-haiku-5.5` | model picker | Task 2 | Default | ≤ 100K | 0.10 | 0.01 | 0.125 | 0.50 |
-| Anthropic | Claude Haiku 5.5 | `claude-haiku-5.5` | model picker | Task 2 | Long context | > 100K | 0.50 | 0.05 | 0.625 | 2.50 |
-| Anthropic | Claude Sonnet 4 | `claude-sonnet-4` | display name | Task 2 | Default | Not applicable | 3.00 | 0.30 | 3.75 | 15.00 |
-| Anthropic | Claude Sonnet 4.6 | `claude-sonnet-4.6` | CLI reference | Task 2 | Default | Not applicable | 3.00 | 0.30 | 3.75 | 15.00 |
-| Anthropic | Claude Opus 4.8 | `claude-opus-4.8` | display name | Task 2 | Default | Not applicable | 5.00 | 0.50 | 6.25 | 25.00 |
-| Anthropic | Claude Opus 5.5 | `claude-opus-5.5` | model picker | Sprint 1 | Default | Not applicable | 4.00 | 0.20 | 5.00 | 20.00 |
-| Anthropic | Claude Sonnet 5 | `claude-sonnet-5` | model picker | Task 2 | Default | Not applicable | 2.00 | 0.20 | 2.50 | 10.00 |
-| Anthropic | Claude Sonnet 5.5 | `claude-sonnet-5.5` | model picker | Sprint 1 | Default | Not applicable | 2.00 | 0.10 | 2.50 | 10.00 |
-| Anthropic | Claude Opus 4.8 (fast mode) (preview) | none | unknown | no | Default | Not applicable | 10.00 | 1.00 | 12.50 | 50.00 |
-| Anthropic | Claude Fable 5 | `claude-fable-5` | display name | Task 2 | Default | Not applicable | 10.00 | 1.00 | 12.50 | 50.00 |
-| Anthropic | Claude Fable 5.1 | `claude-fable-5.1` | display name | Task 2 | Default | Not applicable | 10.00 | 0.25 | 12.50 | 50.00 |
-| Anthropic | Claude Fable 5.2 | `claude-fable-5.2` | display name | Task 2 | Default | Not applicable | 8.00 | 0.20 | 10.00 | 40.00 |
-| Google | Gemini 3.8 Flash | `gemini-3.8-flash` | model picker | Task 2 | Default | Not applicable | 0.75 | 0.075 | none | 3.75 |
-| Google | Gemini 4 Argon | `gemini-4-argon` | model picker | Task 2 | Default | Not applicable | 2.00 | 0.10 | none | 10.00 |
-| Google | Gemini 4 Carbon | `gemini-4-carbon` | model picker | Task 2 | Default | Not applicable | 2.00 | 0.10 | none | 10.00 |
-| Google | Gemini 4 Hydrogen | `gemini-4-hydrogen` | model picker | Task 2 | Default | Not applicable | 1.50 | 0.075 | none | 7.50 |
-| Google | Gemini 4 Neon | `gemini-4-neon` | display name | Task 2 | Default | Not applicable | 3.00 | 0.15 | none | 15.00 |
-| Microsoft | MAI-Code-1.1-Flash | `mai-code-1.1-flash` | model picker | Task 2 | Default | Not applicable | 0.20 | 0.02 | none | 1.20 |
-| Microsoft | MAI Code 2 | `mai-code-2` | model picker | Sprint 1 | Default | Not applicable | 0.50 | 0.025 | none | 2.50 |
-| Microsoft | MAI Code 2 Flash | `mai-code-2-flash` | model picker | Task 2 | Default | Not applicable | 0.05 | 0.005 | none | 0.25 |
-| xAI | Grok 4.5 | `grok-4.5` | display name | Task 2 | Default | ≤ 200K | 2.00 | 0.50 | none | 6.00 |
-| xAI | Grok 4.5 | `grok-4.5` | display name | Task 2 | Long context | > 200K | 4.00 | 1.00 | none | 12.00 |
-| xAI | Grok 4.6 | `grok-4.6` | model picker | Task 2 | Default | ≤ 200K | 2.00 | 0.50 | none | 6.00 |
-| xAI | Grok 4.6 | `grok-4.6` | model picker | Task 2 | Long context | > 200K | 4.00 | 1.00 | none | 12.00 |
-| xAI | Grok 4.7 | `grok-4.7` | model picker | Task 2 | Default | ≤ 200K | 2.00 | 0.50 | none | 6.00 |
-| xAI | Grok 4.7 | `grok-4.7` | model picker | Task 2 | Long context | > 200K | 4.00 | 1.00 | none | 12.00 |
-| Moonshot AI | Kimi K3 | `kimi-k3` | display name | Task 2 | Default | Not applicable | 3.00 | 0.30 | none | 15.00 |
-
-Promotional prices, quoted from the page's footnotes (input / cached input / output):
-
-| Model ID | Page text | Window in `rates.json` |
-|---|---|---|
-| `gemini-3.8-flash` | 0.75 / 0.075 / 3.75 "through December 31, 2026". No later price. | Until `2027-01-01T00:00:00Z`; nothing after |
-| `gemini-4-argon` | 2.00 / 0.10 / 10.00 "until December 1, 2026". No later price. | Until `2026-12-01T00:00:00Z`; nothing after |
-| `gemini-4-carbon` | 2.00 / 0.10 / 10.00 "until December 1, 2026. Starting December 1, 2026, pricing is" 4.00 / 0.20 / 20.00. | Until `2026-12-01T00:00:00Z`, then the later price |
-| `mai-code-2` (Sprint 1) | 0.50 / 0.025 / 2.50 "until May 17, 2027. Starting May 17, 2027, pricing is" 1.00 / 0.05 / 5.00. | Until `2027-05-17T00:00:00Z`, then the later price |
-| `mai-code-2-flash` | 0.05 / 0.005 / 0.25 "until May 17, 2027. Starting May 17, 2027, pricing is" 0.10 / 0.01 / 0.50. | Until `2027-05-17T00:00:00Z`, then the later price |
-
-The page gives dates without a time or time zone. Its own wording makes "until December 1" and "Starting December 1" meet at the start of that day, and Sprint 1 ended `mai-code-2`'s promotion at `2027-05-17T00:00:00Z`. Every window here ends at 00:00:00Z on the date the page names (assumption A4). "Through December 31, 2026" includes that day, so it ends at `2027-01-01T00:00:00Z`. The page's HTML also wraps the Argon and Carbon notes in `<!-- expires 2026-12-01 -->` and the MAI notes in `<!-- expires 2027-05-17 -->`.
-
-Model IDs:
-
-- **Model picker (24).** The coordinator read these from the GitHub Copilot app's model picker on the user's machine: `claude-sonnet-5.5`, `claude-sonnet-5`, `claude-opus-5.5`, `claude-haiku-5.5`, `claude-haiku-4.5`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-luna`, `gpt-5.3-codex`, `mai-code-1.1-flash`, `gemini-4-argon`, `gemini-3.8-flash`, `grok-4.7`, `grok-4.6`, `gemini-4-carbon`, `gemini-4-hydrogen`, `gpt-6.2-astra`, `gpt-6.2-sol`, `mai-code-2-flash`, and `mai-code-2`.
-- **CLI reference (1).** The Copilot CLI command reference lists `claude-sonnet-4.6` as the default model of the built-in `code-review`, `general-purpose`, and `security-review` agents. The same table lists `gpt-5.6-luna` for `explore` and `task` (with `task` falling back to `claude-haiku-4.5`) and `claude-haiku-4.5` for `research`. The live capture showed `explore` running `gpt-6-luna` on CLI 1.0.112.
-- **Display name (9).** No source lists the other IDs. The Copilot CLI 1.0.112 binary carries no model catalog. The GitHub Copilot app caches only the models enabled for the signed-in account. The supported-models page lists display names only. Each of the 25 verified IDs equals its display name in lowercase with spaces as `-`, which is what Sprint 1's model normalization produces. So `gpt-5.4-nano`, `claude-sonnet-4`, `claude-opus-4.8`, `claude-fable-5`, `claude-fable-5.1`, `claude-fable-5.2`, `gemini-4-neon`, `grok-4.5`, and `kimi-k3` use the same rule. Claude Sonnet 4 is on the pricing page but not on the supported-models page; it's included because the pricing page is what GitHub bills.
-- **Left out (1).** For Claude Opus 4.8 (fast mode) (preview), the rule gives `claude-opus-4.8-(fast-mode)-(preview)`, which isn't a plausible ID. The app's model cache has `gpt-5.6-sol-fast`, which hints at a `-fast` suffix, but no fast-mode Claude ID was seen. Users can price it with an overlay.
-- **Not on the pricing page.** The CLI reference also names `gpt-5.4` and `gemini-3.7-flash`, and the app's cache has `gpt-5.6-sol-fast` and `gpt-5.6-terra`. GitHub publishes no price for them, so they stay `unknown_model`.
-
-### GitHub CLI
-
-Sources: `gh alias set --help` (gh 2.103.3), and `cli/cli` `trunk`: `pkg/cmd/extension/manager.go` and `pkg/findsh/find_windows.go`. The alias behavior was checked against a temporary `GH_CONFIG_DIR`.
-
-- `gh alias set ledger <expansion> --shell --clobber` stores a shell alias. Shell aliases run through `sh`, and extra arguments reach the expansion as `"$@"`.
-  - Without `--clobber`, setting an existing alias fails with exit code 1.
-  - `gh alias delete ledger` exits 0. When the alias is missing, it prints `no such alias ledger` and exits 1.
-- On Windows, gh needs `sh.exe` to run shell aliases and local (non-binary) extensions. It searches `PATH` for `sh`, then `<git dir>\..\bin\sh.exe`, then `<git dir>\..\apps\git\current\bin\sh.exe`. Without one it fails with `unable to locate sh to execute the shell alias with. The sh.exe interpreter is typically distributed with Git for Windows.` The user's Windows ARM64 machine has only Copilot's bundled MinGit (`usr\bin\sh.exe`), which gh doesn't find.
-- Extensions must live in repositories named `gh-*`. Precompiled extensions install from release assets; local extensions installed with `gh extension install .` run through `sh` on Windows.
-
-### .NET and packages
-
-The architect verified these with scratch builds in the session folder, outside the repository.
-
-- The machine's configured NuGet feed resolves System.CommandLine 2.0.15, Microsoft.AspNetCore.TestHost 10.0.15, and Microsoft.Data.Sqlite 10.0.15. Newer majors also exist (System.CommandLine 3.0.0, TestHost 11.0.0, and Microsoft.Data.Sqlite 11.0.0), so the plan pins versions.
-- These work together: `WebApplication.CreateEmptyBuilder(new WebApplicationOptions())`, `builder.WebHost.UseKestrelCore()`, `builder.Services.AddRoutingCore()`, and `ConfigureKestrel(k => k.ListenLocalhost(port))`.
-  - `ListenLocalhost` binds `127.0.0.1` and `::1`.
-  - `CreateEmptyBuilder` registers `ConsoleLifetime`.
-  - A port conflict throws `System.IO.IOException` (`Failed to bind to address http://127.0.0.1:N: address already in use.`) with an inner `Microsoft.AspNetCore.Connections.AddressInUseException`.
-- A `Microsoft.NET.Sdk` project with `<FrameworkReference Include="Microsoft.AspNetCore.App" />` gets no ASP.NET Core implicit usings, so files need explicit `using` directives such as `Microsoft.AspNetCore.Builder` and `Microsoft.AspNetCore.Http`.
-- Under `UseTestServer()`, requests carry `Host: localhost` and `Connection.RemoteIpAddress` is null. Kestrel's `MaxRequestBodySize` isn't enforced. An unmapped path returns 404, and a mapped path with the wrong method returns 405.
-- System.CommandLine 2.0.15 APIs:
-  - `new Option<T>("--name") { Description = ..., DefaultValueFactory = _ => ... }`;
-  - `option.Validators.Add(r => r.AddError(...))` and `command.Validators.Add(...)`;
-  - `command.SetAction((ParseResult, CancellationToken) => Task<int>)` and `parseResult.GetValue(option)`;
-  - `rootCommand.Parse(args).InvokeAsync(new InvocationConfiguration { Output = ..., Error = ..., ProcessTerminationTimeout = null }, cancellationToken)`.
-
-  Parse and validation errors write the error and help to `Error` and return 1.
-- A single-file, self-contained, compressed `win-arm64` publish of Kestrel, System.CommandLine, and Microsoft.Data.Sqlite produced one 48.2 MB `gh-ledger.exe`. It served requests and opened SQLite in WAL mode; the native `e_sqlite3` library is extracted at run time.
-- SQLite 3.53.3 (Microsoft.Data.Sqlite 10.0.15) accepts `STRICT, WITHOUT ROWID` and `WITH RECURSIVE ... UPDATE`. The Task 2 back-fill and prompt-chain SQL in this plan was run against the plan's seeds and produced the expected rows.
-- System.Text.Json on .NET 10, for Task 3:
-  - `JsonElement.TryGetDecimal`, `TryGetInt32`, `TryGetInt64`, and `TryGetDateTimeOffset` accept and reject exactly what Sprint 1's serializer accepted and rejected with `JsonNumberHandling.Strict`, with equal values:
-    - `1e2` reads as the decimal 100, `1e-30` reads as 0, and `79228162514264337593543950336` and `1e30` fail;
-    - `1.0`, `1e0`, and `2e5` fail as integers;
-    - `2027-05-17` and `2027-05-17T00:00:00` read as local time, as before, and `2027-05-17 00:00:00Z` fails.
-  - `JsonDocument.Parse` reports a syntax error with 0-based `LineNumber` and `BytePositionInLine`; `\r\n` counts as one line break. An empty input is line 0, byte 0. A trailing comma is reported at the closing `}` or `]`.
-  - `JsonElement.TryGetProperty` returns the last of repeated property names, and `EnumerateObject` returns all of them in document order.
-  - For an escaped lone surrogate such as `"\ud800"`, `JsonDocument.Parse` succeeds, but `GetString()` and `JsonProperty.Name` throw `InvalidOperationException` and `TryGetDateTimeOffset` returns false.
-- A reference implementation of Task 3, including the rate bound, was built against `1809dc8` with the `rates.json` and `docs/configuration.md` that this plan's Task 2 and Task 3 blocks produce. It passes all 143 Sprint 1 tests, every Task 3 test, and RR1–RR4: 253 tests. Run against the merged loader, 54 of the Task 3 test cases fail.
+- `JsonElement.TryGetDecimal` accepts JSON numbers with exponents (`1e2` → 100, `1E-2` → 0.01) and fails for strings. `TryGetInt32` fails for `1e2` and `5.0`. `decimal.Round(v, 2) == v` is true exactly when `v` has at most two decimal places that matter (`12.50` passes, `0.001` fails). Verified on .NET 10.
+- `JsonWriterOptions.NewLine = "\n"` with `Indented = true` writes `\n` line breaks on every OS. `JavaScriptEncoder.UnsafeRelaxedJsonEscaping` leaves `'`, `+`, and non-ASCII letters unescaped but still escapes `\` and `"`. Verified on .NET 10.
+- `Microsoft.Win32.Registry` is part of the shared framework. Code that uses it compiles without warnings under `TreatWarningsAsErrors` when the call is inside `if (OperatingSystem.IsWindows())` (analyzer CA1416). Verified on .NET 10.
+- An `IHostedService` registered from `CliContext.ConfigureWebHost` can capture the `TestServer` (`IServer`) of the receiver that `OtlpReceiverApp.Build` creates, and `TestServer.CreateClient()` then posts to it with host `localhost`. Verified on .NET 10 with `Microsoft.AspNetCore.TestHost` 10.0.15.
+- SQLite 3.53 (through `Microsoft.Data.Sqlite` 10.0.15) runs Migration 3 on a version-2 database. It supports `INSERT … ON CONFLICT DO NOTHING RETURNING id`, which returns no row when the insert is skipped, `UPDATE … RETURNING`, and `ALTER TABLE … DROP COLUMN` on the new `span_links` columns. Verified 2026-11-21 against the Migration 3 SQL below.
 
 ### Assumptions (not verified)
 
-- **A1.** Copilot CLI's bring-your-own provider labels appear as `gen_ai.provider.name` on `chat` spans. No BYOK provider was available to capture.
-- **A2.** The `cwd:` line in `workspace.yaml` is undocumented. If it's missing or unreadable, CopilotLedger records the span without Git context; it never fails.
-- **A3.** VS Code's Local harness was not captured live. Its behavior here comes from the VS Code documentation.
-- **A4.** GitHub's pricing page gives promotion dates without a time or time zone. Windows end at 00:00:00Z on the named date, as Sprint 1's `mai-code-2` window does. If GitHub bills by another time zone, a request within a day of a boundary is priced at the neighboring window's rate.
-- **A5.** Nine built-in model IDs are derived from display names (see "GitHub price table"). If Copilot reports a different ID for one of them, its requests are recorded as `unknown_model`, as they would be without the entry, until an overlay alias or a rates update maps them.
+- macOS and Linux notifications and sign-in items weren't run live. The commands follow Apple's and freedesktop.org's documentation.
+- The GitHub Copilot app's sessions run the same Copilot runtime as Copilot CLI (Sprint 2 verified their `workspace.yaml` and telemetry), so their tool spans and MCP client are assumed to match runs A–C. VS Code's Copilot harness is documented to read `~/.copilot/mcp-config.json`; the app isn't.
+- `COPILOT_AGENT_SESSION_ID` and `COPILOT_SESSION_CWD` in an MCP server's environment were observed, not documented. CopilotLedger uses them only as hints and works without them.
+- VS Code's Local agent harness may not export `process.exit.code` or tool status. Without them, rule 2 doesn't trip; rule 1 still works.
 
 ## Design decisions
 
-1. **Transport: plain HTTP on loopback port 4318.**
-   - The receiver serves OTLP/HTTP without TLS on `localhost:4318`, using Kestrel's `ListenLocalhost(4318)`. That binds `127.0.0.1` and `::1` and nothing else.
-   - Copilot's default endpoint is `http://localhost:4318`, and `localhost` can resolve to `::1` before `127.0.0.1`, so binding both loopback addresses avoids failed IPv6 attempts.
-   - TLS isn't needed. Copilot disables `http://` export only when TLS variables are set, and the live capture exported over plain HTTP.
-   - Every request must also carry a loopback `Host` header (`localhost`, `127.0.0.1`, or `[::1]`). That blocks DNS-rebinding pages from writing to the ledger.
-2. **Copilot integration: one variable, `COPILOT_OTEL_ENABLED=true`.**
-   - `install` sets only this variable. The Copilot runtime and VS Code's Local harness both then export to their default endpoint, `http://localhost:4318`.
-   - It doesn't set `OTEL_EXPORTER_OTLP_ENDPOINT`. That variable is read by every OpenTelemetry SDK, so setting it for the whole user account would redirect unrelated applications.
-   - Conflicting settings produce warnings, not changes (Task 5).
-3. **Protobuf decoding: a hand-written reader, with no package.**
-   - `OtlpTraceDecoder` reads only the seven request messages in the schema table above, about 150 lines over `ReadOnlySpan<byte>`. The three response messages are only written. Unknown fields are skipped, which the protobuf format guarantees is safe.
-   - These options were rejected:
-     - Code generated from vendored `opentelemetry-proto` files with `Grpc.Tools`, because it runs the native `protoc` binaries during every build. That's a policy risk on locked-down corporate machines, and a failure the builder can't work around.
-     - Google.Protobuf's `JsonParser`, because OTLP/JSON isn't standard proto3 JSON: IDs are hex, not base64.
-     - Adding `Google.Protobuf` for its wire primitives alone isn't worth a dependency.
-   - The reader never reads `double` values. It recognizes `double_value` and skips its 8 bytes, so `src/` stays free of `double`. It's also trimming- and AOT-safe.
-   - Correctness comes from golden bytes produced by an independent reference encoder. Its decoder correctly decoded real Copilot payloads from the Rust exporter (`prost`) during the live capture.
-4. **JSON decoding: `JsonDocument`** with the OTLP deviations: hex IDs, integer enums, and 64-bit numbers as strings or numbers. Numbers are read with `TryGetInt64` and `TryGetUInt64`, never `double`. Unknown and snake_case keys are ignored. A string that System.Text.Json can't materialize, such as an escaped lone surrogate, counts as an invalid value for its field instead of failing the request.
-5. **gen_ai extraction rules (Task 1).**
-   - Only inference spans become ledger entries: `gen_ai.operation.name` of `chat`, `text_completion`, or `generate_content`.
-   - Token attributes must be non-negative `intValue`s. A token attribute with any other type rejects the span, so a wrong value is never priced silently. A missing attribute counts as 0.
-   - `gen_ai.usage.cache_write.input_tokens` falls back to `gen_ai.usage.cache_creation.input_tokens`.
-   - Sprint 1's deferred normalization applies: when cache read plus cache write is greater than input, input becomes input + cache read + cache write.
-   - After that, a count above 1,000,000,000 rejects the span (`GenAiSpanNormalizer.MaxTokenCount`). The largest context windows are about 10 million tokens, so a count 100 times larger is a telemetry bug. With the cap, one span priced at built-in rates costs at most $100,000 (10^17 pico-USD: 10^9 cache-write tokens at $25 and 10^9 output tokens at $75 per 1M, on `gpt-6-astra` `long_context`). SQLite's integer `SUM` would need 93 such spans to overflow.
-   - IDs are lowercase hex, and times are Unix nanoseconds converted to `DateTimeOffset`. A span with an invalid ID or a zero start time is rejected and reported as an OTLP partial success.
-6. **Agent and conversation inheritance through `span_links`.**
-   - Copilot's `chat` spans never carry `gen_ai.agent.name`, and their `invoke_agent` ancestors arrive later, often in another request. Inheritance therefore can't happen in memory at ingestion time.
-   - Each received span that has `gen_ai.operation.name`, or comes from a Copilot resource, is indexed in `span_links`. That table holds IDs, operation, agent name, conversation ID, and Git slug, branch, and SHA, and never content.
-   - After each request, a recursive SQL back-fill copies the nearest `invoke_agent` ancestor's agent name and conversation ID onto ledger rows that lack them. It never crosses a nested `invoke_agent`, so subagent spans get the subagent's name.
-   - `span_links` rows are pruned after 7 days.
-   - The Copilot runtime's default agent reports no name, so its spend appears under `(none)`. A custom agent reports its `name`, both at the top level and as a subagent, or its file ID when it has no `name` ("Live capture: custom agents").
-7. **Working directory and Git context.**
-   - A span's working directory is the resource attribute `process.working_directory`, from the OTel semantic conventions, which users can set with `OTEL_RESOURCE_ATTRIBUTES`. Otherwise it's the `cwd:` line of `<COPILOT_HOME>/session-state/<gen_ai.conversation.id>/workspace.yaml`. Neither is persisted.
-   - Git context comes from Sprint 1's `FileSystemGitContextResolver`, wrapped in a 5-second time-to-live cache. Sprint 1 suggested a `FileSystemWatcher` instead, but a short cache is deterministic to test and immune to watcher limits. A stale branch name lasts at most 5 seconds.
-   - VS Code's `github.copilot.git.*` attributes on `invoke_agent` spans fill in repository slug, branch, and commit only for rows that have no file-system Git context.
-8. **Prompt chains are traces.** Copilot emits one trace per user message, with the `invoke_agent` root and every subagent in it, so `top-prompts` groups ledger rows by `trace_id`. This needs no parent links, so it works before late spans arrive. Prompt text is never stored, so a chain is identified by its start time, repository, agents, models, and trace ID.
-9. **HTTP status mapping.** Every response body uses the request's encoding: protobuf, or JSON when the request is JSON or its type is unsupported.
+### Breaker model
 
-   | Condition | Status |
-   |---|---|
-   | Success, nothing rejected | 200 with an empty response |
-   | Success with rejected spans | 200 with `partial_success` |
-   | `Host` isn't loopback | 400 |
-   | Undecodable payload or invalid gzip | 400 |
-   | Body over the limit, raw or decompressed | 413 |
-   | Unsupported `Content-Type` or `Content-Encoding` | 415 |
-   | Ledger write failure | 503 with `Retry-After: 5` |
-10. **Daemon lifecycle with files, not a control port.**
-    - `~/.copilot-ledger/daemon.lock` is held open exclusively while the daemon runs, which guarantees a single instance.
-    - `daemon.json` records the process ID, endpoint, start time, version, and database path.
-    - `gh-ledger daemon stop` creates `daemon.stop`. The daemon checks for it every 500 ms and shuts down gracefully.
-    - There's no HTTP control endpoint, so nothing new is attack surface. It works the same way on Windows, where there are no POSIX signals.
-    - `daemon start` launches `gh-ledger daemon run --log-file <data>/daemon.log` as a detached process with no console window. On Unix the daemon ignores `SIGHUP`, so closing the terminal doesn't stop it.
-11. **CLI contract.**
-    - The CLI is one System.CommandLine root command. Exit code 0 means success, and 1 means a usage or validation error or a failed command.
-    - Tables use invariant formatting. Credits and USD are rounded for display to 2 places with `MidpointRounding.AwayFromZero`.
-    - `--json` writes unrounded amounts: exact decimals formatted with `0.############`.
-    - Periods (`--since`) use the local time zone.
-    - `COPILOT_LEDGER_HOME` overrides the data directory, which defaults to `~/.copilot-ledger`.
-12. **`install` and `uninstall`.**
-    - `install`:
-      - sets `COPILOT_OTEL_ENABLED=true`: in the Windows user environment, or with a marked block in the shell profile on macOS and Linux;
-      - sets the `gh ledger` shell alias to the running binary;
-      - starts the daemon;
-      - records each change in `~/.copilot-ledger/install.json`.
-    - `uninstall` reverses exactly what that file records, restores any previous value, and keeps the ledger data.
-    - These are left out: `PATH` edits, copying the binary, and starting at login. See "Deferred".
-    - On Windows without Git for Windows, gh can't run shell aliases, so `install` sets the alias anyway and warns. `gh-ledger` itself always works.
-13. **Single binary: single-file, self-contained, and compressed, one per runtime identifier.**
-    - Native AOT is rejected for three reasons:
-      - The CLI reads and writes `daemon.json` and `install.json` with reflection-based System.Text.Json, which fails AOT and trimming analysis under `TreatWarningsAsErrors`. Task 3 removes reflection from the rates loader, so these two files are what's left.
-      - Microsoft.Data.Sqlite's native library still ships as a separate file under AOT.
-      - AOT needs a platform C toolchain on every build machine.
-    - Trimming is off for the same reflection reason.
-    - Verified: the binary is 48.2 MB on `win-arm64`.
-    - `InvariantGlobalization` removes the ICU dependency on Linux. Every format and parse already uses `CultureInfo.InvariantCulture`.
-14. **Rates refresh: GitHub's whole text-model table.**
-    - Task 2 prices every text model on GitHub's pricing page as of 2026-11-20: 29 models join Sprint 1's five, for 34 built-in GitHub models. A model that isn't priced is recorded at $0 as `unknown_model`, so every missing model understates spend. The page's one image model is skipped, because it's billed per image token and Copilot's image-generation telemetry hasn't been captured.
-    - Model IDs follow "GitHub price table": 25 are verified, and 9 are derived from the display name with Sprint 1's normalization, which reproduces every verified ID (A5). A wrong derived ID costs nothing beyond what leaving the model out would: its requests stay `unknown_model`. Claude Opus 4.8 (fast mode) is left out, because no plausible ID can be derived for it.
-    - Promotional windows end at 00:00:00Z on the date the page gives (A4). Gemini 4 Argon (ending 2026-12-01) and Gemini 3.8 Flash (ending 2027-01-01) have no published later price, so their windows simply end. After those dates their requests are recorded as `no_rate_for_date`, at $0 but counted as unpriced in every report, until a rates update or an overlay window adds the price. CopilotLedger never invents a price; carrying the promotional price forward or borrowing Carbon's later price would both be guesses. Three new `notes` in `rates.json` record these rules.
-    - Task 2 also adds the local runtime labels `ollama`, `lm_studio`, `foundry_local`, and `llama_cpp` to `localOffload.providerNames` (A1). `openai`, `anthropic`, and `azure_openai` are left out because GitHub-hosted models might report the same labels.
-    - `ratesVersion` stays `2026-11-20`, because every price is from that day's retrieval.
-15. **Privacy.**
-    - The ledger never stores prompt or response content, remote URLs, or a session's working directory; the only local path stored is Sprint 1's repository root. VS Code repository URLs are reduced to an `owner/repo` slug after credentials are removed.
-    - `span_links` holds only IDs, operation and agent names, conversation IDs, and Git slug, branch, and SHA.
-    - Rejection messages name attribute keys, never values.
-16. **One bad span never fails a request.**
-    - Sprint 1's `RecordAsync` validates and inserts a whole batch in one transaction, so one bad entry would lose every span in the request. Worse, the receiver answers a failed write with a retryable 503. The exporter would re-send the same request, fail the same way, and finally drop the batch.
-    - So `RecordAsync` only ever receives entries that can't fail its checks:
-      - the normalizer passes only inference spans with valid IDs, a start time, and non-negative counts within the cap;
-      - the ingestor prices each span on its own and drops a span whose cost or savings doesn't fit in pico-USD. Before Task 3, an extreme overlay rate can also make `Calculate` overflow `decimal`; the ingestor drops that span too, and keeps the check afterward as defense in depth. Git context is best effort: if it can't be read, the span is recorded without it.
-    - Dropped spans are reported as an OTLP partial success (200), which clients must not retry because the result would be the same.
-    - 503 is kept for store failures such as a locked or full database. Those are transient, and a retry is safe because inserts ignore duplicates.
-    - Task 2's "Filtering and per-span errors" has the full table.
-17. **Rates overlay errors point into the user's file, and Core owns every message (Task 3).**
-    - A review of Sprint 1 Task 2 (#5) found that overlay errors use merged-document indices. Verified on `1809dc8` with Task 2's rates: an overlay's `localOffload.models[0]` is reported as `localOffload.models[1]`, a new GitHub model as `githubAiCredits.models[34]`, and the first Foundry host suffix as `foundryByok.hostSuffixes[3]`. One alias collision was reported at the *built-in* model's path, which isn't in the user's file at all.
-    - Decision: every path points into the file that contains the problem, using its own indexes. The overlay is validated by itself before merging. Only two checks need the built-in rates: a model identity that a remaining built-in model already uses, and `localOffload.baselineModel`. Their messages contain `in the merged rates`, which `docs/configuration.md` defines, and a collision names the built-in model.
-    - Core owns every message. System.Text.Json's messages contain .NET type names such as ``System.Nullable`1[System.Int32]`` and the `$.` path suffix, and they report a missing required property at its object's path. A small `JsonDocument` reader (`RateCardReader`) replaces reflection-based deserialization. It reads the same values: `TryGetDecimal`, `TryGetInt32`, `TryGetInt64`, and `TryGetDateTimeOffset` gave the same results as the Sprint 1 serializer on every probe (verified on .NET 10). The reader also rejects repeated property names, which the serializer silently resolved by keeping the last one.
-    - Invalid JSON is reported by line and column, counting from 1, with no System.Text.Json text, which is developer-facing ("Change the reader options", "isFinalBlock").
-    - The loader reports the first problem it finds, in an order Task 3 specifies. The tests assert every message exactly, and a test checks that the examples in `docs/configuration.md` match real output.
-    - The CLI prints Core's message unchanged after its own prefix. This replaces the CLI-side formatter in the first version of this plan.
-18. **Rates are at most 1,000,000 USD per 1M tokens, so `Calculate` never throws (Task 3).**
-    - `ICreditCalculator.Calculate` promises to throw only `ArgumentNullException`, but Sprint 1 accepts any rate whose `rate × 1,000,000` fits in a `decimal`, and such a rate can overflow when it's multiplied by a token count ("Starting point").
-    - Task 3 rejects any rate above 1,000,000, in the built-in rates and in an overlay, with `must be less than or equal to 1000000`. The most expensive price GitHub publishes is $75 per 1M tokens, so the bound leaves room for any real price. Token counts are `long`, at most about 9.22 × 10^18. Each cost component, `tokens × rate / 1,000,000`, then has an intermediate product under 10^25 and a result under 9.3 × 10^18 USD. The four components sum to under 3.7 × 10^19 USD, which is under 3.7 × 10^21 AI credits. All of these are far inside `decimal`'s 7.9 × 10^28, so `Calculate` can't overflow, whatever the usage.
-    - A rate of exactly 1,000,000 still loads. Its cost can exceed pico-USD's `long.MaxValue` (about $9.22 million), so the ingestor's `cost out of range` check (decision 16) stays necessary; IG6 tests it with an in-bound rate. The ingestor's `OverflowException` catch stays too, as defense in depth for any other `ICreditCalculator`, and IG8 tests it with a fake calculator.
-    - The bound check runs before the 6-decimal-place check, which therefore can't overflow, so its `is too large` branch is removed. The reader's `is too large` remains for numbers outside `decimal`'s range, such as `1e30`.
+1. **Rules run per prompt chain; trips belong to a (session, branch) pair.** Both rules in the user's plan describe one prompt: rule 1 is "a single prompt/turn chain", and rule 2's retries happen inside the agent's autonomous loop for one prompt. A prompt chain is one trace (Sprint 2 decision 8), so the monitor evaluates each trace that an export request touches. Every trip records its conversation (the session) and its repository and branch keys. The breaker is *open* for a branch, or for a session, while at least one of its trips is open. A user re-prompting five times isn't a runaway loop, because a person is in it, so rule 2 doesn't count failures across traces.
+2. **Rule 1, credit velocity.** It sums billed cost per span: `cost_usd_pico`, which is GitHub AI-credit spend plus BYOK spend. Local and unpriced spans cost 0. The window slides over span **end** times, because cost is incurred when a response completes. For each span with a positive cost, in order of end time then span ID, the window holds the spans that ended in `(end − window, end]`. The rule trips at the first span whose window total **reaches** the threshold (`>=`). The defaults are the user's: 150 AI credits ($1.50) in 5 minutes. Treating the threshold as inclusive matches budgets ("crosses 200 AI credits") and only matters at exact equality.
+3. **Rule 2, retry churn, on observable signals.** Run A shows what Copilot exports: a shell call is the `powershell` tool (on Windows), whose span names the shell executable and carries `process.exit.code`; an edit is `apply_patch`, with no path; and MCP and other tool failures set span status ERROR. So:
+   - a **failure** is an `execute_tool` span with an exit code other than 0, or with status code 2;
+   - a **passing command** is an `execute_tool` span with exit code 0 and no ERROR status; it stands in for "a passing build/test span", and it resets the count;
+   - a **new commit** is a change in the `head_commit_sha` recorded on the trace's `chat` spans; it resets the count;
+   - every other tool call (edits, reads, searches) is neutral: it neither counts nor resets.
 
-## Task 1 specification: OTLP Trace Decoding & gen_ai Span Normalization
+   The rule trips at the start of the call that brings the consecutive-failure count to the threshold (default 5). Calls are ordered by start time, then span ID; a commit observation at the same millisecond as a tool call comes first.
+4. **Rule 2's limits, documented in `docs/cli.md`.**
+   - The command isn't exported, so the rule can't tell a test run from any other command. "The same tool or file-edit cycle" becomes "failures with no passing command or commit between them".
+   - Any successful command resets the count, so a loop that alternates a failing test with, say, a successful `ls` never trips.
+   - A loop that only edits, without running anything that fails, is invisible.
+   - `head_commit_sha` is read from `.git` when a batch is ingested, not when the commit happened, and the Git resolver caches it for up to 5 seconds. A commit can therefore reset the count a few seconds late.
+   - VS Code's Local harness may not export exit codes or status (Assumptions); the rule then never trips there.
+5. **A trip is recorded once and stays open until a person resets it.** `breaker_trips` has `UNIQUE (rule, trace_id)`, so a prompt chain trips each rule at most once, even after a reset, and every re-evaluation of a trace after it trips is a no-op. Trips don't expire. A breaker that closes on its own would remove the flag file under a wrapper script that's waiting for a person. `gh-ledger breaker reset` is the only way to close a trip; no MCP tool resets it, so an agent can't close its own breaker. A new prompt is a new trace and is evaluated from scratch.
+
+### Concurrency and restarts
+
+6. **The monitor runs inside the ingestor's gate.** `LedgerIngestor` already serializes batches with `SemaphoreSlim(1, 1)`. After back-fill, inside the gate, it calls `CircuitBreakerMonitor.EvaluateAsync` with the batch's trace IDs. So one writer records trips, rule windows see every span already committed, and evaluating a trace twice can't record two trips. The monitor keeps no windows in memory: it re-reads each touched trace from SQLite, with at most five queries on the `trace_id` indexes. Other processes (`breaker reset`, `breaker config`, `budget`, and the MCP server's `set_branch_budget`) write through SQLite, whose WAL journal and 5-second busy timeout already serialize them. Store exceptions from the monitor propagate like any other store exception, so the receiver answers 503, Copilot retries the batch, and re-ingesting is idempotent.
+7. **Alerts never block ingestion.** The monitor hands each alert to `IBreakerAlertSink.Publish`. The daemon's sink, `AlertDispatcher`, writes it to an unbounded single-reader `Channel`, and its own loop logs it, shows the notification (bounded by a 15-second timeout), and records `notified_at`. A slow or failing notifier delays only the next notification.
+8. **Restarts lose nothing that's been ingested.** Trips, budgets, and settings live in SQLite, and the rules recompute from the ledger, so a restarted daemon evaluates the next batch of a trace exactly as before. At startup, before the receiver starts, the dispatcher re-queues open trips and budget alerts that were recorded in the last hour but never notified. Older ones are stale, but `breaker status` and the MCP tools still show them. Doing this before the receiver starts means a trip can't be both re-queued and published live. Spans that Copilot exports while the daemon is down are lost (Sprint 2), which is why Task 5 starts the daemon at sign-in.
+
+### Actions on a trip
+
+9. **Notifications use only what the OS already has.** The `net10.0`-only rule rules out WinRT projections, and toast libraries such as `Microsoft.Toolkit.Uwp.Notifications` need a `-windows10.0.x` target framework for them. Windows PowerShell 5.1, which ships with Windows, can call the WinRT toast API, and this was verified without administrator rights. So the daemon runs it through `ICliPlatform.RunAsync`, the same seam as `gh`, and tests assert the exact command line with `FakeCliPlatform`. macOS uses `osascript`, and Linux uses `notify-send` when it's on `PATH`. The fallback on every platform is the `ALERT` line in `daemon.log`, plus `breaker status`, the MCP warnings, and the optional flag file. A terminal bell doesn't apply, because the daemon has no terminal; webhooks are deferred. `breaker config --notifications off` keeps the log line and suppresses the desktop notification.
+10. **The `CIRCUIT_OPEN` flag file is opt-in and always matches the ledger.** With `breaker config --flag-file on`, the daemon writes `<repo root>/.copilot-ledger/CIRCUIT_OPEN` when a trip opens, and `breaker reset` removes it when the last open trip for that root closes.
+    - It holds JSON describing the open trips, and `.copilot-ledger/.gitignore` (`*`) keeps it out of commits.
+    - It's written to a temporary file and moved into place, so a wrapper never reads half a file.
+    - Writers don't patch the file. Each one *syncs* it from the database, then re-reads the database and syncs again if anything changed, for at most three writes. So the daemon recording a trip and a CLI resetting one at the same moment still converge on the database's state.
+    - A trip whose repository has no local root, such as one attributed only from VS Code's Git attributes, gets no flag file.
+    - It's off by default because it writes into the user's working tree.
+11. **Budgets are soft caps per branch.** `budget set` and the MCP tool `set_branch_budget` store a budget in AI credits per (repository, branch) key, the same keys as the Branch rollup. Spend is billed, all-time spend on that key: GitHub AI credits plus BYOK USD at $0.01 per credit, so a BYOK branch can have a budget too. After each batch, the monitor checks the budget of every branch the batch touched and alerts once, when spend reaches the budget. Setting the budget again re-arms the alert. A budget alert isn't a trip: it opens no breaker and writes no flag file.
+
+### MCP server
+
+12. **The tools are read-only except `set_branch_budget`.** The user's plan calls the server read-only but also asks for `set_branch_budget`, which writes. That tool writes only the `branch_budgets` row for one branch. It can't change or delete spend, reset the breaker, or change settings, and setting the same budget twice has the same effect as once. It's annotated `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true`, and `openWorldHint: false`, and the three read tools are `readOnlyHint: true` and `openWorldHint: false`. Run B showed the effect: Copilot CLI runs read-only tools in prompt mode without approval and denies a write tool unless `--allow-tool 'ledger(set_branch_budget)'` allows it. Interactive sessions ask the user. Resetting the breaker and changing its settings stay CLI-only.
+13. **The server uses the SDK's low-level handlers with constant, closed schemas.** Each tool's `inputSchema` is a constant JSON object with `additionalProperties: false`. The SDK doesn't enforce schemas, so the server validates arguments itself and returns `isError: true` with an exact message, which the spec says lets the model correct itself. An unknown tool is a protocol error (`-32602`). Tools declare no `outputSchema`, which keeps `tools/list` short; every result carries the same object twice, as `structuredContent` and as compact JSON text, after any warning lines. The text uses `UnsafeRelaxedJsonEscaping`. The SDK escapes it again on the wire, and clients undo that.
+14. **The scope is explicit or comes from the session's working directory.** Every tool takes an optional `repository` and `branch` pair. Without them, the server resolves Git from `COPILOT_SESSION_CWD` when it's set to an existing absolute directory, and otherwise from its own working directory, which Copilot sets to the session's (run B). MCP Roots would have given the client's directories, but 2026-07-28 deprecates them in favor of tool parameters. The repository key is the slug, or the root when there's no slug, and the branch is `(none)` for a detached HEAD, both as in the reports.
+15. **Every result warns about an open breaker or an exceeded budget.** A result lists the open trips on its branch and the open trips of the calling session (`COPILOT_AGENT_SESSION_ID`, as observed), and the branch's budget if one is set. It starts with one `WARNING:` line for each such trip and for an exceeded budget, telling the agent to stop and ask the user. That's the "surface the warning in the MCP tool response" action. It reaches the agent only when the agent calls a ledger tool; a `preToolUse` hook that blocks tools while the breaker is open is deferred.
+16. **`get_top_expensive_prompts` ranks by cost by default.** The user's plan asks for "the top 5 most expensive prompt chains … by output tokens and retry loops". The tool returns 5 chains by default (`limit` 1–20). Each chain reports its output tokens and its failed tool calls, the retry-loop measure from rule 2. `orderBy` is `cost` (billed USD, the default, because the tool is about expense), `outputTokens`, or `failedToolCalls`. Candidates are the branch's top 1,000 chains by cost. Failed tool calls come from `span_links`, which the daemon prunes after 7 days, so older chains show 0.
+
+### Packaging and sign-in
+
+17. **The daemon starts at sign-in through the OS, not a Copilot hook.** Run D showed that a `sessionStart` hook's detached child is killed when the Copilot CLI session ends, and hooks can also be disabled by policy or by `disableAllHooks`. So `install` registers a per-user sign-in item:
+    - **Windows:** the `CopilotLedger` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, which runs `"<gh-ledger.exe>" daemon start`. It needs no administrator rights, and the command must be at most 260 characters.
+    - **macOS:** `~/Library/LaunchAgents/io.github.swigerb.copilot-ledger.plist`, which runs `daemon run --log-file …` in the foreground, because launchd jobs must not daemonize.
+    - **Linux:** `$XDG_CONFIG_HOME/autostart/copilot-ledger.desktop`, which runs `daemon start`.
+
+    `install.json` records the item, and `uninstall` removes it. `daemon start` is idempotent, so starting the daemon again at sign-in is harmless.
+18. **No console window at sign-in.** `gh-ledger` is a console program, and Windows gives a console program started from the Run key its own console window. The application manifest's `consoleAllocationPolicy` `detached` suppresses it on Windows 11 24H2 and later. Older Windows shows the window for about a second, because `daemon start` exits once the detached daemon is up.
+19. **One new package.** `ModelContextProtocol` 2.4.0, the version the user's plan names, is the only new package. Only the Mcp project references it directly; the Cli and test projects get it through their project references. It's the official SDK; the server uses its `ModelContextProtocol.Core` types, and its hosting helpers go unused. Toasts, the Run key, LaunchAgents, and autostart entries need no packages.
+20. **Version 0.3.0.** The CLI gains the `breaker`, `budget`, and `mcp` commands, so Task 5 bumps the version from 0.2.0.
+
+## Task 1 specification: Tool-Call Signals & Breaker Storage
 
 ### Files
 
-Create:
+- `src/CopilotLedger.Otlp/Decoding/OtlpModel.cs`: add `OtlpSpan.StatusCode`.
+- `src/CopilotLedger.Otlp/Decoding/OtlpProtobufTraceReader.cs` and `OtlpJsonTraceReader.cs`: read the span status.
+- `src/CopilotLedger.Core/Telemetry/GenAiSpanLink.cs`: add `ToolName`, `ToolExitCode`, and `StatusCode`.
+- `src/CopilotLedger.Otlp/Normalization/GenAiAttributeNames.cs`: add `ToolName` and `ProcessExitCode`.
+- `src/CopilotLedger.Otlp/Normalization/GenAiSpanNormalizer.cs`: fill the three link properties.
+- `src/CopilotLedger.Core/Breaker/BreakerRule.cs` (with `BreakerRuleNames`), `BreakerSettings.cs`, `BreakerEvents.cs` (`CostEvent`, `ToolCallEvent`, `CommitObservation`), and `TraceActivity.cs`.
+- `src/CopilotLedger.Storage/LedgerMigrations.cs`: Migration 3.
+- `src/CopilotLedger.Storage/BreakerTrip.cs` (`NewBreakerTrip`, `BreakerTrip`), `BreakerTripFilter.cs`, and `BranchBudgetRow.cs`.
+- `src/CopilotLedger.Storage/SqliteLedgerStore.cs`: three more link columns and the new methods.
+- Tests: `Otlp/OtlpProtobufDecodingTests.cs` (PB8), `Otlp/OtlpJsonDecodingTests.cs` (JS10), `Otlp/GenAiSpanNormalizerTests.cs` (NZ12), `Storage/SpanLinkStoreTests.cs` (SL1 changed; SL8 and SL9 new), `Storage/SqliteLedgerStoreTests.cs` (S1 changed), and the new `Storage/BreakerStoreTests.cs` (BS1–BS6).
 
-```text
-src/CopilotLedger.Core/Telemetry/GenAiSpanLink.cs
-src/CopilotLedger.Otlp/CopilotLedger.Otlp.csproj
-src/CopilotLedger.Otlp/Decoding/OtlpModel.cs
-src/CopilotLedger.Otlp/Decoding/OtlpDecodeException.cs
-src/CopilotLedger.Otlp/Decoding/OtlpTraceDecoder.cs
-src/CopilotLedger.Otlp/Decoding/ProtoReader.cs                 (internal)
-src/CopilotLedger.Otlp/Decoding/OtlpProtobufTraceReader.cs     (internal)
-src/CopilotLedger.Otlp/Decoding/OtlpJsonTraceReader.cs         (internal)
-src/CopilotLedger.Otlp/Normalization/GenAiAttributeNames.cs
-src/CopilotLedger.Otlp/Normalization/NormalizedTraceBatch.cs
-src/CopilotLedger.Otlp/Normalization/GenAiSpanNormalizer.cs
-tests/CopilotLedger.Tests/TestSupport/OtlpProtoWriter.cs
-tests/CopilotLedger.Tests/TestSupport/OtlpFixtures.cs
-tests/CopilotLedger.Tests/TestSupport/OtlpRequests.cs
-tests/CopilotLedger.Tests/Otlp/OtlpProtobufDecodingTests.cs
-tests/CopilotLedger.Tests/Otlp/OtlpJsonDecodingTests.cs
-tests/CopilotLedger.Tests/Otlp/GenAiSpanNormalizerTests.cs
+### Contracts
+
+Add to `OtlpSpan`:
+
+```csharp
+public int StatusCode { get; init; }                   // Status.code: 1 ok, 2 error; 0 when unset, missing, or any other value
 ```
 
-Also update `CopilotLedger.slnx` and `tests/CopilotLedger.Tests/CopilotLedger.Tests.csproj` (through the commands below).
+Add to `GenAiSpanLink`:
 
-### Steps
+```csharp
+public string? ToolName { get; init; }                 // gen_ai.tool.name on an execute_tool span; null otherwise
+public long? ToolExitCode { get; init; }               // process.exit.code (an int attribute) on an execute_tool span; null otherwise
+public int StatusCode { get; init; }                   // OtlpSpan.StatusCode
+```
 
-**Step 1.** From the repository root, run:
+Add to `GenAiAttributeNames`:
+
+```csharp
+public const string ToolName = "gen_ai.tool.name";
+public const string ProcessExitCode = "process.exit.code";
+```
+
+`src/CopilotLedger.Core/Breaker/` (namespace `CopilotLedger.Core.Breaker`):
+
+```csharp
+public enum BreakerRule
+{
+    CreditVelocity,                                    // rule 1
+    RetryChurn,                                        // rule 2
+}
+
+public static class BreakerRuleNames
+{
+    public const string CreditVelocity = "credit_velocity";
+    public const string RetryChurn = "retry_churn";
+
+    // Throws ArgumentOutOfRangeException for an undefined value.
+    public static string ToName(BreakerRule rule);
+
+    // Ordinal. Returns false for any other text, including null.
+    public static bool TryParse(string? name, out BreakerRule rule);
+}
+
+public sealed record BreakerSettings
+{
+    public const decimal MinVelocityCredits = 1m;
+    public const decimal MaxVelocityCredits = 1_000_000m;
+    public const int MinVelocityWindowMinutes = 1;
+    public const int MaxVelocityWindowMinutes = 1440;
+    public const int MinChurnFailures = 2;
+    public const int MaxChurnFailures = 100;
+
+    public static BreakerSettings Default { get; } = new();
+
+    public decimal VelocityCredits { get; init; } = 150m;          // rule 1 threshold in AI credits
+    public int VelocityWindowMinutes { get; init; } = 5;           // rule 1 window
+    public int ChurnFailures { get; init; } = 5;                   // rule 2 threshold
+    public bool FlagFile { get; init; }                            // keep <repo root>/.copilot-ledger/CIRCUIT_OPEN while a trip is open
+    public bool Notifications { get; init; } = true;               // show desktop notifications; alerts are always logged
+
+    public decimal VelocityThresholdUsd => VelocityCredits * AiCreditMath.UsdPerAiCredit;
+    public TimeSpan VelocityWindow => TimeSpan.FromMinutes(VelocityWindowMinutes);
+
+    // True when MinVelocityCredits <= VelocityCredits <= MaxVelocityCredits with decimal.Round(VelocityCredits, 2) == VelocityCredits,
+    // and the window and failure counts are within their Min and Max constants.
+    public bool IsValid { get; }
+}
+
+public sealed record CostEvent(
+    string SpanId,                                     // spans.span_id
+    DateTimeOffset EndTime,                            // spans.end_time_unix_ms
+    decimal CostUsd);                                  // PicoUsd.ToUsd(spans.cost_usd_pico): GitHub AI credits or BYOK
+
+public sealed record ToolCallEvent(
+    string SpanId,                                     // span_links.span_id of an execute_tool span
+    DateTimeOffset StartTime,                          // span_links.start_time_unix_ms
+    string? ToolName,                                  // span_links.tool_name
+    long? ExitCode,                                    // span_links.tool_exit_code
+    int StatusCode)                                    // span_links.status_code
+{
+    public bool IsFailure => (ExitCode is long code && code != 0) || StatusCode == 2;
+    public bool IsSuccessfulCommand => ExitCode == 0 && StatusCode != 2;
+}
+
+public sealed record CommitObservation(
+    string SpanId,                                     // spans.span_id
+    DateTimeOffset StartTime,                          // spans.start_time_unix_ms
+    string CommitSha);                                 // spans.head_commit_sha
+
+public sealed record TraceActivity
+{
+    public required string TraceId { get; init; }
+    public string? ConversationId { get; init; }                         // MAX over the trace's spans rows; when that's null, MAX over its span_links rows
+    public required string Repository { get; init; }                     // MAX(COALESCE(repo_slug, repo_root, '(none)')); "(none)" with no spans rows
+    public required string Branch { get; init; }                         // MAX(COALESCE(branch_name, '(none)')); "(none)" with no spans rows
+    public string? RepositoryRoot { get; init; }                         // MAX(repo_root)
+    public required long SpanCount { get; init; }                        // the trace's spans rows
+    public required IReadOnlyList<CostEvent> Costs { get; init; }        // spans rows with cost_usd_pico > 0, by end time, then span ID
+    public required IReadOnlyList<ToolCallEvent> ToolCalls { get; init; } // execute_tool links, by start time, then span ID
+    public required IReadOnlyList<CommitObservation> Commits { get; init; } // spans rows with a head_commit_sha, by start time, then span ID
+}
+```
+
+`BreakerSettings.IsValid` is a computed property, so it isn't part of the record's equality.
+
+`src/CopilotLedger.Storage/` (namespace `CopilotLedger.Storage`):
+
+```csharp
+public sealed record NewBreakerTrip
+{
+    public required BreakerRule Rule { get; init; }
+    public required string TraceId { get; init; }
+    public string? ConversationId { get; init; }
+    public required string Repository { get; init; }                     // TraceActivity.Repository
+    public required string Branch { get; init; }                         // TraceActivity.Branch
+    public string? RepositoryRoot { get; init; }                         // TraceActivity.RepositoryRoot
+    public required DateTimeOffset TrippedAt { get; init; }
+    public required string Detail { get; init; }                         // "180.00 AI credits in 5 minutes" or "5 failed tool calls in a row"
+    public decimal? WindowCostUsd { get; init; }                         // CreditVelocity only
+    public int? WindowMinutes { get; init; }                             // CreditVelocity only
+    public int? FailureCount { get; init; }                              // RetryChurn only
+}
+
+public sealed record BreakerTrip
+{
+    public required long Id { get; init; }
+    public required BreakerRule Rule { get; init; }
+    public required string TraceId { get; init; }
+    public string? ConversationId { get; init; }
+    public required string Repository { get; init; }
+    public required string Branch { get; init; }
+    public string? RepositoryRoot { get; init; }
+    public required DateTimeOffset TrippedAt { get; init; }
+    public required string Detail { get; init; }
+    public decimal? WindowCostUsd { get; init; }
+    public int? WindowMinutes { get; init; }
+    public int? FailureCount { get; init; }
+    public required DateTimeOffset RecordedAt { get; init; }
+    public DateTimeOffset? NotifiedAt { get; init; }
+    public DateTimeOffset? ResetAt { get; init; }
+}
+
+public sealed record BreakerTripFilter
+{
+    public static BreakerTripFilter All { get; } = new();
+    public long? Id { get; init; }
+    public string? Repository { get; init; }
+    public string? Branch { get; init; }
+    public string? RepositoryRoot { get; init; }                         // ordinal match on repo_root
+}
+
+public sealed record BranchBudgetRow
+{
+    public required string Repository { get; init; }
+    public required string Branch { get; init; }
+    public required decimal BudgetAiCredits { get; init; }
+    public required decimal SpentAiCredits { get; init; }                // all-time billed spend on the key: GitHub AI credits plus BYOK USD / 0.01
+    public required DateTimeOffset SetAt { get; init; }
+    public DateTimeOffset? AlertedAt { get; init; }                      // when the monitor first saw spend reach the budget
+    public DateTimeOffset? NotifiedAt { get; init; }                     // when the daemon finished that alert
+    public bool Exceeded => SpentAiCredits >= BudgetAiCredits;
+}
+```
+
+New `SqliteLedgerStore` methods. Each one throws `InvalidOperationException` before `InitializeAsync`, opens one connection, and uses the store's `TimeProvider` for every `@now` (`GetUtcNow().ToUnixTimeMilliseconds()`):
+
+```csharp
+// One trace's breaker inputs, from the five queries below on one connection. Throws ArgumentException for a blank traceId.
+public Task<TraceActivity> GetTraceActivityAsync(string traceId, CancellationToken cancellationToken = default);
+
+// Inserts the trip unless (Rule, TraceId) already has one, and returns the new id, or null when it was skipped.
+// Throws ArgumentException for a blank TraceId, Repository, Branch, or Detail; ArgumentOutOfRangeException for a negative WindowCostUsd.
+public Task<long?> RecordBreakerTripAsync(NewBreakerTrip trip, CancellationToken cancellationToken = default);
+
+// Open trips (reset_at_unix_ms IS NULL) that match every non-null filter property, newest first.
+public Task<IReadOnlyList<BreakerTrip>> GetOpenBreakerTripsAsync(BreakerTripFilter filter, CancellationToken cancellationToken = default);
+
+// Resets the open trips that match the filter and returns them, with ResetAt set, in ascending Id order.
+public Task<IReadOnlyList<BreakerTrip>> ResetBreakerTripsAsync(BreakerTripFilter filter, CancellationToken cancellationToken = default);
+
+// Sets notified_at_unix_ms when it's NULL. Returns true when a row changed.
+public Task<bool> MarkBreakerTripNotifiedAsync(long id, CancellationToken cancellationToken = default);
+
+// Open, never-notified trips recorded at or after recordedSince, oldest first.
+public Task<IReadOnlyList<BreakerTrip>> GetUnnotifiedBreakerTripsAsync(DateTimeOffset recordedSince, CancellationToken cancellationToken = default);
+
+// The settings row; BreakerSettings.Default if the row is missing.
+public Task<BreakerSettings> GetBreakerSettingsAsync(CancellationToken cancellationToken = default);
+
+// Throws ArgumentNullException for null; ArgumentOutOfRangeException when !settings.IsValid, without writing.
+public Task UpdateBreakerSettingsAsync(BreakerSettings settings, CancellationToken cancellationToken = default);
+
+// Inserts or replaces the budget and clears alerted_at and notified_at. Throws ArgumentException for a blank key, and
+// ArgumentOutOfRangeException unless 0 < aiCredits <= 1,000,000 and decimal.Round(aiCredits, 2) == aiCredits.
+public Task SetBranchBudgetAsync(string repository, string branch, decimal aiCredits, CancellationToken cancellationToken = default);
+
+// Returns true when a budget was deleted.
+public Task<bool> ClearBranchBudgetAsync(string repository, string branch, CancellationToken cancellationToken = default);
+
+// Budgets with their spend, ordered by repository, then branch (SQLite BINARY collation). A null argument matches every value.
+public Task<IReadOnlyList<BranchBudgetRow>> GetBranchBudgetsAsync(string? repository = null, string? branch = null, CancellationToken cancellationToken = default);
+
+// Sets alerted_at_unix_ms when it's NULL. Returns true when a row changed.
+public Task<bool> MarkBranchBudgetAlertedAsync(string repository, string branch, CancellationToken cancellationToken = default);
+
+// Sets notified_at_unix_ms when alerted_at_unix_ms is set and notified_at_unix_ms is NULL. Returns true when a row changed.
+public Task<bool> MarkBranchBudgetNotifiedAsync(string repository, string branch, CancellationToken cancellationToken = default);
+
+// Budgets alerted at or after alertedSince and never notified, ordered by alerted_at, then repository, then branch.
+public Task<IReadOnlyList<BranchBudgetRow>> GetUnnotifiedBudgetAlertsAsync(DateTimeOffset alertedSince, CancellationToken cancellationToken = default);
+
+// For each given trace with at least one failed execute_tool link (an exit code other than 0, or status 2), that count.
+// Traces without failures are absent. An empty input returns an empty dictionary without a query.
+public Task<IReadOnlyDictionary<string, long>> GetFailedToolCallCountsAsync(IEnumerable<string> traceIds, CancellationToken cancellationToken = default);
+```
+
+Money conversions use `PicoUsd`: a budget or threshold of `c` AI credits is stored as `PicoUsd.FromUsd(c * AiCreditMath.UsdPerAiCredit)` and read back as `PicoUsd.ToUsd(pico) / AiCreditMath.UsdPerAiCredit`. Rules are stored with `BreakerRuleNames`, and an unknown stored rule throws `InvalidDataException("Unknown breaker rule '<value>'.")`.
+
+### Decoding the span status
+
+`Span` field 15 is `status` (LEN, a `Status` message), and `Status` field 3 is `code` (VARINT, enum `STATUS_CODE_UNSET` 0, `STATUS_CODE_OK` 1, `STATUS_CODE_ERROR` 2). Field 2, `message`, isn't kept.
+
+- **Protobuf.** In `ReadSpan`, handle field 15 with wire type 2 in the same branch as fields 1, 2, 4, 5, and 9. Decode the bytes with a `ProtoReader`: for each field 3 with wire type 0, read the varint and keep `1` or `2`, or `0` for any other value (the last one wins); skip every other field with `Skip`. Field 15 with another wire type, like every unknown field, is skipped by the existing `else` branch.
+- **JSON.** `StatusCode` is 1 or 2 when `TryFindProperty(span, "status", out status)`, `status.ValueKind == JsonValueKind.Object`, `TryFindProperty(status, "code", out code)`, `code.ValueKind == JsonValueKind.Number`, and `code.TryGetInt32(out value)` succeed with `value` 1 or 2. Anything else gives 0: OTLP/JSON encodes enums as integers, so a string such as `"STATUS_CODE_ERROR"` or `"2"` isn't accepted. Use only `TryFindProperty` and `NameIs`, never `TryGetProperty`, so an unreadable name can't throw (amendment 4 of Sprint 2).
+
+### Normalizing tool calls
+
+In `TryNormalize`, where it builds the `GenAiSpanLink`:
+
+- `StatusCode = span.StatusCode` for every link;
+- when `operation` equals `GenAiOperationNames.ExecuteTool` (ordinal): `ToolName = Text(attributes, GenAiAttributeNames.ToolName)`, and `ToolExitCode` is the `IntValue` of the first `process.exit.code` attribute when its kind is `OtlpValueKind.Int` (any value, including negative ones), otherwise null;
+- for every other operation, `ToolName` and `ToolExitCode` are null.
+
+Nothing else changes: these attributes never reject a span, and `NormalizedGenAiSpan` doesn't change.
+
+### Migration 3 (copy exactly)
+
+Append `(3, """…""")` to `LedgerMigrations.Migrations` with this SQL:
+
+```sql
+ALTER TABLE span_links ADD COLUMN tool_name TEXT;
+ALTER TABLE span_links ADD COLUMN tool_exit_code INTEGER;
+ALTER TABLE span_links ADD COLUMN status_code INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE breaker_trips (
+    id                   INTEGER PRIMARY KEY,
+    rule                 TEXT    NOT NULL CHECK (rule IN ('credit_velocity', 'retry_churn')),
+    trace_id             TEXT    NOT NULL,
+    conversation_id      TEXT,
+    repository           TEXT    NOT NULL,
+    branch               TEXT    NOT NULL,
+    repo_root            TEXT,
+    tripped_at_unix_ms   INTEGER NOT NULL,
+    detail               TEXT    NOT NULL,
+    window_cost_usd_pico INTEGER CHECK (window_cost_usd_pico >= 0),
+    window_minutes       INTEGER,
+    failure_count        INTEGER,
+    recorded_at_unix_ms  INTEGER NOT NULL,
+    notified_at_unix_ms  INTEGER,
+    reset_at_unix_ms     INTEGER,
+    UNIQUE (rule, trace_id)
+) STRICT;
+
+CREATE INDEX ix_breaker_trips_open ON breaker_trips (reset_at_unix_ms, repository, branch);
+
+CREATE TABLE branch_budgets (
+    repository          TEXT    NOT NULL,
+    branch              TEXT    NOT NULL,
+    budget_usd_pico     INTEGER NOT NULL CHECK (budget_usd_pico > 0),
+    set_at_unix_ms      INTEGER NOT NULL,
+    alerted_at_unix_ms  INTEGER,
+    notified_at_unix_ms INTEGER,
+    PRIMARY KEY (repository, branch)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE breaker_settings (
+    id                          INTEGER PRIMARY KEY CHECK (id = 1),
+    velocity_threshold_usd_pico INTEGER NOT NULL CHECK (velocity_threshold_usd_pico > 0),
+    velocity_window_minutes     INTEGER NOT NULL CHECK (velocity_window_minutes BETWEEN 1 AND 1440),
+    churn_failures              INTEGER NOT NULL CHECK (churn_failures BETWEEN 2 AND 100),
+    flag_file                   INTEGER NOT NULL CHECK (flag_file IN (0, 1)),
+    notifications               INTEGER NOT NULL CHECK (notifications IN (0, 1)),
+    updated_at_unix_ms          INTEGER NOT NULL
+) STRICT;
+
+INSERT INTO breaker_settings (id, velocity_threshold_usd_pico, velocity_window_minutes, churn_failures, flag_file, notifications, updated_at_unix_ms)
+VALUES (1, 1500000000000, 5, 5, 0, 1, 0);
+```
+
+`RecordSpanLinksAsync` adds `tool_name`, `tool_exit_code`, and `status_code` to its column list and parameters (`OrDbNull(link.ToolName)`, `OrDbNull(link.ToolExitCode)`, and `link.StatusCode`). Rows that already exist stay unchanged.
+
+### Store SQL (copy exactly)
+
+`<trip columns>` stands for `id, rule, trace_id, conversation_id, repository, branch, repo_root, tripped_at_unix_ms, detail, window_cost_usd_pico, window_minutes, failure_count, recorded_at_unix_ms, notified_at_unix_ms, reset_at_unix_ms`, read in that order into `BreakerTrip`. Times convert with `DateTimeOffset.FromUnixTimeMilliseconds`, and `window_cost_usd_pico` with `PicoUsd.ToUsd`. `<budget select>` stands for:
+
+```sql
+SELECT b.repository, b.branch, b.budget_usd_pico, b.set_at_unix_ms, b.alerted_at_unix_ms, b.notified_at_unix_ms,
+       (SELECT COALESCE(SUM(s.cost_usd_pico), 0) FROM spans AS s
+         WHERE COALESCE(s.repo_slug, s.repo_root, '(none)') = b.repository
+           AND COALESCE(s.branch_name, '(none)') = b.branch) AS spent_usd_pico
+FROM branch_budgets AS b
+```
+
+| Method | SQL |
+|---|---|
+| `GetTraceActivityAsync` | (1) `SELECT MAX(conversation_id), MAX(COALESCE(repo_slug, repo_root, '(none)')), MAX(COALESCE(branch_name, '(none)')), MAX(repo_root), COUNT(*) FROM spans WHERE trace_id = @trace;` (2) only when (1)'s conversation is NULL: `SELECT MAX(conversation_id) FROM span_links WHERE trace_id = @trace;` (3) `SELECT span_id, end_time_unix_ms, cost_usd_pico FROM spans WHERE trace_id = @trace AND cost_usd_pico > 0 ORDER BY end_time_unix_ms, span_id;` (4) `SELECT span_id, start_time_unix_ms, tool_name, tool_exit_code, status_code FROM span_links WHERE trace_id = @trace AND operation_name = 'execute_tool' ORDER BY start_time_unix_ms, span_id;` (5) `SELECT span_id, start_time_unix_ms, head_commit_sha FROM spans WHERE trace_id = @trace AND head_commit_sha IS NOT NULL ORDER BY start_time_unix_ms, span_id;` With `COUNT(*)` 0, the repository and branch are `(none)` and the root is null. |
+| `RecordBreakerTripAsync` | `INSERT INTO breaker_trips (rule, trace_id, conversation_id, repository, branch, repo_root, tripped_at_unix_ms, detail, window_cost_usd_pico, window_minutes, failure_count, recorded_at_unix_ms) VALUES (@rule, @trace_id, @conversation_id, @repository, @branch, @repo_root, @tripped_at_unix_ms, @detail, @window_cost_usd_pico, @window_minutes, @failure_count, @now) ON CONFLICT (rule, trace_id) DO NOTHING RETURNING id;` with `ExecuteScalarAsync`: a `long`, or null when nothing was inserted. |
+| `GetOpenBreakerTripsAsync` | `SELECT <trip columns> FROM breaker_trips WHERE reset_at_unix_ms IS NULL AND (@id IS NULL OR id = @id) AND (@repository IS NULL OR repository = @repository) AND (@branch IS NULL OR branch = @branch) AND (@repo_root IS NULL OR repo_root = @repo_root) ORDER BY tripped_at_unix_ms DESC, id DESC;` |
+| `ResetBreakerTripsAsync` | `UPDATE breaker_trips SET reset_at_unix_ms = @now WHERE reset_at_unix_ms IS NULL AND (@id IS NULL OR id = @id) AND (@repository IS NULL OR repository = @repository) AND (@branch IS NULL OR branch = @branch) AND (@repo_root IS NULL OR repo_root = @repo_root) RETURNING <trip columns>;` then sort by `Id` ascending (`RETURNING` order isn't defined). |
+| `MarkBreakerTripNotifiedAsync` | `UPDATE breaker_trips SET notified_at_unix_ms = @now WHERE id = @id AND notified_at_unix_ms IS NULL;` |
+| `GetUnnotifiedBreakerTripsAsync` | `SELECT <trip columns> FROM breaker_trips WHERE reset_at_unix_ms IS NULL AND notified_at_unix_ms IS NULL AND recorded_at_unix_ms >= @since ORDER BY recorded_at_unix_ms, id;` |
+| `GetBreakerSettingsAsync` | `SELECT velocity_threshold_usd_pico, velocity_window_minutes, churn_failures, flag_file, notifications FROM breaker_settings WHERE id = 1;` |
+| `UpdateBreakerSettingsAsync` | `INSERT INTO breaker_settings (id, velocity_threshold_usd_pico, velocity_window_minutes, churn_failures, flag_file, notifications, updated_at_unix_ms) VALUES (1, @threshold, @minutes, @failures, @flag_file, @notifications, @now) ON CONFLICT (id) DO UPDATE SET velocity_threshold_usd_pico = excluded.velocity_threshold_usd_pico, velocity_window_minutes = excluded.velocity_window_minutes, churn_failures = excluded.churn_failures, flag_file = excluded.flag_file, notifications = excluded.notifications, updated_at_unix_ms = excluded.updated_at_unix_ms;` (booleans as 0 or 1) |
+| `SetBranchBudgetAsync` | `INSERT INTO branch_budgets (repository, branch, budget_usd_pico, set_at_unix_ms, alerted_at_unix_ms, notified_at_unix_ms) VALUES (@repository, @branch, @budget_usd_pico, @now, NULL, NULL) ON CONFLICT (repository, branch) DO UPDATE SET budget_usd_pico = excluded.budget_usd_pico, set_at_unix_ms = excluded.set_at_unix_ms, alerted_at_unix_ms = NULL, notified_at_unix_ms = NULL;` |
+| `ClearBranchBudgetAsync` | `DELETE FROM branch_budgets WHERE repository = @repository AND branch = @branch;` |
+| `GetBranchBudgetsAsync` | `<budget select> WHERE (@repository IS NULL OR b.repository = @repository) AND (@branch IS NULL OR b.branch = @branch) ORDER BY b.repository, b.branch;` |
+| `MarkBranchBudgetAlertedAsync` | `UPDATE branch_budgets SET alerted_at_unix_ms = @now WHERE repository = @repository AND branch = @branch AND alerted_at_unix_ms IS NULL;` |
+| `MarkBranchBudgetNotifiedAsync` | `UPDATE branch_budgets SET notified_at_unix_ms = @now WHERE repository = @repository AND branch = @branch AND alerted_at_unix_ms IS NOT NULL AND notified_at_unix_ms IS NULL;` |
+| `GetUnnotifiedBudgetAlertsAsync` | `<budget select> WHERE b.alerted_at_unix_ms IS NOT NULL AND b.alerted_at_unix_ms >= @since AND b.notified_at_unix_ms IS NULL ORDER BY b.alerted_at_unix_ms, b.repository, b.branch;` |
+| `GetFailedToolCallCountsAsync` | `SELECT trace_id, COUNT(*) FROM span_links WHERE trace_id IN (@t0, @t1, …) AND operation_name = 'execute_tool' AND ((tool_exit_code IS NOT NULL AND tool_exit_code <> 0) OR status_code = 2) GROUP BY trace_id;` with one parameter per distinct trace ID. Return a `Dictionary<string, long>` with `StringComparer.Ordinal`. |
+
+`cost_usd_pico` is 0 for local, unpriced, and unknown-model spans, so `SUM(cost_usd_pico)` is GitHub plus BYOK spend. Every statement that writes runs as one statement, so no explicit transaction is needed.
+
+### Acceptance criteria
+
+- PB8, JS10, NZ12, SL8, SL9, and BS1–BS6 pass, along with SL1 and S1 as changed. Every other Sprint 1 and Sprint 2 test passes unchanged.
+- A version-2 ledger upgrades to version 3 and keeps its rows; a fresh ledger is created at version 3 with the default settings row.
+- `src/` contains no `double` or `float`. Money and thresholds are stored only as `INTEGER` pico-USD.
+- No new package.
+
+### Verify
 
 ```shell
-dotnet new classlib -n CopilotLedger.Otlp -o src/CopilotLedger.Otlp
-dotnet sln CopilotLedger.slnx add src/CopilotLedger.Otlp/CopilotLedger.Otlp.csproj
-dotnet add tests/CopilotLedger.Tests/CopilotLedger.Tests.csproj reference src/CopilotLedger.Otlp/CopilotLedger.Otlp.csproj
+dotnet build CopilotLedger.slnx
+dotnet test CopilotLedger.slnx
 ```
 
-**Step 2.** Delete the template's `Class1.cs`, and replace `src/CopilotLedger.Otlp/CopilotLedger.Otlp.csproj` with:
+Report the passed, failed, and skipped counts.
 
-```xml
-<Project Sdk="Microsoft.NET.Sdk">
-  <ItemGroup>
-    <ProjectReference Include="..\CopilotLedger.Core\CopilotLedger.Core.csproj" />
-  </ItemGroup>
-</Project>
-```
+## Task 2 specification: Circuit Breaker Engine & Flag File
 
-**Step 3.** Add the contracts below exactly as written. Members ending in `;` instead of a body are implemented in this task as described. Types marked internal in the file list stay internal, and `CopilotLedger.Otlp` has no other public types.
+### Files
 
-**Step 4.** Implement the protobuf, JSON, and normalization rules below, then write the "Task 1 tests" under "Test specifications".
+- `src/CopilotLedger.Core/Breaker/BreakerRules.cs`: `BreakerRules`, `VelocityTrip`, and `ChurnTrip`.
+- `src/CopilotLedger.Otlp/Breaker/BreakerAlert.cs` (`BreakerAlertKind`, `BreakerAlert`, `IBreakerAlertSink`), `BreakerMessages.cs`, `CircuitFlagFile.cs`, and `CircuitBreakerMonitor.cs` (namespace `CopilotLedger.Otlp.Breaker`).
+- `src/CopilotLedger.Otlp/Ingestion/LedgerIngestor.cs`: a second constructor and the monitor call.
+- Tests: `TestSupport/BreakerTraces.cs` and `TestSupport/RecordingAlertSink.cs` (new), `Breaker/BreakerRulesTests.cs` (BR1–BR4, new), and `Otlp/CircuitBreakerMonitorTests.cs` (BM1–BM10, new).
 
 ### Contracts
 
 ```csharp
-// ---- src/CopilotLedger.Core/Telemetry/GenAiSpanLink.cs
-namespace CopilotLedger.Core.Telemetry;
+namespace CopilotLedger.Core.Breaker;
 
-// One received span's place in its trace, used to inherit agent, conversation, and Git attributes from invoke_agent ancestors.
-public sealed record GenAiSpanLink
+public sealed record VelocityTrip(
+    DateTimeOffset TrippedAt,                          // end of the span whose window reached the threshold
+    decimal WindowCostUsd);                            // the window's total at that span
+
+public sealed record ChurnTrip(
+    DateTimeOffset TrippedAt,                          // start of the failing call that reached the threshold
+    int FailureCount);                                 // always the threshold
+
+public static class BreakerRules
 {
-    public required string TraceId { get; init; }             // 32 lowercase hex chars
-    public required string SpanId { get; init; }              // 16 lowercase hex chars
-    public string? ParentSpanId { get; init; }                // 16 lowercase hex chars; null for a root span
-    public string? OperationName { get; init; }               // gen_ai.operation.name
-    public string? AgentName { get; init; }                   // gen_ai.agent.name
-    public string? ConversationId { get; init; }              // gen_ai.conversation.id
-    public string? GitRepositorySlug { get; init; }           // "owner/repo" from github.copilot.git.repository (legacy copilot_chat.repo.remote_url)
-    public string? GitBranch { get; init; }                   // github.copilot.git.branch (legacy copilot_chat.repo.head_branch_name)
-    public string? GitCommitSha { get; init; }                // github.copilot.git.commit_sha (legacy copilot_chat.repo.head_commit_hash); lowercase 40 or 64 hex
-    public required DateTimeOffset StartTime { get; init; }
-}
+    // Rule 1. Throws ArgumentNullException for null costs; ArgumentOutOfRangeException unless thresholdUsd > 0 and window > TimeSpan.Zero.
+    public static VelocityTrip? FindVelocityTrip(IReadOnlyList<CostEvent> costs, decimal thresholdUsd, TimeSpan window);
 
-// ---- src/CopilotLedger.Otlp/Decoding/OtlpModel.cs
-namespace CopilotLedger.Otlp.Decoding;
-
-public enum OtlpValueKind
-{
-    Empty,          // no value field
-    String,
-    Bool,
-    Int,
-    Double,         // recognized; the value isn't kept
-    Bytes,          // recognized; the value isn't kept
-    Array,          // recognized; the value isn't kept
-    KeyValueList,   // recognized; the value isn't kept
-}
-
-public sealed record OtlpAnyValue
-{
-    public static OtlpAnyValue Empty { get; } = new() { Kind = OtlpValueKind.Empty };
-    public required OtlpValueKind Kind { get; init; }
-    public string? StringValue { get; init; }   // set when Kind is String
-    public bool BoolValue { get; init; }        // set when Kind is Bool
-    public long IntValue { get; init; }         // set when Kind is Int
-}
-
-public sealed record OtlpAttribute(string Key, OtlpAnyValue Value);
-
-public sealed record OtlpSpan
-{
-    public string? TraceId { get; init; }                  // 32 lowercase hex chars; null when missing, the wrong length, not hex, or all zeros
-    public string? SpanId { get; init; }                   // 16 lowercase hex chars; null when missing, the wrong length, not hex, or all zeros
-    public string? ParentSpanId { get; init; }             // 16 lowercase hex chars; null when empty, missing, invalid, or all zeros
-    public string Name { get; init; } = "";
-    public ulong StartTimeUnixNano { get; init; }          // 0 when missing or invalid
-    public ulong EndTimeUnixNano { get; init; }            // 0 when missing or invalid
-    public IReadOnlyList<OtlpAttribute> Attributes { get; init; } = [];
-}
-
-public sealed record OtlpResourceSpans(
-    IReadOnlyList<OtlpAttribute> ResourceAttributes,
-    IReadOnlyList<OtlpSpan> Spans);                        // the spans of every ScopeSpans entry, in order
-
-public sealed record OtlpTraceRequest(IReadOnlyList<OtlpResourceSpans> ResourceSpans)
-{
-    public int SpanCount => ResourceSpans.Sum(r => r.Spans.Count);
-}
-
-// ---- src/CopilotLedger.Otlp/Decoding/OtlpDecodeException.cs
-namespace CopilotLedger.Otlp.Decoding;
-
-public sealed class OtlpDecodeException : Exception
-{
-    public OtlpDecodeException(string message) : base(message) { }
-    public OtlpDecodeException(string message, Exception innerException) : base(message, innerException) { }
-}
-
-// ---- src/CopilotLedger.Otlp/Decoding/OtlpTraceDecoder.cs
-namespace CopilotLedger.Otlp.Decoding;
-
-public static class OtlpTraceDecoder
-{
-    // Binary protobuf ExportTraceServiceRequest. Throws OtlpDecodeException for malformed input.
-    public static OtlpTraceRequest DecodeProtobuf(ReadOnlyMemory<byte> payload);
-
-    // OTLP/JSON ExportTraceServiceRequest in UTF-8. Throws OtlpDecodeException for malformed input.
-    public static OtlpTraceRequest DecodeJson(ReadOnlyMemory<byte> utf8Json);
-}
-
-// ---- src/CopilotLedger.Otlp/Normalization/GenAiAttributeNames.cs
-namespace CopilotLedger.Otlp.Normalization;
-
-public static class GenAiAttributeNames
-{
-    public const string OperationName = "gen_ai.operation.name";
-    public const string ProviderName = "gen_ai.provider.name";
-    public const string RequestModel = "gen_ai.request.model";
-    public const string ResponseModel = "gen_ai.response.model";
-    public const string AgentName = "gen_ai.agent.name";
-    public const string ConversationId = "gen_ai.conversation.id";
-    public const string InputTokens = "gen_ai.usage.input_tokens";
-    public const string OutputTokens = "gen_ai.usage.output_tokens";
-    public const string CacheReadInputTokens = "gen_ai.usage.cache_read.input_tokens";
-    public const string CacheWriteInputTokens = "gen_ai.usage.cache_write.input_tokens";
-    public const string LegacyCacheCreationInputTokens = "gen_ai.usage.cache_creation.input_tokens";
-    public const string ServerAddress = "server.address";
-    public const string ServerPort = "server.port";
-    public const string GitRepository = "github.copilot.git.repository";
-    public const string GitBranch = "github.copilot.git.branch";
-    public const string GitCommitSha = "github.copilot.git.commit_sha";
-    public const string LegacyRepoRemoteUrl = "copilot_chat.repo.remote_url";
-    public const string LegacyRepoHeadBranchName = "copilot_chat.repo.head_branch_name";
-    public const string LegacyRepoHeadCommitHash = "copilot_chat.repo.head_commit_hash";
-    public const string ServiceName = "service.name";                          // resource attribute
-    public const string ProcessWorkingDirectory = "process.working_directory"; // resource attribute
-}
-
-// ---- src/CopilotLedger.Otlp/Normalization/NormalizedTraceBatch.cs
-using CopilotLedger.Core.Telemetry;
-
-namespace CopilotLedger.Otlp.Normalization;
-
-public sealed record NormalizedTraceBatch
-{
-    public required IReadOnlyList<NormalizedGenAiSpan> InferenceSpans { get; init; }  // accepted inference spans, in request order
-    public required IReadOnlyList<GenAiSpanLink> Links { get; init; }                  // accepted indexed spans, in request order
-    public required int ReceivedSpanCount { get; init; }
-    public required int RejectedSpanCount { get; init; }
-    public string? FirstRejectionReason { get; init; }                                 // null when RejectedSpanCount is 0
-}
-
-// ---- src/CopilotLedger.Otlp/Normalization/GenAiSpanNormalizer.cs
-using CopilotLedger.Otlp.Decoding;
-
-namespace CopilotLedger.Otlp.Normalization;
-
-public static class GenAiSpanNormalizer
-{
-    // Largest token count accepted after normalization; a larger count rejects the span.
-    public const long MaxTokenCount = 1_000_000_000;
-
-    // Throws ArgumentNullException for a null request; otherwise never throws.
-    public static NormalizedTraceBatch Normalize(OtlpTraceRequest request);
+    // Rule 2. Throws ArgumentNullException for a null list; ArgumentOutOfRangeException unless failures >= 2.
+    public static ChurnTrip? FindChurnTrip(IReadOnlyList<ToolCallEvent> toolCalls, IReadOnlyList<CommitObservation> commits, int failures);
 }
 ```
-
-### Protobuf decoding rules
-
-`internal ref struct ProtoReader` reads a `ReadOnlySpan<byte>` from a position. Each failure throws `OtlpDecodeException` with a short message.
-
-1. `ReadVarint()` reads up to 10 bytes, 7 bits each, least significant group first. It fails if the input ends mid-varint, or if a 10th byte is greater than `0x01`.
-2. `ReadTag()` reads a varint. The field number is `tag >> 3`, and the wire type is `tag & 7`. It fails if the tag exceeds `uint.MaxValue` or the field number is 0. `TryReadTag` returns false at the end of the span.
-3. `ReadFixed64()` and `ReadFixed32()` read 8 and 4 little-endian bytes with `BinaryPrimitives`. They fail if the input is truncated.
-4. `ReadLengthDelimited()` reads a varint length, then that many bytes as a slice. It fails if the length exceeds the remaining bytes.
-5. `Skip(wireType)` skips VARINT (0), I64 (1), LEN (2), or I32 (5) values. Wire types 3, 4, 6, and 7 fail with `unsupported wire type N`.
-
-`OtlpProtobufTraceReader` parses each message from its own length-delimited slice:
-
-1. It reads exactly the fields in the schema table under "Verified facts", with the listed wire types. It skips every other field, and any listed field that arrives with a different wire type, using `Skip`.
-2. For a singular field the last occurrence wins. That includes `resource`, whose attributes are replaced. `AnyValue` takes the kind of the last value field it reads.
-3. Values become `OtlpAnyValue`s:
-   - `string_value` becomes `String`.
-   - `bool_value` becomes `Bool`, true when the varint isn't 0.
-   - `int_value` becomes `Int`, using the varint's two's-complement value: `(long)varint`.
-   - `double_value`, `array_value`, `kvlist_value`, and `bytes_value` become `Double`, `Array`, `KeyValueList`, and `Bytes`, and their contents are skipped. `double_value` is skipped as 8 bytes and never read as a `double`.
-   - Any other field, such as `string_value_strindex`, is skipped and doesn't change the kind.
-   - An `AnyValue` with no recognized field, or a `KeyValue` with no `value`, is `OtlpAnyValue.Empty`.
-4. Strings are decoded with `Encoding.UTF8.GetString`, which replaces invalid sequences with U+FFFD.
-5. A `KeyValue` with a missing or empty key is dropped. Attributes keep their wire order, including duplicate keys.
-6. `trace_id` is kept only if it's 16 bytes and not all zeros, and `span_id` and `parent_span_id` only if they're 8 bytes and not all zeros. Kept IDs are converted with `Convert.ToHexStringLower`. Anything else becomes null.
-7. An empty payload is a valid request with no `ResourceSpans`.
-
-### JSON decoding rules
-
-`OtlpJsonTraceReader`:
-
-1. Skip a leading UTF-8 byte order mark (`EF BB BF`).
-2. Parse with `JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 64, CommentHandling = JsonCommentHandling.Disallow, AllowTrailingCommas = false })`. Wrap any `JsonException` in `OtlpDecodeException("Invalid JSON: " + ex.Message, ex)`.
-3. The root must be an object.
-4. Containers:
-   - `resourceSpans` on the root, `scopeSpans` on each resource-spans entry, `spans` on each scope-spans entry, and `attributes` on `resource` and on each span: missing or `null` is empty, an array is read, and anything else throws `OtlpDecodeException`.
-   - Elements of `resourceSpans`, `scopeSpans`, and `spans` must be objects; anything else throws.
-   - `resource` may be missing or `null` (no attributes) or an object; anything else throws.
-5. An attribute element that isn't an object, or whose `key` isn't a non-empty string, is skipped. Its `value` is read as an `AnyValue` if it's an object. A missing, `null`, or non-object value is `OtlpAnyValue.Empty`.
-6. To read an `AnyValue` object, go through its properties in document order and use the first one named `stringValue`, `boolValue`, `intValue`, `doubleValue`, `arrayValue`, `kvlistValue`, or `bytesValue`. Ignore later ones.
-   - `stringValue` that's a JSON string becomes `String`; any other JSON type becomes `Empty`.
-   - `boolValue` that's `true` or `false` becomes `Bool`; any other JSON type becomes `Empty`.
-   - `intValue` becomes `Int` when it's a string that `long.TryParse(s, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out v)` accepts, or a number for which `TryGetInt64` succeeds. Anything else becomes `Empty`.
-   - `doubleValue`, `arrayValue`, `kvlistValue`, and `bytesValue` become `Double`, `Array`, `KeyValueList`, and `Bytes` whatever their JSON type.
-   - No recognized property means `Empty`.
-7. Span fields:
-   - `traceId`, `spanId`, and `parentSpanId` are kept only if they're strings of exactly 32, 16, and 16 hex characters (either case) that aren't all `0`. Kept IDs are lower-cased with `ToLowerInvariant()`; anything else, including `""`, becomes null.
-   - `name` is used if it's a string; otherwise it's `""`.
-   - `startTimeUnixNano` and `endTimeUnixNano` come from a string that `ulong.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out v)` accepts, or from a number for which `TryGetUInt64` succeeds. Otherwise they're 0.
-8. Property names are case-sensitive, and unknown properties are ignored everywhere, including snake_case names such as `trace_id`.
-9. Never call `GetDouble` or `TryGetDouble`.
-10. Read every JSON string through one helper, `TryGetString(JsonElement, out string)`, which returns false when `GetString()` throws `InvalidOperationException`. System.Text.Json throws that for an escaped lone surrogate such as `\ud800`, which `JsonDocument.Parse` accepts; JavaScript's `JSON.stringify` writes one for a Windows file name with an unpaired surrogate. An unreadable string counts as an invalid value for its field, so one odd attribute never fails the request:
-    - an attribute whose `key` can't be read is skipped, and an unreadable `stringValue` is `Empty`;
-    - an unreadable `traceId`, `spanId`, or `parentSpanId` is null, and an unreadable `name` is `""`;
-    - an unreadable `intValue`, `startTimeUnixNano`, or `endTimeUnixNano` string is `Empty` or 0.
-
-    Match property names with `TryGetProperty` or `JsonProperty.NameEquals`, never by reading `JsonProperty.Name`, which throws the same way. Verified on .NET 10: `GetString()`, `JsonProperty.Name`, and `ValueEquals` throw for these strings, while `TryGetProperty` and `NameEquals` don't.
-
-### Normalization rules
-
-`GenAiSpanNormalizer.Normalize` processes resources in order, then the spans of each in order.
-
-Per resource:
-
-- It is a **Copilot resource** when its first `service.name` attribute is a `String` equal to `github-copilot` or `copilot-chat` (ordinal).
-- Its **working directory** is the first `process.working_directory` attribute that is a `String`, isn't blank, and passes `Path.IsPathFullyQualified`. Otherwise it's null.
-
-Per span:
-
-1. Increment `ReceivedSpanCount`.
-2. Reject the span if `TraceId` is null (`invalid traceId`), then if `SpanId` is null (`invalid spanId`), then if `StartTimeUnixNano` is 0 (`missing startTimeUnixNano`).
-3. Look up attributes by key, using the first occurrence (ordinal). `Text(key)` is the attribute's string when its kind is `String` and the value isn't null or whitespace; otherwise it's null. Values aren't trimmed.
-4. `operation = Text("gen_ai.operation.name")`.
-5. If `GenAiOperationNames.IsInference(operation)`, read the token counts in this order: input, output, cache read, then cache write.
-   - `Token(key)` is 0 when the key is absent, and `IntValue` when the kind is `Int` and the value is at least 0. Otherwise, reject the span with `<key> is not a non-negative integer`.
-   - Cache write uses `gen_ai.usage.cache_write.input_tokens` when that key is present, whatever its value. Otherwise it uses `gen_ai.usage.cache_creation.input_tokens`.
-   - In a `checked` context, if `cacheRead + cacheWrite > input`, set `input = input + cacheRead + cacheWrite`. An `OverflowException` rejects the span with `token counts overflow`.
-   - Then, if any of the four counts is greater than `MaxTokenCount`, reject the span with `token count exceeds 1000000000`.
-6. A rejected span increments `RejectedSpanCount` and sets `FirstRejectionReason` if it's still null. It produces no link and no inference span.
-7. Times:
-   - `FromUnixNano(ns)` is `DateTimeOffset.UnixEpoch.AddTicks((long)(ns / 100))`.
-   - `start = FromUnixNano(StartTimeUnixNano)`.
-   - `end = EndTimeUnixNano >= StartTimeUnixNano ? FromUnixNano(EndTimeUnixNano) : start`.
-8. If `operation` isn't null, or the resource is a Copilot resource, add a `GenAiSpanLink`:
-   - `TraceId`, `SpanId`, and `ParentSpanId` from the span; `OperationName = operation`;
-   - `AgentName = Text(gen_ai.agent.name)` and `ConversationId = Text(gen_ai.conversation.id)`;
-   - `GitRepositorySlug`: when `url = Text(github.copilot.git.repository) ?? Text(copilot_chat.repo.remote_url)` isn't null, `GitRemoteUrl.GetRepositorySlug(GitRemoteUrl.Sanitize(url))`; otherwise null;
-   - `GitBranch = Text(github.copilot.git.branch) ?? Text(copilot_chat.repo.head_branch_name)`;
-   - `GitCommitSha = Text(github.copilot.git.commit_sha) ?? Text(copilot_chat.repo.head_commit_hash)`, kept only if it's 40 or 64 hex characters, and lower-cased with `ToLowerInvariant()`;
-   - `StartTime = start`.
-9. If the span is an inference span, add a `NormalizedGenAiSpan`:
-   - `TraceId`, `SpanId`, and `ParentSpanId` from the span; `OperationName = operation`; `StartTime = start` and `EndTime = end`;
-   - `ProviderName`, `RequestModel`, `ResponseModel`, `AgentName`, `ConversationId`, and `ServerAddress` as `Text` of `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.agent.name`, `gen_ai.conversation.id`, and `server.address`;
-   - `ServerPort` as `(int)IntValue` when `server.port` is an `Int` from 1 to 65535, otherwise null;
-   - `WorkingDirectory` as the resource's working directory;
-   - the four token counts from step 5.
-
-Spans that are neither inference nor indexed, such as an HTTP span from another application, are counted as received and otherwise ignored.
-
-### Acceptance criteria
-
-- `CopilotLedger.slnx` contains `CopilotLedger.Core`, `CopilotLedger.Storage`, `CopilotLedger.Otlp`, and `CopilotLedger.Tests`. The Otlp `.csproj` matches Step 2.
-- The public surface of `CopilotLedger.Otlp` is exactly the contracts above, and `GenAiSpanLink` exists in Core as written.
-- `src/` contains no `double`, `float`, `GetDouble`, `TryGetDouble`, or `System.Diagnostics.Process`, and no NuGet package was added.
-- `dotnet build CopilotLedger.slnx` succeeds with 0 warnings, and `dotnet test CopilotLedger.slnx` passes the Sprint 1 cases and PB1–PB7, JS1–JS8, and NZ1–NZ11 with 0 failed and 0 skipped.
-
-### Verify
-
-```shell
-dotnet build CopilotLedger.slnx
-dotnet test CopilotLedger.slnx
-```
-
-Report the passed, failed, and skipped counts.
-
-## Task 2 specification: Ledger Ingestion, Session Attribution & Rates Refresh
-
-### Files
-
-Create:
-
-```text
-src/CopilotLedger.Core/Git/CachingGitContextResolver.cs
-src/CopilotLedger.Storage/PromptChainRow.cs
-src/CopilotLedger.Otlp/Attribution/CopilotSessionWorkspaceLocator.cs
-src/CopilotLedger.Otlp/Ingestion/ILedgerIngestor.cs
-src/CopilotLedger.Otlp/Ingestion/IngestResult.cs
-src/CopilotLedger.Otlp/Ingestion/LedgerIngestor.cs
-tests/CopilotLedger.Tests/TestSupport/ManualTimeProvider.cs
-tests/CopilotLedger.Tests/TestSupport/CopilotTraces.cs
-tests/CopilotLedger.Tests/TestSupport/LedgerSeeds.cs
-tests/CopilotLedger.Tests/Git/CachingGitContextResolverTests.cs
-tests/CopilotLedger.Tests/Otlp/CopilotSessionWorkspaceLocatorTests.cs
-tests/CopilotLedger.Tests/Otlp/LedgerIngestorTests.cs
-tests/CopilotLedger.Tests/Storage/SpanLinkStoreTests.cs
-tests/CopilotLedger.Tests/Pricing/RatesRefreshTests.cs
-```
-
-Modify:
-
-```text
-src/CopilotLedger.Core/Pricing/rates.json
-src/CopilotLedger.Storage/LedgerMigrations.cs
-src/CopilotLedger.Storage/SqliteLedgerStore.cs
-src/CopilotLedger.Otlp/CopilotLedger.Otlp.csproj        (through the command below)
-tests/CopilotLedger.Tests/Storage/SqliteLedgerStoreTests.cs
-docs/configuration.md
-```
-
-Run:
-
-```shell
-dotnet add src/CopilotLedger.Otlp/CopilotLedger.Otlp.csproj reference src/CopilotLedger.Storage/CopilotLedger.Storage.csproj
-```
-
-In `SqliteLedgerStoreTests.S1_InitializeAsync_CreatesWalDatabaseAndIsIdempotent`, change the `PRAGMA user_version` assertion from `Assert.Equal(1L, ...)` to `Assert.Equal(2L, ...)`. That is the only change to Sprint 1 tests. No other Sprint 1 test reads `user_version` or lists tables.
-
-### rates.json changes
-
-Change `src/CopilotLedger.Core/Pricing/rates.json` in exactly three places. Change nothing else; in particular, `ratesVersion` stays `2026-11-20`, and the five Sprint 1 models don't change.
-
-**Models.** Append these 29 entries, in this order, to `githubAiCredits.models`, after `mai-code-2`. They're the models whose **Built in** column says Task 2 in "GitHub price table", in the page's order. Indent them like the existing entries.
-
-```json
-[
-  {
-    "id": "gpt-5.3-codex",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 1.75, "cachedInputPer1M": 0.175, "cacheWritePer1M": null, "outputPer1M": 14.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "gpt-5.4-nano",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 0.20, "cachedInputPer1M": 0.02, "cacheWritePer1M": null, "outputPer1M": 1.25 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "gpt-5.6-luna",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": 200000, "inputPer1M": 0.20, "cachedInputPer1M": 0.02, "cacheWritePer1M": 0.25, "outputPer1M": 1.20 },
-          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 0.40, "cachedInputPer1M": 0.04, "cacheWritePer1M": 0.50, "outputPer1M": 1.80 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "gpt-5.6-sol",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": 272000, "inputPer1M": 4.00, "cachedInputPer1M": 0.40, "cacheWritePer1M": 5.00, "outputPer1M": 20.00 },
-          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 8.00, "cachedInputPer1M": 0.80, "cacheWritePer1M": 10.00, "outputPer1M": 30.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "gpt-6-luna",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": 272000, "inputPer1M": 0.10, "cachedInputPer1M": 0.01, "cacheWritePer1M": 0.125, "outputPer1M": 0.50 },
-          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 0.20, "cachedInputPer1M": 0.02, "cacheWritePer1M": 0.25, "outputPer1M": 0.75 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "gpt-6-sol",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": 272000, "inputPer1M": 2.00, "cachedInputPer1M": 0.20, "cacheWritePer1M": 2.50, "outputPer1M": 10.00 },
-          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 4.00, "cachedInputPer1M": 0.40, "cacheWritePer1M": 5.00, "outputPer1M": 15.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "gpt-6.1-terra",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": 272000, "inputPer1M": 1.00, "cachedInputPer1M": 0.05, "cacheWritePer1M": 1.25, "outputPer1M": 5.00 },
-          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 2.00, "cachedInputPer1M": 0.10, "cacheWritePer1M": 2.50, "outputPer1M": 7.50 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "gpt-6.2-astra",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": 272000, "inputPer1M": 8.00, "cachedInputPer1M": 0.40, "cacheWritePer1M": 10.00, "outputPer1M": 40.00 },
-          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 16.00, "cachedInputPer1M": 0.80, "cacheWritePer1M": 20.00, "outputPer1M": 60.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "gpt-6.2-sol",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": 272000, "inputPer1M": 2.00, "cachedInputPer1M": 0.10, "cacheWritePer1M": 2.50, "outputPer1M": 10.00 },
-          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 4.00, "cachedInputPer1M": 0.20, "cacheWritePer1M": 5.00, "outputPer1M": 15.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "claude-haiku-4.5",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 1.00, "cachedInputPer1M": 0.10, "cacheWritePer1M": 1.25, "outputPer1M": 5.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "claude-haiku-5.5",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": 100000, "inputPer1M": 0.10, "cachedInputPer1M": 0.01, "cacheWritePer1M": 0.125, "outputPer1M": 0.50 },
-          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 0.50, "cachedInputPer1M": 0.05, "cacheWritePer1M": 0.625, "outputPer1M": 2.50 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "claude-sonnet-4",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 3.00, "cachedInputPer1M": 0.30, "cacheWritePer1M": 3.75, "outputPer1M": 15.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "claude-sonnet-4.6",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 3.00, "cachedInputPer1M": 0.30, "cacheWritePer1M": 3.75, "outputPer1M": 15.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "claude-opus-4.8",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 5.00, "cachedInputPer1M": 0.50, "cacheWritePer1M": 6.25, "outputPer1M": 25.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "claude-sonnet-5",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 2.00, "cachedInputPer1M": 0.20, "cacheWritePer1M": 2.50, "outputPer1M": 10.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "claude-fable-5",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 10.00, "cachedInputPer1M": 1.00, "cacheWritePer1M": 12.50, "outputPer1M": 50.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "claude-fable-5.1",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 10.00, "cachedInputPer1M": 0.25, "cacheWritePer1M": 12.50, "outputPer1M": 50.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "claude-fable-5.2",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 8.00, "cachedInputPer1M": 0.20, "cacheWritePer1M": 10.00, "outputPer1M": 40.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "gemini-3.8-flash",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": "2027-01-01T00:00:00Z",
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 0.75, "cachedInputPer1M": 0.075, "cacheWritePer1M": null, "outputPer1M": 3.75 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "gemini-4-argon",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": "2026-12-01T00:00:00Z",
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 2.00, "cachedInputPer1M": 0.10, "cacheWritePer1M": null, "outputPer1M": 10.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "gemini-4-carbon",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": "2026-12-01T00:00:00Z",
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 2.00, "cachedInputPer1M": 0.10, "cacheWritePer1M": null, "outputPer1M": 10.00 }
-        ]
-      },
-      {
-        "effectiveFrom": "2026-12-01T00:00:00Z",
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 4.00, "cachedInputPer1M": 0.20, "cacheWritePer1M": null, "outputPer1M": 20.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "gemini-4-hydrogen",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 1.50, "cachedInputPer1M": 0.075, "cacheWritePer1M": null, "outputPer1M": 7.50 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "gemini-4-neon",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 3.00, "cachedInputPer1M": 0.15, "cacheWritePer1M": null, "outputPer1M": 15.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "mai-code-1.1-flash",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 0.20, "cachedInputPer1M": 0.02, "cacheWritePer1M": null, "outputPer1M": 1.20 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "mai-code-2-flash",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": "2027-05-17T00:00:00Z",
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 0.05, "cachedInputPer1M": 0.005, "cacheWritePer1M": null, "outputPer1M": 0.25 }
-        ]
-      },
-      {
-        "effectiveFrom": "2027-05-17T00:00:00Z",
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 0.10, "cachedInputPer1M": 0.01, "cacheWritePer1M": null, "outputPer1M": 0.50 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "grok-4.5",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": 200000, "inputPer1M": 2.00, "cachedInputPer1M": 0.50, "cacheWritePer1M": null, "outputPer1M": 6.00 },
-          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 4.00, "cachedInputPer1M": 1.00, "cacheWritePer1M": null, "outputPer1M": 12.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "grok-4.6",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": 200000, "inputPer1M": 2.00, "cachedInputPer1M": 0.50, "cacheWritePer1M": null, "outputPer1M": 6.00 },
-          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 4.00, "cachedInputPer1M": 1.00, "cacheWritePer1M": null, "outputPer1M": 12.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "grok-4.7",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": 200000, "inputPer1M": 2.00, "cachedInputPer1M": 0.50, "cacheWritePer1M": null, "outputPer1M": 6.00 },
-          { "name": "long_context", "maxInputTokens": null, "inputPer1M": 4.00, "cachedInputPer1M": 1.00, "cacheWritePer1M": null, "outputPer1M": 12.00 }
-        ]
-      }
-    ]
-  },
-  {
-    "id": "kimi-k3",
-    "aliases": [],
-    "windows": [
-      {
-        "effectiveFrom": null,
-        "effectiveUntil": null,
-        "tiers": [
-          { "name": "default", "maxInputTokens": null, "inputPer1M": 3.00, "cachedInputPer1M": 0.30, "cacheWritePer1M": null, "outputPer1M": 15.00 }
-        ]
-      }
-    ]
-  }
-]
-```
-
-**Notes.** Insert these three strings into `notes`, in this order, right after `"mai-code-2 promotional pricing ends 2027-05-17T00:00:00Z."`:
-
-```json
-[
-  "Promotional windows end at 00:00:00Z on the date the pricing page gives: gemini-4-argon and gemini-4-carbon on 2026-12-01, mai-code-2-flash on 2027-05-17, and gemini-3.8-flash on 2027-01-01 (the page says through December 31, 2026).",
-  "gemini-4-argon and gemini-3.8-flash have no published price after their promotions, so later requests are recorded as no_rate_for_date until a price is added.",
-  "Model ids are the ids Copilot reports. gpt-5.4-nano, claude-sonnet-4, claude-opus-4.8, claude-fable-5, claude-fable-5.1, claude-fable-5.2, gemini-4-neon, grok-4.5, and kimi-k3 are derived from the pricing page's display names. Claude Opus 4.8 (fast mode) is omitted because its id is unknown."
-]
-```
-
-**Local provider names.** Change `"localOffload": { ..., "providerNames": [] }` to `"providerNames": ["ollama", "lm_studio", "foundry_local", "llama_cpp"]`.
-
-### docs/configuration.md changes
-
-- In the "How usage is priced" table, replace the Local row's "How it's detected" cell with:
-
-  ```text
-  An endpoint of `localhost`, `127.x.x.x`, `::1`, or a host you list; a local provider name (`ollama`, `lm_studio`, `foundry_local`, or `llama_cpp`, which Copilot CLI reports for models you bring or run yourself); or a known local model, such as Qwen3.8-27B, with no endpoint
-  ```
-
-- Replace the sentence that lists the built-in prices, `The built-in prices are GitHub's November 2026 rates for ...`, with this text:
-
-  ```text
-  The built-in prices are GitHub's rates for every text model on [Models and pricing for GitHub Copilot](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing) as of 2026-11-20: 34 models, with their long-context tiers and promotional prices. A promotional price ends at 00:00 UTC on the date GitHub gives. Two models need your attention:
-
-  - Claude Opus 4.8 (fast mode) isn't built in, because the model name Copilot reports for it isn't known yet. If you use it, add it under `githubAiCredits.models` with the model name Copilot reports.
-  - GitHub hasn't published the prices that follow the promotions for Gemini 4 Argon (ending 2026-12-01) and Gemini 3.8 Flash (ending after 2026-12-31). Later requests for them are recorded with status `no_rate_for_date` until you add a price window or a CopilotLedger update adds the price.
-  ```
-
-### Migration 2 (copy exactly)
-
-Append `(2, <this SQL>)` to the `LedgerMigrations` list:
-
-```sql
-CREATE TABLE span_links (
-    trace_id            TEXT    NOT NULL,
-    span_id             TEXT    NOT NULL,
-    parent_span_id      TEXT,
-    operation_name      TEXT,
-    agent_name          TEXT,
-    conversation_id     TEXT,
-    git_repository_slug TEXT,
-    git_branch          TEXT,
-    git_commit_sha      TEXT,
-    start_time_unix_ms  INTEGER NOT NULL,
-    recorded_at_unix_ms INTEGER NOT NULL,
-    PRIMARY KEY (trace_id, span_id)
-) STRICT, WITHOUT ROWID;
-
-CREATE INDEX ix_span_links_parent ON span_links (trace_id, parent_span_id);
-CREATE INDEX ix_span_links_start  ON span_links (start_time_unix_ms);
-CREATE INDEX ix_spans_trace       ON spans (trace_id);
-```
-
-### Storage contracts
 
 ```csharp
-// ---- src/CopilotLedger.Storage/PromptChainRow.cs
-namespace CopilotLedger.Storage;
+namespace CopilotLedger.Otlp.Breaker;
 
-public sealed record PromptChainRow
+public enum BreakerAlertKind
 {
-    public required string TraceId { get; init; }
-    public string? ConversationId { get; init; }
-    public required DateTimeOffset StartTime { get; init; }            // earliest span start
-    public required DateTimeOffset EndTime { get; init; }              // latest span end
-    public required string Repository { get; init; }                   // same key as the Repository rollup
-    public required string Branch { get; init; }                       // same key as the Branch rollup
-    public required IReadOnlyList<string> Agents { get; init; }        // distinct non-null agent names, ordinal order
-    public required IReadOnlyList<string> Models { get; init; }        // distinct non-null model ids, ordinal order
-    public required long SpanCount { get; init; }
-    public required long UnpricedSpanCount { get; init; }
-    public required long InputTokens { get; init; }
-    public required long OutputTokens { get; init; }
-    public required long CacheReadInputTokens { get; init; }
-    public required long CacheWriteInputTokens { get; init; }
-    public required decimal AiCredits { get; init; }                   // AiCreditMath.UsdToAiCredits(AiCreditsUsd)
-    public required decimal AiCreditsUsd { get; init; }                // GitHubAiCredits channel
-    public required decimal FoundryByokUsd { get; init; }
-    public required decimal LocalSavedUsd { get; init; }
+    Trip,
+    Budget,
 }
 
-// ---- additions to src/CopilotLedger.Storage/SqliteLedgerStore.cs (existing members unchanged)
-public sealed class SqliteLedgerStore
+public sealed record BreakerAlert
 {
-    // Inserts links in one transaction and returns the number inserted. Existing (trace_id, span_id) rows are kept unchanged.
-    // Throws InvalidOperationException if InitializeAsync hasn't run.
-    public Task<int> RecordSpanLinksAsync(IEnumerable<GenAiSpanLink> links, CancellationToken cancellationToken = default);
+    public required BreakerAlertKind Kind { get; init; }
+    public long? TripId { get; init; }                 // Trip alerts only
+    public required string Repository { get; init; }
+    public required string Branch { get; init; }
+    public required string Title { get; init; }
+    public required string Body { get; init; }
+    public required bool ShowNotification { get; init; } // BreakerSettings.Notifications when the alert was raised
+}
 
-    // For each trace, copies each invoke_agent link's agent name, conversation id, and Git slug/branch/sha onto spans rows below it,
-    // without crossing a nested invoke_agent. Returns the total rows changed by all UPDATE statements. One transaction.
-    // Throws InvalidOperationException if InitializeAsync hasn't run.
-    public Task<int> BackfillFromAgentSpansAsync(IEnumerable<string> traceIds, CancellationToken cancellationToken = default);
+public interface IBreakerAlertSink
+{
+    void Publish(BreakerAlert alert);                  // must return quickly and not throw
+    void Warn(string message);                         // a problem the monitor handled, such as a flag file it couldn't write
+}
 
-    // Deletes span_links rows whose start_time_unix_ms < startedBefore.ToUnixTimeMilliseconds(). Returns the rows deleted.
-    public Task<int> PruneSpanLinksAsync(DateTimeOffset startedBefore, CancellationToken cancellationToken = default);
+public static class BreakerMessages
+{
+    public const string TripTitle = "CopilotLedger circuit breaker tripped";
+    public const string BudgetTitle = "CopilotLedger branch budget reached";
 
-    // Prompt chains (one per trace_id), most expensive first. Throws ArgumentOutOfRangeException unless 1 <= limit <= 1000.
-    public Task<IReadOnlyList<PromptChainRow>> GetTopPromptChainsAsync(LedgerFilter filter, int limit, CancellationToken cancellationToken = default);
+    public static string Credits(decimal aiCredits);                          // decimal.Round(aiCredits, 2, MidpointRounding.AwayFromZero).ToString("N2", CultureInfo.InvariantCulture)
+    public static string Minutes(int minutes);                                // "1 minute", otherwise "<n> minutes" (invariant culture)
+    public static string VelocityDetail(decimal windowCostUsd, int windowMinutes); // "<Credits(windowCostUsd / 0.01)> AI credits in <Minutes(windowMinutes)>"
+    public static string ChurnDetail(int failureCount);                       // "<n> failed tool calls in a row"
+    public static string RulesSummary(BreakerSettings settings);              // "<Credits(VelocityCredits)> AI credits in <Minutes> on one prompt; <ChurnFailures> failed tool calls in a row on one prompt"
+    public static BreakerAlert ForTrip(BreakerTrip trip, bool showNotification);
+    public static BreakerAlert ForBudget(BranchBudgetRow budget, bool showNotification);
+}
+
+public static class CircuitFlagFile
+{
+    public const string DirectoryName = ".copilot-ledger";
+    public const string FileName = "CIRCUIT_OPEN";
+
+    public static string GetPath(string repositoryRoot);                     // Path.Combine(repositoryRoot, DirectoryName, FileName)
+    public static string Render(string repositoryRoot, IReadOnlyList<BreakerTrip> openTrips);   // the file's text; openTrips is non-empty
+
+    // Makes the flag file match the ledger. Throws IOException or UnauthorizedAccessException from the file system, and
+    // whatever the store throws. Does nothing when repositoryRoot isn't an existing directory.
+    public static Task SyncAsync(SqliteLedgerStore store, string repositoryRoot, CancellationToken cancellationToken = default);
+}
+
+public sealed class CircuitBreakerMonitor
+{
+    // Throws ArgumentNullException for null arguments. The caller initializes the store.
+    public CircuitBreakerMonitor(SqliteLedgerStore store, IBreakerAlertSink sink);
+
+    // Evaluates both rules for each trace and the budgets of the branches those traces touched. Store exceptions propagate.
+    // Flag-file IOException and UnauthorizedAccessException are reported to sink.Warn and not rethrown.
+    public Task EvaluateAsync(IEnumerable<string> traceIds, CancellationToken cancellationToken = default);
 }
 ```
 
-Reuse the merged private helpers of `SqliteLedgerStore`. Every new method calls `EnsureInitialized()` first, so each one throws `InvalidOperationException` before `InitializeAsync` has run. Open connections with `OpenConnectionAsync(cancellationToken)`, which sets `PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;`, and pass null parameters through `OrDbNull`. SQL is always parameterized.
-
-**RecordSpanLinksAsync.** Insert each link with `INSERT INTO span_links (trace_id, span_id, parent_span_id, operation_name, agent_name, conversation_id, git_repository_slug, git_branch, git_commit_sha, start_time_unix_ms, recorded_at_unix_ms) VALUES (...) ON CONFLICT (trace_id, span_id) DO NOTHING;`. `start_time_unix_ms` is `StartTime.ToUnixTimeMilliseconds()`, `recorded_at_unix_ms` comes from the store's `TimeProvider`, and the result is the sum of rows affected.
-
-**BackfillFromAgentSpansAsync.** Use one connection and one transaction. For each distinct trace ID in ordinal order:
-
-1. Read `SELECT span_id, agent_name, conversation_id, git_repository_slug, git_branch, git_commit_sha FROM span_links WHERE trace_id = @trace AND operation_name = 'invoke_agent' ORDER BY span_id;`.
-2. For each row `A`:
-   - When `A.agent_name` or `A.conversation_id` isn't null, run the **agent statement** with `@agentSpanId = A.span_id`, `@agentName = A.agent_name`, and `@conversationId = A.conversation_id`.
-   - When `A.git_repository_slug` isn't null, run the **Git statement** with `@slug`, `@branch`, and `@sha` from `A`.
-3. Add each statement's rows affected to the result.
-
-Agent statement (copy exactly):
-
-```sql
-WITH RECURSIVE sub(span_id) AS (
-    SELECT span_id FROM span_links
-     WHERE trace_id = @trace AND parent_span_id = @agentSpanId
-       AND (operation_name IS NULL OR operation_name <> 'invoke_agent')
-    UNION
-    SELECT l.span_id FROM span_links AS l JOIN sub ON l.parent_span_id = sub.span_id
-     WHERE l.trace_id = @trace
-       AND (l.operation_name IS NULL OR l.operation_name <> 'invoke_agent')
-)
-UPDATE spans
-   SET agent_name      = COALESCE(agent_name, @agentName),
-       conversation_id = COALESCE(conversation_id, @conversationId)
- WHERE trace_id = @trace
-   AND span_id IN (SELECT span_id FROM sub)
-   AND ((agent_name IS NULL AND @agentName IS NOT NULL)
-     OR (conversation_id IS NULL AND @conversationId IS NOT NULL));
-```
-
-Git statement (copy exactly; same `sub` CTE):
-
-```sql
-WITH RECURSIVE sub(span_id) AS (
-    SELECT span_id FROM span_links
-     WHERE trace_id = @trace AND parent_span_id = @agentSpanId
-       AND (operation_name IS NULL OR operation_name <> 'invoke_agent')
-    UNION
-    SELECT l.span_id FROM span_links AS l JOIN sub ON l.parent_span_id = sub.span_id
-     WHERE l.trace_id = @trace
-       AND (l.operation_name IS NULL OR l.operation_name <> 'invoke_agent')
-)
-UPDATE spans
-   SET repo_slug       = @slug,
-       branch_name     = @branch,
-       head_commit_sha = @sha
- WHERE trace_id = @trace
-   AND span_id IN (SELECT span_id FROM sub)
-   AND repo_root IS NULL AND repo_slug IS NULL;
-```
-
-`UNION`, not `UNION ALL`, makes recursion stop even when parent links form a cycle. File-system Git context, which has a non-null `repo_root`, is never overwritten.
-
-**GetTopPromptChainsAsync.**
-
-Query 1 (copy exactly). The four filter predicates are the ones from Sprint 1's rollup query.
-
-```sql
-SELECT trace_id,
-       MIN(start_time_unix_ms)                                                            AS start_ms,
-       MAX(end_time_unix_ms)                                                              AS end_ms,
-       MAX(conversation_id)                                                               AS conversation_id,
-       MAX(COALESCE(repo_slug, repo_root, '(none)'))                                      AS repository,
-       MAX(COALESCE(branch_name, '(none)'))                                               AS branch,
-       COUNT(*)                                                                           AS span_count,
-       SUM(CASE WHEN pricing_status IN ('priced', 'local_offload') THEN 0 ELSE 1 END)     AS unpriced_span_count,
-       SUM(input_tokens)                                                                  AS input_tokens,
-       SUM(output_tokens)                                                                 AS output_tokens,
-       SUM(cache_read_input_tokens)                                                       AS cache_read_input_tokens,
-       SUM(cache_write_input_tokens)                                                      AS cache_write_input_tokens,
-       SUM(CASE WHEN billing_channel = 'github_ai_credits' THEN cost_usd_pico ELSE 0 END) AS github_usd_pico,
-       SUM(CASE WHEN billing_channel = 'foundry_byok' THEN cost_usd_pico ELSE 0 END)      AS byok_usd_pico,
-       SUM(saved_usd_pico)                                                                AS saved_usd_pico
-FROM spans
-WHERE (@from IS NULL OR start_time_unix_ms >= @from)
-  AND (@to IS NULL OR start_time_unix_ms < @to)
-  AND (@repository IS NULL OR COALESCE(repo_slug, repo_root, '(none)') = @repository)
-  AND (@branch IS NULL OR COALESCE(branch_name, '(none)') = @branch)
-GROUP BY trace_id
-ORDER BY github_usd_pico + byok_usd_pico DESC, saved_usd_pico DESC, start_ms DESC, trace_id ASC
-LIMIT @limit;
-```
-
-Query 2, when query 1 returns rows:
-
-- `SELECT DISTINCT trace_id, agent_name, model_id FROM spans WHERE <the same four predicates> AND trace_id IN (@t0, @t1, ...);`
-- Parameter names `@t0`, `@t1`, and so on are generated from the row index. Never interpolate values into SQL.
-- `Agents` and `Models` are each trace's distinct non-null `agent_name` and `model_id` values, sorted with `StringComparer.Ordinal`.
-
-Build each row:
-
-- `StartTime` and `EndTime` with `DateTimeOffset.FromUnixTimeMilliseconds`.
-- Money with `PicoUsd.ToUsd`, and `AiCredits = AiCreditMath.UsdToAiCredits(AiCreditsUsd)`.
-- Return rows in query 1's order.
-
-### CachingGitContextResolver
+Add to `LedgerIngestor`:
 
 ```csharp
-namespace CopilotLedger.Core.Git;
-
-public sealed class CachingGitContextResolver : IGitContextResolver
-{
-    public static readonly TimeSpan DefaultTimeToLive = TimeSpan.FromSeconds(5);
-
-    // null timeProvider uses TimeProvider.System; null timeToLive uses DefaultTimeToLive.
-    // Throws ArgumentNullException for a null inner, and ArgumentOutOfRangeException when timeToLive <= TimeSpan.Zero.
-    public CachingGitContextResolver(IGitContextResolver inner, TimeProvider? timeProvider = null, TimeSpan? timeToLive = null);
-
-    public GitWorkspaceContext? Resolve(string workingDirectory);
-}
+// monitor null means no circuit breaker. Throws ArgumentNullException for the other null arguments.
+public LedgerIngestor(
+    SqliteLedgerStore store,
+    ICreditCalculator calculator,
+    IGitContextResolver gitResolver,
+    CopilotSessionWorkspaceLocator sessionLocator,
+    CircuitBreakerMonitor? monitor)
 ```
 
-1. A null or whitespace `workingDirectory` returns `inner.Resolve(workingDirectory)`, uncached.
-2. The cache key is `workingDirectory` exactly as given. Compare keys with `StringComparer.OrdinalIgnoreCase` on Windows (`OperatingSystem.IsWindows()`) and `StringComparer.Ordinal` elsewhere.
-3. Each entry caches the inner result, including null, with `expiresAt = now + timeToLive`. It's a hit while `now < expiresAt`, where `now = timeProvider.GetUtcNow()`.
-4. The resolver is thread-safe; use one `lock`.
+The existing four-argument constructor becomes `: this(store, calculator, gitResolver, sessionLocator, null)`. In `IngestAsync`, inside the gate, immediately after `BackfillFromAgentSpansAsync(traceIds, …)` and inside the same `if (traceIds.Length > 0)`, add `if (_monitor is not null) { await _monitor.EvaluateAsync(traceIds, cancellationToken); }`. `IngestResult` doesn't change.
 
-### CopilotSessionWorkspaceLocator
+### Rule 1 algorithm (`FindVelocityTrip`)
 
-```csharp
-namespace CopilotLedger.Otlp.Attribution;
+1. Let `events` be the costs with `CostUsd > 0`, sorted by `EndTime`, then by `SpanId` (ordinal).
+2. Keep a running `sum` and the index `first` of the oldest event in the window, both starting at 0.
+3. For each index `i`: add `events[i].CostUsd` to `sum`. Then, while `events[first].EndTime <= events[i].EndTime - window`, subtract `events[first].CostUsd` and increment `first`. If `sum >= thresholdUsd`, return `new VelocityTrip(events[i].EndTime, sum)`.
+4. Return null.
 
-public sealed class CopilotSessionWorkspaceLocator
-{
-    public static readonly TimeSpan DefaultTimeToLive = TimeSpan.FromSeconds(60);
+### Rule 2 algorithm (`FindChurnTrip`)
 
-    // COPILOT_HOME when it's set and not blank; otherwise Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".copilot").
-    public static string DefaultCopilotHome { get; }
+1. Merge the commits (kind 0) and the tool calls (kind 1) into one sequence, sorted by start time, then kind, then `SpanId` (ordinal).
+2. `lastSha` starts null and `streak` at 0. For each item:
+   - a commit: if `lastSha` isn't null and differs from `CommitSha` (ordinal), set `streak` to 0. Then set `lastSha` to `CommitSha`;
+   - a tool call with `IsFailure`: increment `streak`; when `streak == failures`, return `new ChurnTrip(call.StartTime, failures)`;
+   - a tool call with `IsSuccessfulCommand`: set `streak` to 0;
+   - any other tool call: no change.
+3. Return null.
 
-    // Throws ArgumentException when copilotHome is null or blank.
-    public CopilotSessionWorkspaceLocator(string copilotHome, TimeProvider? timeProvider = null, TimeSpan? timeToLive = null);
+### Messages
 
-    public string CopilotHome { get; }
-
-    // The session's working directory from <CopilotHome>/session-state/<conversationId>/workspace.yaml, or null.
-    public string? GetWorkingDirectory(string? conversationId);
-}
-```
-
-`DefaultCopilotHome` reads the environment each time it's accessed. `GetWorkingDirectory` never throws:
-
-1. Return null when `conversationId` is null or doesn't match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`. That blocks path traversal from telemetry.
-2. Return a cached result, including null, if one hasn't expired. Use an ordinal key and the same time-to-live logic as `CachingGitContextResolver`.
-3. Read `Path.Combine(CopilotHome, "session-state", conversationId, "workspace.yaml")` with `File.ReadLines`. If the file is missing, or reading it throws `IOException` or `UnauthorizedAccessException`, the result is null.
-4. Find the first line that starts with `cwd:` at column 0 (ordinal). If there isn't one, the result is null. Otherwise `raw = line[4..].Trim()`.
-5. Unquote `raw`:
-   - **Double-quoted** (starts and ends with `"`, length ≥ 2): take the inside and scan it left to right. `\\` becomes `\`, `\"` becomes `"`, and every other character, including any other backslash, is kept as is.
-   - **Single-quoted** (starts and ends with `'`, length ≥ 2): take the inside and replace `''` with `'`.
-   - **Plain:** cut at the first ` #` (space and hash), if any, then `TrimEnd()`.
-6. The result is the unquoted value if it isn't empty and `Path.IsPathFullyQualified` accepts it; otherwise null. Cache it and return it.
-
-### Ingestion contracts
-
-```csharp
-// ---- src/CopilotLedger.Otlp/Ingestion/ILedgerIngestor.cs
-using CopilotLedger.Otlp.Decoding;
-
-namespace CopilotLedger.Otlp.Ingestion;
-
-public interface ILedgerIngestor
-{
-    Task<IngestResult> IngestAsync(OtlpTraceRequest request, CancellationToken cancellationToken = default);
-}
-
-// ---- src/CopilotLedger.Otlp/Ingestion/IngestResult.cs
-namespace CopilotLedger.Otlp.Ingestion;
-
-public sealed record IngestResult
-{
-    public required int ReceivedSpans { get; init; }
-    public required int RejectedSpans { get; init; }     // normalizer rejections plus cost rejections
-    public string? FirstRejectionReason { get; init; }   // null when RejectedSpans is 0
-    public required int InferenceSpans { get; init; }   // entries passed to RecordAsync
-    public required int RecordedSpans { get; init; }    // new ledger rows; duplicates excluded
-}
-
-// ---- src/CopilotLedger.Otlp/Ingestion/LedgerIngestor.cs
-namespace CopilotLedger.Otlp.Ingestion;
-
-public sealed class LedgerIngestor : ILedgerIngestor
-{
-    // The caller initializes the store. Throws ArgumentNullException for null arguments.
-    public LedgerIngestor(SqliteLedgerStore store, ICreditCalculator calculator, IGitContextResolver gitResolver, CopilotSessionWorkspaceLocator sessionLocator);
-
-    public Task<IngestResult> IngestAsync(OtlpTraceRequest request, CancellationToken cancellationToken = default);
-}
-```
-
-`IngestAsync`:
-
-1. Throw `ArgumentNullException` for a null request. Then `batch = GenAiSpanNormalizer.Normalize(request)`.
-2. Serialize steps 3–6 with a `SemaphoreSlim(1, 1)` owned by the ingestor.
-3. For each span in `batch.InferenceSpans`, in order:
-   - `cwd = span.WorkingDirectory ?? sessionLocator.GetWorkingDirectory(span.ConversationId)`;
-   - `attributed = span with { WorkingDirectory = cwd }`;
-   - price it, and check that both stored amounts fit in pico-USD:
-
-     ```csharp
-     CreditCalculationResult calculation;
-     try
-     {
-         calculation = calculator.Calculate(attributed);
-         _ = PicoUsd.FromUsd(calculation.UsdCost);
-         _ = PicoUsd.FromUsd(calculation.EstimatedCloudSavedUsd);
-     }
-     catch (Exception ex) when (ex is OverflowException or ArgumentOutOfRangeException)
-     {
-         costRejected++;   // "cost out of range": this span gets no ledger entry
-         continue;
-     }
-     ```
-
-   - `git = cwd is null ? null : gitResolver.Resolve(cwd)`. Git context is best effort: if `Resolve` throws `IOException`, `UnauthorizedAccessException`, or `ArgumentException` (for example, `Path.GetFullPath` on a corrupt `gitdir:` line), use null and record the span without Git context;
-   - add `new LedgerEntry(attributed, calculation, git)`.
-4. `recorded = entries.Count == 0 ? 0 : await store.RecordAsync(entries, ct)`.
-5. If `batch.Links` isn't empty, `await store.RecordSpanLinksAsync(batch.Links, ct)`. The links of cost-rejected spans are included.
-6. Collect the distinct trace IDs of `batch.Links` and `batch.InferenceSpans`. If there are any, `await store.BackfillFromAgentSpansAsync(traceIds, ct)`.
-7. Return the result:
-   - `ReceivedSpans = batch.ReceivedSpanCount` and `RejectedSpans = batch.RejectedSpanCount + costRejected`;
-   - `FirstRejectionReason = batch.FirstRejectionReason ?? (costRejected > 0 ? "cost out of range" : null)`. Normalization runs before pricing, so a normalizer reason wins even if its span comes later in the request;
-   - `InferenceSpans = entries.Count` and `RecordedSpans = recorded`.
-
-   Store exceptions propagate to the caller, which the receiver maps to 503.
-
-### Filtering and per-span errors
-
-Sprint 1's `RecordAsync` fails the whole batch for one bad entry (see "Starting point"). So it only ever receives entries for billable inference spans, and every entry has:
-
-- an inference operation (`chat`, `text_completion`, or `generate_content`), so its status is never `NotBillableOperation`;
-- token counts from 0 to `MaxTokenCount`, with cache read plus cache write no greater than input, so its status is never `InvalidUsage`;
-- a `UsdCost` and `EstimatedCloudSavedUsd` that `PicoUsd.FromUsd` accepts.
-
-Its batch checks therefore never throw for ingested data. If `RecordAsync` throws `ArgumentException` anyway, that's a bug, and it propagates like any other store exception.
-
-| What's wrong | Found by | What happens | Receiver response |
-|---|---|---|---|
-| Not an inference span, such as `invoke_agent`, `execute_tool`, a Copilot span with no operation, or another application's HTTP span | Normalizer | Never priced and never a ledger row. Spans with an operation, and every span from a Copilot resource, become links. | Counted as received, not rejected |
-| Invalid trace or span ID, or a zero start time | Normalizer | Rejected: no entry and no link | 200 partial success |
-| A token count that isn't a non-negative integer, overflows, or exceeds `MaxTokenCount` | Normalizer | Rejected: no entry and no link | 200 partial success |
-| `PicoUsd.FromUsd` throws `ArgumentOutOfRangeException` for a cost or savings amount above about $9.22 million; or `Calculate` throws `OverflowException`, which only an extreme overlay rate can cause, and only before Task 3 | Ingestor | Rejected as `cost out of range`: no entry, but its link is kept | 200 partial success |
-| A pricing status that bills nothing, such as `unknown_model` or `byok_unpriced` | Calculator | Recorded with that status, its tokens, and $0.00 | 200 success |
-| Git context can't be read: the resolver throws `IOException`, `UnauthorizedAccessException`, or `ArgumentException` | Ingestor | Recorded without Git context, under `(none)` | 200 success |
-| The same span again | Store | Skipped by `ON CONFLICT DO NOTHING`, and not counted in `RecordedSpans` | 200 success |
-| Any exception from `RecordAsync`, `RecordSpanLinksAsync`, or `BackfillFromAgentSpansAsync`, such as a `SqliteException` for a busy, locked, or full database | Store | `IngestAsync` throws. Earlier steps that committed stay, and a retry is idempotent. | 503 with `Retry-After: 5` |
-
-- A cost-rejected span keeps its link because it's structurally valid. A descendant may need that link to reach its `invoke_agent` ancestor during back-fill.
-- Around pricing, only `OverflowException` and `ArgumentOutOfRangeException` are caught, and around Git resolution only the three types above. Any other exception is a bug, and it fails the request with 503.
-- Once Task 3 bounds rates, `JsonRateCardCalculator.Calculate` can't throw `OverflowException`. Keep the catch anyway, as defense in depth for any `ICreditCalculator` (decision 18). IG8 tests it with a fake calculator, and IG6 tests the pico-USD limit with an in-bound rate.
-- The receiver reports `RejectedSpans` as an OTLP partial success (Task 4, receiver step 9). Clients must not retry a partial success, which is right here: the same spans would be rejected again.
-
-### Acceptance criteria
-
-- `rates.json` differs from Sprint 1 only by the 29 appended models, the three inserted notes, and the four `localOffload.providerNames`, exactly as "rates.json changes" lists them. `LoadEmbedded().RatesVersion` is still `2026-11-20`.
-- Migration 2 matches this plan exactly. A Sprint 1 database (`user_version` 1) migrates to 2 and keeps its rows.
-- The new public surfaces match this section exactly. `docs/configuration.md` has the two changes above.
-- `LedgerIngestor` follows "Filtering and per-span errors": it catches only `OverflowException` and `ArgumentOutOfRangeException` around pricing, and only `IOException`, `UnauthorizedAccessException`, and `ArgumentException` around Git resolution. One bad span never fails the other spans in its request.
-- Tests never read or write the real `~/.copilot` or `~/.copilot-ledger`; they pass temp paths. `src/` contains no `double`, `float`, or `System.Diagnostics.Process`.
-- `dotnet build CopilotLedger.slnx` succeeds with 0 warnings, and `dotnet test CopilotLedger.slnx` passes all Sprint 1 cases (S1 now expects 2), all Task 1 cases, and RR1–RR4 (RR1 has 48 cases), CG1–CG3, WL1–WL4, SL1–SL7, and IG1–IG9, with 0 failed and 0 skipped.
-
-### Verify
-
-```shell
-dotnet build CopilotLedger.slnx
-dotnet test CopilotLedger.slnx
-```
-
-Report the passed, failed, and skipped counts.
-
-## Task 3 specification: Rates Overlay Error Reporting
-
-### Files
-
-Create:
-
-```text
-src/CopilotLedger.Core/Pricing/RateCardReader.cs               (internal)
-```
-
-Modify:
-
-```text
-src/CopilotLedger.Core/Pricing/JsonRateCardCalculator.cs
-src/CopilotLedger.Core/Pricing/RateCardDocument.cs
-tests/CopilotLedger.Tests/CopilotLedger.Tests.csproj
-tests/CopilotLedger.Tests/Pricing/RateOverlayTests.cs
-tests/CopilotLedger.Tests/Pricing/RateCardLoadingTests.cs
-docs/configuration.md
-```
-
-No package is added. The public API of `JsonRateCardCalculator` doesn't change: `EmbeddedResourceName`, `RatesVersion`, `LoadEmbedded()`, `LoadEmbeddedWithOverlay(string)`, `LoadDefault()`, `Parse(string, string?)`, and `Calculate`. Its exceptions don't change either:
-
-- `FileNotFoundException` for a missing overlay file;
-- `InvalidDataException("<file>: could not read rates overlay.")` when reading the file throws `IOException` or `UnauthorizedAccessException`;
-- `InvalidDataException` for every invalid document, with the messages below.
-
-Valid documents load exactly as before, with the same values. The one exception is a rate above 1,000,000 USD per 1M tokens, which is now rejected (decision 18).
-
-Implement `RateCardReader` and the validation changes below, update `docs/configuration.md` and the test project file, and then change the tests as "Task 3 tests" under "Test specifications" describes.
-
-### Message format
-
-| Form | Used for |
+| Text | Value |
 |---|---|
-| `<source>: <location>: <problem>` | An overlay |
-| `<source>: <problem>` | An overlay whose root isn't an object, or has an unreadable property name |
-| `<location>: <problem>` | The built-in rates: the embedded file, or the `json` argument of `Parse` |
-| `<problem>` | The built-in rates, in the same two cases |
+| Trip alert title | `CopilotLedger circuit breaker tripped` |
+| Trip alert body | `<Repository> @ <Branch>: <Detail> on one prompt. Run: gh-ledger breaker status` |
+| Budget alert title | `CopilotLedger branch budget reached` |
+| Budget alert body | `<Repository> @ <Branch>: <Credits(SpentAiCredits)> of <Credits(BudgetAiCredits)> AI credits spent. Run: gh-ledger budget list` |
 
-- `<source>` is the path passed to `LoadEmbeddedWithOverlay`, exactly as given, or `overlay` for `Parse(json, overlayJson)`.
-- `<location>` is a path into the document that contains the problem. Property names are joined with `.`, and array indexes are in brackets, counting from 0, as in `foundryByok.models[0].windows[0].tiers[0].outputPer1M`. There's no `$` and no quoting; names appear exactly as they are in the file. For invalid JSON, `<location>` is `line L, column C`.
-- `<problem>` is exactly one of the texts in "Message catalog".
+`ForTrip` sets `Kind = Trip`, `TripId = trip.Id`, and the trip's repository and branch. `ForBudget` sets `Kind = Budget` and `TripId = null`.
 
-### RateCardReader
+### Monitor algorithm (`EvaluateAsync`)
 
-```csharp
-// ---- src/CopilotLedger.Core/Pricing/RateCardReader.cs
-namespace CopilotLedger.Core.Pricing;
+1. Take the distinct trace IDs in ordinal order. If there are none, return.
+2. `settings = await store.GetBreakerSettingsAsync()`. Keep an ordinal-sorted set of budget keys (repository, then branch).
+3. For each trace:
+   1. `activity = await store.GetTraceActivityAsync(trace)`. If `activity.SpanCount > 0`, add `(activity.Repository, activity.Branch)` to the budget keys.
+   2. If `FindVelocityTrip(activity.Costs, settings.VelocityThresholdUsd, settings.VelocityWindow)` returns a trip, record a `NewBreakerTrip` with `Rule = CreditVelocity`, the activity's trace ID, conversation, repository, branch, and root, `TrippedAt`, `Detail = VelocityDetail(trip.WindowCostUsd, settings.VelocityWindowMinutes)`, `WindowCostUsd = trip.WindowCostUsd`, and `WindowMinutes = settings.VelocityWindowMinutes`.
+   3. If `FindChurnTrip(activity.ToolCalls, activity.Commits, settings.ChurnFailures)` returns a trip, record a `NewBreakerTrip` with `Rule = RetryChurn`, the same keys, `TrippedAt`, `Detail = ChurnDetail(trip.FailureCount)`, and `FailureCount = trip.FailureCount`.
+   4. To record a trip: `id = await store.RecordBreakerTripAsync(newTrip)`. If `id` is null, stop. Otherwise read it back with `GetOpenBreakerTripsAsync(new BreakerTripFilter { Id = id })`; if that's empty (reset in between), stop. Call `sink.Publish(BreakerMessages.ForTrip(trip, settings.Notifications))`. Then, if `settings.FlagFile` and `trip.RepositoryRoot` isn't null, call `CircuitFlagFile.SyncAsync(store, trip.RepositoryRoot)`, catching only `IOException` and `UnauthorizedAccessException` and calling `sink.Warn($"Could not update {CircuitFlagFile.GetPath(root)}: {ex.Message}")`.
+4. For each budget key, in order: read `GetBranchBudgetsAsync(repository, branch)`. If it has one row, that row is `Exceeded`, and its `AlertedAt` is null, call `MarkBranchBudgetAlertedAsync`. If that returns true, read the row again and `sink.Publish(BreakerMessages.ForBudget(row, settings.Notifications))`.
 
-internal static class RateCardReader
+The monitor catches nothing else.
+
+### Flag file
+
+`Render(root, trips)` writes this JSON with `Utf8JsonWriter` and `new JsonWriterOptions { Indented = true, NewLine = "\n", Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }`, then appends `"\n"`. Trips keep the order given (the store's newest-first order). `trippedAt` is `TrippedAt.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)`, `rule` is `BreakerRuleNames.ToName(rule)`, and a null `conversationId` is written as `null`.
+
+```json
 {
-    // Reads a rates document into the RateCardDocument classes. isBase selects which properties are required.
-    // Throws InvalidDataException with a "<location>: <problem>" or "<problem>" message; the caller adds "<source>: ".
-    public static RateCardDocument Read(string json, bool isBase);
-}
-```
-
-`Read`:
-
-1. Parse with `JsonDocument.Parse(json, new JsonDocumentOptions { AllowTrailingCommas = false, CommentHandling = JsonCommentHandling.Disallow, MaxDepth = 64 })`. On `JsonException`, throw `line {LineNumber + 1}, column {BytePositionInLine + 1}: invalid JSON`, with `CultureInfo.InvariantCulture` and 0 for a null value. Dispose the document when reading ends.
-2. If the root isn't an object, throw `must contain a JSON object`.
-3. Check `schemaVersion` before anything else, with `root.TryGetProperty("schemaVersion", out value)`, which returns the last one if the name repeats:
-   - missing or `null`: `schemaVersion: is required`;
-   - not a number that `TryGetInt32` accepts: `schemaVersion: must be an integer`;
-   - not 1: `schemaVersion: must be 1`.
-4. Read the root object as "Reading an object" describes, and return the classes from `RateCardDocument.cs`. An absent optional property stays null, except `aliases`, which defaults to `[]` as in Sprint 1.
-
-### Schema
-
-The **Null** column says what JSON `null` means for that property. **Absent** means it's treated as if the property weren't there. **Error** means it's a value of the wrong kind. This matches Sprint 1: null is absent exactly where the C# property type in `RateCardDocument.cs` is nullable.
-
-| Object | Property | Kind | Null | Required in the built-in rates | Required in an overlay |
-|---|---|---|---|---|---|
-| root | `schemaVersion` | integer (`int`) | absent | yes | yes |
-| root | `ratesVersion` | string | absent | yes | no |
-| root | `source` | source object | absent | yes | no |
-| root | `notes` | array of strings | absent | no | no |
-| root | `githubAiCredits` | GitHub section | absent | yes | no |
-| root | `foundryByok` | Foundry section | absent | yes | no |
-| root | `localOffload` | local section | absent | yes | no |
-| source object | `url` | string | absent | yes | no |
-| source object | `retrievedOn` | string | absent | yes | no |
-| GitHub section | `hostSuffixes` | array of strings | absent | yes | no |
-| GitHub section | `models` | array of priced models | absent | yes | no |
-| Foundry section | `hostSuffixes` | array of strings | absent | yes | no |
-| Foundry section | `providerNames` | array of strings | absent | yes | no |
-| Foundry section | `models` | array of priced models | absent | yes | no |
-| local section | `baselineModel` | string | absent | yes | no |
-| local section | `models` | array of local models | absent | yes | no |
-| local section | `additionalHosts` | array of strings | absent | yes | no |
-| local section | `providerNames` | array of strings | absent | yes | no |
-| priced model | `id` | string | error | yes | yes |
-| priced model | `aliases` | array of strings | error | no | no |
-| priced model | `windows` | array of windows | error | yes | yes |
-| window | `effectiveFrom` | date and time | absent | no | no |
-| window | `effectiveUntil` | date and time | absent | no | no |
-| window | `tiers` | array of tiers | error | yes | yes |
-| tier | `name` | string | error | yes | yes |
-| tier | `maxInputTokens` | integer (`long`) | absent | no | no |
-| tier | `inputPer1M` | number | error | yes | yes |
-| tier | `cachedInputPer1M` | number | absent | no | no |
-| tier | `cacheWritePer1M` | number | absent | no | no |
-| tier | `outputPer1M` | number | error | yes | yes |
-| local model | `id` | string | error | yes | yes |
-| local model | `aliases` | array of strings | error | no | no |
-
-Every element of an array of strings must be a string, and every element of an array of objects must be an object. A `null` element is a value of the wrong kind.
-
-### Reading values
-
-| Kind | Accepted | Otherwise |
-|---|---|---|
-| object | `JsonValueKind.Object` | `must be an object` |
-| array | `JsonValueKind.Array` | `must be an array` |
-| string | `JsonValueKind.String`, read with `GetString()` | `must be a string`. If `GetString()` throws `InvalidOperationException`: `is not valid text`. |
-| integer | `JsonValueKind.Number` that `TryGetInt32` (for `schemaVersion`) or `TryGetInt64` (for `maxInputTokens`) accepts | `must be an integer` |
-| number | `JsonValueKind.Number` that `TryGetDecimal` accepts | `is too large` for a number that `TryGetDecimal` rejects; `must be a number` for any other kind |
-| date and time | `JsonValueKind.String` that `TryGetDateTimeOffset` accepts | `must be a date and time, such as 2027-05-17T00:00:00Z` |
-
-These are the conversions Sprint 1's serializer made with `JsonNumberHandling.Strict` (see "Verified facts").
-
-### Reading an object
-
-An object at path `P` (empty for the root) is read in one pass:
-
-1. Go through its properties in document order with `EnumerateObject()`. For each property:
-   1. Read its name. If `JsonProperty.Name` throws `InvalidOperationException`, throw `P: contains a property name that is not valid text`, or just `contains a property name that is not valid text` at the root.
-   2. The property's path is `P.name`, or `name` at the root.
-   3. If the object has no property with exactly that name (ordinal), throw `<path>: is not a known property`. If one of its properties matches ignoring case (`StringComparison.OrdinalIgnoreCase`), append `; did you mean <property>?` with the first such property in schema order.
-   4. If the name appeared earlier in this object, throw `<path>: is defined more than once`.
-   5. Read the value by the property's kind and Null rule. Read objects and arrays recursively; array elements have the path `<path>[i]`.
-2. Then go through the object's required properties in schema order. For the first one that's absent, throw `P.name: is required` (`name: is required` at the root). A property whose Null rule is absent and whose value is `null` counts as absent.
-
-So the reported problem is the first one found in document order, except that `schemaVersion` is checked first, and a missing property is found when its object ends.
-
-### Validation order
-
-`JsonRateCardCalculator.Create(baseJson, overlayJson, overlayName)` becomes:
-
-```text
-1. baseDocument = RateCardReader.Read(baseJson, isBase: true)
-2. builtIn = Validate(baseDocument)                     // Sprint 1's checks, unchanged
-3. if overlayJson is null, return builtIn
-4. try
-     a. overlay = RateCardReader.Read(overlayJson, isBase: false)
-     b. ValidateOverlay(overlay)
-     c. merged = Merge(baseDocument, overlay)
-     d. ValidateMergedRates(baseDocument, overlay, merged)
-   catch (InvalidDataException ex)
-     throw new InvalidDataException($"{overlayName}: {ex.Message}", ex)
-5. return Validate(merged)                              // can't fail after steps 2 and 4
-```
-
-`ValidateOverlay` runs Sprint 1's existing validators on the overlay's own lists, with paths into the overlay. It goes in this order, skipping any property the overlay doesn't have:
-
-1. `githubAiCredits.models`: `ValidateModels(models, BillingChannel.GitHubAiCredits, "githubAiCredits.models")`. That covers every per-model rule, and duplicate identities within the list.
-2. `foundryByok.models`: `ValidateModels(models, BillingChannel.FoundryByok, "foundryByok.models")`.
-3. `localOffload.models`: `ValidateLocalModels(models, "localOffload.models")`.
-4. `localOffload.baselineModel`: `localOffload.baselineModel: must not be blank` when `NormalizeModel` returns null.
-5. `githubAiCredits.hostSuffixes`, then `foundryByok.hostSuffixes`: `ValidateHosts`.
-6. `foundryByok.providerNames`, then `localOffload.additionalHosts`, then `localOffload.providerNames`: `ValidateNames`.
-
-`ValidateMergedRates` runs the only two checks that need the built-in rates:
-
-1. **Identity collisions,** for `githubAiCredits.models`, `foundryByok.models`, and then `localOffload.models`, when the overlay has that list:
-   1. The built-in models that *remain* are those whose `NormalizeModel(id)` isn't the normalized id of any overlay model in the list. This is Sprint 1's replace rule, so a replaced built-in model frees its aliases.
-   2. Map the normalized id and each normalized alias of every remaining built-in model to that model's normalized id.
-   3. Go through the overlay's models in order. For each, check its normalized id, then its normalized aliases in order. At the first one in the map, throw `<list>[i].id` or `<list>[i].aliases[j]`, followed by `: duplicate model identity in the merged rates: <identity> (built-in model <owner>)`.
-2. **Baseline.** Let `b = NormalizeModel(merged.LocalOffload.BaselineModel)`. If no model in the merged `githubAiCredits.models` has a normalized id or normalized alias equal to `b`, throw `localOffload.baselineModel: does not resolve to a githubAiCredits model in the merged rates: <b>`. An overlay can't remove a built-in model, so this check fails only when the overlay sets `baselineModel`.
-
-Delete `SerializerOptions`, `Deserialize`, `ValidateOverlayShape` (and its call in `Merge`), both `ValidateOverlayModels` overloads, and `ValidateOptionalStringElements`. The reader now guarantees what they checked. In `RateCardDocument.cs`, remove every `[JsonPropertyName]` attribute and the `using System.Text.Json.Serialization;` line. The classes and their members stay as they are. `Validate`, `Merge`, `ValidateModels`, `ValidateLocalModels`, `ValidateHosts`, and `ValidateNames` keep their logic and messages. `ValidateRate` changes only as "Rate bound" says.
-
-### Rate bound
-
-Add a constant to `JsonRateCardCalculator`, and replace `ValidateRate` with this method:
-
-```csharp
-private const decimal MaxRatePer1M = 1_000_000m;
-
-private static void ValidateRate(decimal rate, string path)
-{
-    if (rate < 0)
+  "schemaVersion": 1,
+  "repositoryRoot": "/home/dev/repo",
+  "openTrips": [
     {
-        throw Invalid(null, path, "must be greater than or equal to 0");
-    }
-
-    // The bound keeps tokens * rate inside decimal for any long token count, so Calculate never throws.
-    if (rate > MaxRatePer1M)
-    {
-        throw Invalid(null, path, "must be less than or equal to 1000000");
-    }
-
-    if (rate * 1_000_000m % 1m != 0m)
-    {
-        throw Invalid(null, path, "must have no more than 6 decimal places");
-    }
-}
-```
-
-The `try`/`catch (OverflowException)` around the decimal-places check goes away, because `rate * 1_000_000m` can't overflow once the rate is at most 1,000,000. Every rate in the built-in rates and in an overlay goes through `ValidateRate`, through `Validate` and `ValidateOverlay`, so each document reports the bound at a path into itself. `Calculate` doesn't change.
-
-### Message catalog
-
-Problems the reader reports:
-
-| Problem | Reported at |
-|---|---|
-| `invalid JSON` | `line L, column C`, counting from 1. Columns count UTF-8 bytes. |
-| `must contain a JSON object` | The document |
-| `contains a property name that is not valid text` | The object that contains the name |
-| `is not a known property` | An unknown property |
-| `is not a known property; did you mean <property>?` | An unknown property that matches a known one ignoring case |
-| `is defined more than once` | The second occurrence of a property |
-| `is required` | A missing required property |
-| `must be an object`, `must be an array`, `must be a string`, `must be an integer`, `must be a number` | A value of the wrong kind |
-| `must be a date and time, such as 2027-05-17T00:00:00Z` | `effectiveFrom` or `effectiveUntil` |
-| `is not valid text` | A string that can't be decoded |
-| `is too large` | A number outside `decimal`'s range |
-| `must be 1` | `schemaVersion` |
-
-Sprint 1's rule texts stay exactly as they are, now at paths into the file that contains the problem:
-
-- `must not be blank`;
-- `duplicate model identity: <identity>`, for a duplicate within one file;
-- `must contain at least one window` and `must contain at least one tier`;
-- `must be later than effectiveFrom` and `windows must be sorted and must not overlap`;
-- `must be unique within the window`;
-- `the last tier must be unbounded`, `must be greater than 0 for every tier except the last`, and `must be strictly ascending`;
-- `must be greater than or equal to 0` and `must have no more than 6 decimal places`;
-- `must be a host suffix without a leading '.', '/', or ':'`;
-- `ratesVersion: must not be blank` and `does not resolve to a githubAiCredits model: <model>`, which only the built-in rates can produce.
-
-Sprint 1's `is too large` for a rate whose `rate × 1,000,000` overflows can no longer happen, because of the new rule:
-
-| Problem | Reported at |
-|---|---|
-| `must be less than or equal to 1000000` | An `inputPer1M`, `cachedInputPer1M`, `cacheWritePer1M`, or `outputPer1M` above 1,000,000, in either document |
-
-The two merged-rates problems, which only an overlay can produce:
-
-| Problem | Reported at |
-|---|---|
-| `duplicate model identity in the merged rates: <identity> (built-in model <id>)` | The overlay model's `id` or alias |
-| `does not resolve to a githubAiCredits model in the merged rates: <model>` | `localOffload.baselineModel` |
-
-### Behavior changes
-
-- Every message is now one of the texts above, and every overlay path points into the overlay.
-- A property name that appears twice in one object is an error. Sprint 1 silently kept the last value.
-- Elements of `notes` must be strings. Sprint 1 accepted `null`.
-- A rate above 1,000,000 is rejected. Sprint 1 accepted any rate up to about 7.9 × 10^22.
-- `schemaVersion` is checked first, so a file with `"schemaVersion": 2` gets `schemaVersion: must be 1` even when it also has properties this version doesn't know.
-
-### docs/configuration.md changes
-
-Make two changes.
-
-1. In "Price your Foundry BYOK models", replace the sentence `Prices are USD per 1,000,000 tokens, with at most 6 decimal places.` with `Prices are USD per 1,000,000 tokens, from 0 to 1,000,000, with at most 6 decimal places.`
-2. Replace the paragraph that starts `If the file is invalid` with the text below, exactly. The `<!-- rates-error-example -->` comments don't render on GitHub; the docs test uses them to find the examples.
-
-````markdown
-If the file is invalid, CopilotLedger refuses to load it and reports the first problem it finds. It never silently ignores a broken file. Each error starts with the file's path, then says where the problem is and what's wrong:
-
-- Most errors give a path into your file, such as `foundryByok.models[0].windows[0].tiers[0].outputPer1M`. Indexes count from 0, and they count only the entries in your file.
-- If the file isn't valid JSON, the error gives the line and column where reading stopped, counting from 1.
-- Two checks compare your file with the built-in rates: a model `id` or alias that a built-in model already uses, and a `localOffload.baselineModel` that isn't a GitHub model. These errors say `in the merged rates`.
-- Property names are case-sensitive, and each property can appear only once in its object.
-
-For example, this file leaves out a tier's `outputPer1M`:
-
-<!-- rates-error-example -->
-```json
-{
-  "schemaVersion": 1,
-  "foundryByok": {
-    "models": [
-      { "id": "gpt-6.1-sol", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1.75 } ] } ] }
-    ]
-  }
-}
-```
-
-CopilotLedger reports:
-
-```text
-/home/me/.copilot-ledger/rates.json: foundryByok.models[0].windows[0].tiers[0].outputPer1M: is required
-```
-<!-- /rates-error-example -->
-
-This file names a baseline model that doesn't exist:
-
-<!-- rates-error-example -->
-```json
-{
-  "schemaVersion": 1,
-  "localOffload": { "baselineModel": "gpt-missing" }
-}
-```
-
-CopilotLedger reports:
-
-```text
-/home/me/.copilot-ledger/rates.json: localOffload.baselineModel: does not resolve to a githubAiCredits model in the merged rates: gpt-missing
-```
-<!-- /rates-error-example -->
-
-This file has a comma after its last property, which JSON doesn't allow:
-
-<!-- rates-error-example -->
-```json
-{
-  "schemaVersion": 1,
-  "ratesVersion": "contoso-2026-11",
-}
-```
-
-CopilotLedger reports:
-
-```text
-/home/me/.copilot-ledger/rates.json: line 4, column 1: invalid JSON
-```
-<!-- /rates-error-example -->
-````
-
-In `tests/CopilotLedger.Tests/CopilotLedger.Tests.csproj`, add this item group so the docs test can read the file from its output directory:
-
-```xml
-<ItemGroup>
-  <None Include="..\..\docs\configuration.md" Link="docs\configuration.md" CopyToOutputDirectory="PreserveNewest" />
-</ItemGroup>
-```
-
-### Acceptance criteria
-
-- The public members of `JsonRateCardCalculator` and their exceptions are unchanged, and no package was added. `src/CopilotLedger.Core` doesn't call `JsonSerializer`.
-- The reader, the validation order, the rate bound, and every message match this section. Every overlay path points into the overlay. `ValidateRate` has no `try`/`catch`.
-- `docs/configuration.md` has both changes, and `DocsExamples_MatchRealMessages` passes.
-- The Sprint 1 rates tests changed only as "Task 3 tests" says.
-- `dotnet build CopilotLedger.slnx` succeeds with 0 warnings, and `dotnet test CopilotLedger.slnx` passes everything from earlier tasks plus the 55 cases that "Task 3 tests" adds, with 0 failed and 0 skipped.
-
-### Verify
-
-```shell
-dotnet build CopilotLedger.slnx
-dotnet test CopilotLedger.slnx
-```
-
-Report the passed, failed, and skipped counts.
-
-## Task 4 specification: Kestrel OTLP Receiver & gh-ledger Daemon
-
-### Files
-
-Create:
-
-```text
-src/CopilotLedger.Otlp/Receiver/OtlpReceiverOptions.cs
-src/CopilotLedger.Otlp/Receiver/OtlpReceiverApp.cs
-src/CopilotLedger.Otlp/Receiver/OtlpHttp.cs                    (internal)
-src/CopilotLedger.Cli/CopilotLedger.Cli.csproj
-src/CopilotLedger.Cli/Program.cs
-src/CopilotLedger.Cli/GhLedgerCli.cs
-src/CopilotLedger.Cli/CliContext.cs
-src/CopilotLedger.Cli/ICliPlatform.cs
-src/CopilotLedger.Cli/SystemCliPlatform.cs
-src/CopilotLedger.Cli/Daemon/DaemonFiles.cs                    (internal)
-src/CopilotLedger.Cli/Daemon/DaemonHost.cs                     (internal)
-src/CopilotLedger.Cli/Daemon/DaemonCommands.cs                 (internal)
-src/CopilotLedger.Cli/Rates/RatesCommands.cs                   (internal)
-tests/CopilotLedger.Tests/TestSupport/FakeCliPlatform.cs
-tests/CopilotLedger.Tests/TestSupport/CliHarness.cs
-tests/CopilotLedger.Tests/Otlp/OtlpReceiverTests.cs
-tests/CopilotLedger.Tests/Cli/DaemonCommandTests.cs
-tests/CopilotLedger.Tests/Cli/RatesCommandTests.cs
-```
-
-Also modify `src/CopilotLedger.Otlp/CopilotLedger.Otlp.csproj`, `CopilotLedger.slnx`, `tests/CopilotLedger.Tests/CopilotLedger.Tests.csproj`, and `docs/configuration.md`.
-
-### Steps
-
-**Step 1.** Add `<FrameworkReference Include="Microsoft.AspNetCore.App" />` in its own `ItemGroup` to `src/CopilotLedger.Otlp/CopilotLedger.Otlp.csproj`.
-
-**Step 2.** From the repository root, run:
-
-```shell
-dotnet new console -n CopilotLedger.Cli -o src/CopilotLedger.Cli
-dotnet add src/CopilotLedger.Cli/CopilotLedger.Cli.csproj package System.CommandLine --version 2.0.15
-dotnet add src/CopilotLedger.Cli/CopilotLedger.Cli.csproj reference src/CopilotLedger.Otlp/CopilotLedger.Otlp.csproj
-dotnet sln CopilotLedger.slnx add src/CopilotLedger.Cli/CopilotLedger.Cli.csproj
-dotnet add tests/CopilotLedger.Tests/CopilotLedger.Tests.csproj reference src/CopilotLedger.Cli/CopilotLedger.Cli.csproj
-dotnet add tests/CopilotLedger.Tests/CopilotLedger.Tests.csproj package Microsoft.AspNetCore.TestHost --version 10.0.15
-```
-
-**Step 3.** Replace `src/CopilotLedger.Cli/CopilotLedger.Cli.csproj` with:
-
-```xml
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <AssemblyName>gh-ledger</AssemblyName>
-    <RootNamespace>CopilotLedger.Cli</RootNamespace>
-    <Version>0.2.0</Version>
-    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
-    <InvariantGlobalization>true</InvariantGlobalization>
-    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
-  </PropertyGroup>
-  <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
-  </ItemGroup>
-  <ItemGroup>
-    <PackageReference Include="System.CommandLine" Version="2.0.15" />
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\CopilotLedger.Otlp\CopilotLedger.Otlp.csproj" />
-  </ItemGroup>
-</Project>
-```
-
-Replace `Program.cs` with:
-
-```csharp
-using CopilotLedger.Cli;
-
-return await GhLedgerCli.InvokeAsync(args, CliContext.CreateDefault(Console.Out, Console.Error));
-```
-
-**Step 4.** Implement the contracts and rules below, update `docs/configuration.md`, and write the "Task 4 tests". These packages are pinned: `System.CommandLine` 2.0.15 and `Microsoft.AspNetCore.TestHost` 10.0.15. Don't take a 3.x or 11.x version.
-
-ASP.NET Core implicit usings aren't available in these projects, so add `using Microsoft.AspNetCore.Builder;`, `Microsoft.AspNetCore.Hosting`, `Microsoft.AspNetCore.Http`, and `Microsoft.Extensions.DependencyInjection` where needed.
-
-### Receiver contracts
-
-```csharp
-// ---- src/CopilotLedger.Otlp/Receiver/OtlpReceiverOptions.cs
-namespace CopilotLedger.Otlp.Receiver;
-
-public sealed record OtlpReceiverOptions
-{
-    public const int DefaultPort = 4318;
-    public const long DefaultMaxRequestBodyBytes = 64L * 1024 * 1024;
-    public int Port { get; init; } = DefaultPort;
-    public long MaxRequestBodyBytes { get; init; } = DefaultMaxRequestBodyBytes;   // applies to raw and decompressed bodies
-}
-
-// ---- src/CopilotLedger.Otlp/Receiver/OtlpReceiverApp.cs
-using CopilotLedger.Otlp.Ingestion;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-
-namespace CopilotLedger.Otlp.Receiver;
-
-public static class OtlpReceiverApp
-{
-    // Serves the OTLP endpoints on localhost (127.0.0.1 and ::1) at options.Port.
-    // configureWebHost runs after the defaults; tests pass builder => builder.UseTestServer().
-    public static WebApplication Build(OtlpReceiverOptions options, ILedgerIngestor ingestor, Action<IWebHostBuilder>? configureWebHost = null);
-}
-```
-
-`Build`:
-
-1. Throw `ArgumentNullException` for null arguments, and `ArgumentOutOfRangeException` unless `1 <= Port <= 65535` and `MaxRequestBodyBytes >= 1`.
-2. `var builder = WebApplication.CreateEmptyBuilder(new WebApplicationOptions());`
-3. `builder.WebHost.UseKestrelCore();`
-4. `builder.WebHost.ConfigureKestrel(k => { k.ListenLocalhost(options.Port); k.Limits.MaxRequestBodySize = options.MaxRequestBodyBytes; k.AddServerHeader = false; });`
-5. `builder.Services.AddRoutingCore();`
-6. `configureWebHost?.Invoke(builder.WebHost);`
-7. `var app = builder.Build();` then map three endpoints with `app.MapPost`: `/v1/traces`, `/v1/metrics`, and `/v1/logs`. Return `app`.
-
-Every endpoint handles a request in this order:
-
-1. **Media type** is the `Content-Type` value before any `;`, trimmed. `application/x-protobuf` selects protobuf, and `application/json` selects JSON (ordinal, case-insensitive). Responses use the selected encoding, or JSON when the type is unsupported.
-2. **Host.** If `context.Request.Host.Host` isn't `localhost`, `127.0.0.1`, `[::1]`, or `::1` (case-insensitive), return 400 `Host <host> is not a loopback name.`. Write `(none)` when the host is empty.
-3. **Unsupported media type** returns 415 `Unsupported Content-Type <type>. Use application/x-protobuf or application/json.` Write `(none)` when the header is missing.
-4. **Content-Encoding** (trimmed, case-insensitive): empty or `identity` means none, and `gzip` means gzip. Anything else returns 415 `Unsupported Content-Encoding <value>. Use gzip or no encoding.`
-5. **Body**, with limit `max = options.MaxRequestBodyBytes`. Each of these returns 413 `Request body exceeds <max> bytes.`:
-   - `Request.ContentLength > max`, checked before reading;
-   - more than `max` bytes read, decompressed if gzip (wrap the body in `new GZipStream(body, CompressionMode.Decompress, leaveOpen: true)`, and copy in 81,920-byte chunks into a `MemoryStream`);
-   - a `BadHttpRequestException` with `StatusCode == 413` from Kestrel.
-
-   An `InvalidDataException` from gzip returns 400 `Invalid gzip body.`
-6. **`/v1/metrics` and `/v1/logs`** return a 200 empty success and discard the body.
-7. **Decode** with `OtlpTraceDecoder`. An `OtlpDecodeException` returns 400 `Invalid OTLP protobuf payload: <message>` or `Invalid OTLP JSON payload: <message>`.
-8. **Ingest** with `await ingestor.IngestAsync(request, context.RequestAborted)`, even for 0 spans.
-   - An `OperationCanceledException` while `RequestAborted` is canceled ends the request without writing a response.
-   - Any other exception returns 503 `The ledger is unavailable; retry later.` with the header `Retry-After: 5`.
-9. **Success.** When `RejectedSpans` is 0, return 200 with an empty success. Otherwise return 200 with a partial success: `rejected_spans = RejectedSpans`, and `error_message = $"{RejectedSpans} span(s) rejected: {FirstRejectionReason}"`. Task 2's "Filtering and per-span errors" lists what is rejected and why.
-
-Response bodies. `Content-Type` is exactly `application/x-protobuf` or `application/json`.
-
-| Response | Protobuf | JSON (written with `Utf8JsonWriter`) |
-|---|---|---|
-| Empty success | 0 bytes | `{}` |
-| Partial success | `0x0A`, varint length, then the inner message: `0x08`, varint rejected count, `0x12`, varint byte length, UTF-8 message | `{"partialSuccess":{"rejectedSpans":"<n>","errorMessage":"<message>"}}`, with `rejectedSpans` as a string because it's an int64 |
-| Error (`google.rpc.Status`, `code` omitted) | `0x12`, varint byte length, UTF-8 message | `{"message":"<message>"}` |
-
-### CLI contracts
-
-```csharp
-// ---- src/CopilotLedger.Cli/ICliPlatform.cs
-namespace CopilotLedger.Cli;
-
-public sealed record ProcessRunResult(int ExitCode, string StandardOutput, string StandardError);
-
-// What gh-ledger needs from the operating system beyond files in its data directory. Tests use a fake.
-public interface ICliPlatform
-{
-    bool IsWindows { get; }
-    bool IsMacOS { get; }
-    string HomeDirectory { get; }
-    string? ProcessPath { get; }                                           // Environment.ProcessPath
-    string? ShellPath { get; }                                             // the SHELL environment variable
-    string? GetEnvironmentVariable(string name);                           // current process
-    string? GetUserEnvironmentVariable(string name);                       // Windows user scope; null on other platforms
-    void SetUserEnvironmentVariable(string name, string? value);           // Windows user scope; null deletes; other platforms throw PlatformNotSupportedException
-    bool FileExists(string path);
-    string? FindOnPath(string fileName);                                   // full path of an executable on PATH, or null
-    Task<ProcessRunResult> RunAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken);
-    int StartDetached(string fileName, IReadOnlyList<string> arguments, string workingDirectory);   // returns the new process id
-    bool IsProcessRunning(int processId);
-    void KillProcess(int processId);
-}
-
-// ---- src/CopilotLedger.Cli/SystemCliPlatform.cs
-namespace CopilotLedger.Cli;
-
-public sealed class SystemCliPlatform : ICliPlatform { /* the real implementation; see the rules below */ }
-
-// ---- src/CopilotLedger.Cli/CliContext.cs
-using Microsoft.AspNetCore.Hosting;
-
-namespace CopilotLedger.Cli;
-
-public sealed record CliContext
-{
-    public required TextWriter Out { get; init; }
-    public required TextWriter Error { get; init; }
-    public required string DataDirectory { get; init; }
-    public required string CopilotHome { get; init; }
-    public required string WorkingDirectory { get; init; }
-    public required TimeProvider TimeProvider { get; init; }
-    public required ICliPlatform Platform { get; init; }
-    public Action<IWebHostBuilder>? ConfigureWebHost { get; init; }                     // tests: builder => builder.UseTestServer()
-    public TimeSpan DaemonPollInterval { get; init; } = TimeSpan.FromMilliseconds(500);
-    public TimeSpan DaemonStartTimeout { get; init; } = TimeSpan.FromSeconds(15);
-    public TimeSpan DaemonStopTimeout { get; init; } = TimeSpan.FromSeconds(15);
-
-    public string DatabasePath => Path.Combine(DataDirectory, "ledger.db");
-    public string RatesOverlayPath => Path.Combine(DataDirectory, "rates.json");
-
-    // DataDirectory: COPILOT_LEDGER_HOME when set and not blank, else LedgerPaths.DataDirectory.
-    // CopilotHome: CopilotSessionWorkspaceLocator.DefaultCopilotHome. WorkingDirectory: Environment.CurrentDirectory.
-    // TimeProvider: TimeProvider.System. Platform: new SystemCliPlatform().
-    public static CliContext CreateDefault(TextWriter output, TextWriter error);
-}
-
-// ---- src/CopilotLedger.Cli/GhLedgerCli.cs
-namespace CopilotLedger.Cli;
-
-public static class GhLedgerCli
-{
-    public static string Version { get; }   // AssemblyInformationalVersionAttribute: "0.2.0"
-
-    // Builds a new RootCommand, parses args, and invokes it with
-    // new InvocationConfiguration { Output = context.Out, Error = context.Error, ProcessTerminationTimeout = null }.
-    public static Task<int> InvokeAsync(string[] args, CliContext context, CancellationToken cancellationToken = default);
-}
-```
-
-The public surface of `CopilotLedger.Cli` is exactly these five types. Commands write through `context.Out` and `context.Error` only, never `Console`.
-
-**SystemCliPlatform** is the only file in `src/` that may use `System.Diagnostics.Process`. It doesn't run `git`.
-
-- `IsWindows` and `IsMacOS` are `OperatingSystem.IsWindows()` and `OperatingSystem.IsMacOS()`.
-- `HomeDirectory` is `Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)`.
-- `ProcessPath` is `Environment.ProcessPath`, and `ShellPath` is `Environment.GetEnvironmentVariable("SHELL")`.
-- `GetUserEnvironmentVariable` and `SetUserEnvironmentVariable` call `Environment.GetEnvironmentVariable` and `Environment.SetEnvironmentVariable` with `EnvironmentVariableTarget.User` on Windows. Setting writes `HKCU\Environment` and broadcasts the change.
-- `FindOnPath` checks each non-empty `PATH` entry, split on `Path.PathSeparator`, for `fileName`. On Windows it appends `.exe` when `fileName` has no extension. It returns the first path where `File.Exists` is true.
-- `RunAsync` starts the process with `UseShellExecute = false`, `CreateNoWindow = true`, standard output and error redirected as UTF-8, and arguments passed through `ArgumentList`. It reads both streams concurrently, then awaits `WaitForExitAsync(cancellationToken)`.
-- `StartDetached` starts the process with `UseShellExecute = false`, `CreateNoWindow = true`, no redirection, `ArgumentList`, and `WorkingDirectory`. It returns `Process.Id` and disposes the `Process` object, which doesn't stop the process.
-- `IsProcessRunning` and `KillProcess` use `Process.GetProcessById`. They treat `ArgumentException` and `InvalidOperationException` as "not running" and do nothing.
-
-### Commands in this task
-
-```text
-gh-ledger daemon run [--port <1-65535>] [--log-file <path>]
-gh-ledger daemon start [--port <1-65535>]
-gh-ledger daemon stop
-gh-ledger rates init [--force]
-gh-ledger rates validate [--file <path>]
-```
-
-- The root description is `CopilotLedger: local AI spend ledger for GitHub Copilot`.
-- `--port` defaults to 4318. A validator rejects other values with `--port must be from 1 to 65535.`
-- Each command has a one-line description, and System.CommandLine supplies `--help` and `--version`.
-- Exit codes: 0 means success, and 1 means a parse or validation error or a failed command.
-
-### Daemon files and lifecycle
-
-`DaemonFiles` uses these files in `context.DataDirectory`: `daemon.lock`, `daemon.json`, `daemon.stop`, and `daemon.log`.
-
-- **Lock.** Acquire it with `new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None)`; an `IOException` means another daemon holds it. `IsHeld` opens the lock the same way, returns false and closes it immediately if the open succeeds, and returns true on an `IOException`.
-- **State file.** `daemon.json` is written with `System.Text.Json` using camelCase names and `WriteIndented = true`, through `daemon.json.tmp` and then `File.Move(tmp, path, overwrite: true)`:
-
-```json
-{
-  "schemaVersion": 1,
-  "processId": 4242,
-  "startedAt": "2026-11-20T18:00:00.0000000+00:00",
-  "endpoint": "http://localhost:4318",
-  "version": "0.2.0",
-  "databasePath": "/home/me/.copilot-ledger/ledger.db"
-}
-```
-
-**`daemon run`.** Log lines are `{context.TimeProvider.GetUtcNow():O} {message}`. They go to `--log-file` when it's given (append, UTF-8 without BOM, `AutoFlush = true`, creating the directory), and to `context.Out` otherwise.
-
-1. `Directory.CreateDirectory(DataDirectory)`.
-2. Acquire the lock. If another daemon holds it, log `gh-ledger daemon is already running.` and return 1.
-3. Delete a leftover `daemon.stop`.
-4. Load the calculator. If `RatesOverlayPath` exists, use `JsonRateCardCalculator.LoadEmbeddedWithOverlay(RatesOverlayPath)`; otherwise use `LoadEmbedded()`. Never use `LoadDefault()`, because the data directory can be overridden. On `InvalidDataException`, log `Invalid rates overlay: <ex.Message>` and return 1.
-5. Create `new SqliteLedgerStore(DatabasePath, TimeProvider)` and `await InitializeAsync`. On failure, log `Cannot open the ledger at <path>: <message>` and return 1.
-6. Prune: `await store.PruneSpanLinksAsync(now - TimeSpan.FromDays(7))`.
-7. Create the ingestor: `new LedgerIngestor(store, calculator, new CachingGitContextResolver(new FileSystemGitContextResolver(), TimeProvider), new CopilotSessionWorkspaceLocator(CopilotHome, TimeProvider))`.
-8. Build the app: `OtlpReceiverApp.Build(new OtlpReceiverOptions { Port = port }, ingestor, context.ConfigureWebHost)`.
-9. On platforms other than Windows, hold `PosixSignalRegistration.Create(PosixSignal.SIGHUP, c => c.Cancel = true)` for the rest of the run, so closing a terminal doesn't end the daemon.
-10. `await app.StartAsync(ct)`. On `IOException`, log `Port <port> is in use. Stop the other program, or run gh-ledger daemon run --port <port>.` and return 1.
-11. Write `daemon.json`, then log `gh-ledger <Version> daemon listening on http://localhost:<port> (pid <Environment.ProcessId>); ledger <DatabasePath>`.
-12. Loop with `await Task.Delay(context.DaemonPollInterval, linkedToken)`, where `linkedToken` combines `ct` and `app.Lifetime.ApplicationStopping`. That token fires on Ctrl+C and SIGTERM through `ConsoleLifetime`.
-    - Leave the loop when `daemon.stop` exists, after deleting it, or when the token is canceled.
-    - Prune again whenever 6 hours have passed since the last prune.
-13. In `finally`:
-    - `await app.StopAsync(CancellationToken.None)`;
-    - delete `daemon.json`;
-    - dispose the app and release the lock;
-    - log `gh-ledger daemon stopped`;
-    - return 0.
-
-Run steps 3–12 inside a `try`, so an early `return 1` still releases the lock and disposes whatever was created. Log `gh-ledger daemon stopped` only if the app started.
-
-**`daemon start`.**
-
-1. If the lock is held, print `gh-ledger daemon is already running (pid <pid>).`, taking the PID from `daemon.json`, or `gh-ledger daemon is already running.` if the file can't be read. Return 0.
-2. Check the executable. `exe = Platform.ProcessPath`. Take its file name as the text after the last `/` or `\`, and drop a trailing `.exe` (case-insensitive). If that name isn't `gh-ledger` (case-insensitive), write `Run this command from the gh-ledger executable (current process: <exe or unknown>).` to `Error` and return 1.
-3. Delete a stale `daemon.json`, then start the daemon: `pid = Platform.StartDetached(exe, ["daemon", "run", "--port", "<port>", "--log-file", Path.Combine(DataDirectory, "daemon.log")], DataDirectory)`.
-4. Every 100 ms until `DaemonStartTimeout`:
-   - When `daemon.json` exists with `processId == pid`, print `gh-ledger daemon started (pid <pid>) on http://localhost:<port>.` and return 0.
-   - Stop polling early if `!Platform.IsProcessRunning(pid)`.
-5. Write `gh-ledger daemon did not start; see <log path>.` to `Error` and return 1.
-
-**`daemon stop`.**
-
-1. If the lock isn't held, print `gh-ledger daemon is not running.` and return 0.
-2. Read the PID from `daemon.json`, if possible. Create an empty `daemon.stop`.
-3. Every 100 ms until `DaemonStopTimeout`: when the lock is released, print `gh-ledger daemon stopped.` and return 0.
-4. If the timeout passes:
-   - If the PID is known and `Platform.IsProcessRunning(pid)`, call `Platform.KillProcess(pid)`, print `gh-ledger daemon did not stop within <N> seconds; stopped process <pid>.`, and return 0.
-   - Otherwise, write `gh-ledger daemon did not stop within <N> seconds.` to `Error` and return 1.
-
-### Rates commands
-
-**`rates init`.**
-
-- If `RatesOverlayPath` exists and `--force` isn't given, write `<path> already exists. Use --force to replace it.` to `Error` and return 1.
-- Otherwise create the directory and write this text exactly: UTF-8 without BOM, `\n` line endings, and a final newline.
-
-```json
-{
-  "schemaVersion": 1,
-  "notes": [
-    "CopilotLedger rates overlay. See docs/configuration.md in the CopilotLedger repository.",
-    "Prices are USD per 1,000,000 tokens, from 0 to 1,000,000, with at most 6 decimal places."
-  ],
-  "foundryByok": {
-    "hostSuffixes": [],
-    "models": []
-  }
-}
-```
-
-Then print `Created <path>. Add your prices, then run: gh-ledger rates validate` and return 0.
-
-**`rates validate`.** The path is `Path.GetFullPath(<--file value>, context.WorkingDirectory)` when `--file` is given, and `RatesOverlayPath` otherwise.
-
-- If the file doesn't exist and `--file` was given, write `<path> does not exist.` to `Error` and return 1.
-- If the default file doesn't exist, print `No rates overlay at <path>; using the built-in rates (<LoadEmbedded().RatesVersion>).` and return 0.
-- Otherwise call `JsonRateCardCalculator.LoadEmbeddedWithOverlay(path)`:
-  - On success, print `<path> is valid. Rates version: <RatesVersion>.` and return 0.
-  - On `InvalidDataException`, write `Invalid rates overlay: <ex.Message>` to `Error` and return 1. Task 3 defines the message, which starts with the path.
-
-### docs/configuration.md changes
-
-- In "Where CopilotLedger keeps its files", add these rows after the `rates.json` row:
-
-  | Path | Purpose |
-  |---|---|
-  | `~/.copilot-ledger/daemon.json` | Written while the daemon runs: process ID, endpoint, start time, and database path |
-  | `~/.copilot-ledger/daemon.lock` | Held while the daemon runs, so only one daemon runs at a time |
-  | `~/.copilot-ledger/daemon.log` | The daemon's log when it's started with `gh-ledger daemon start` |
-
-  After the table, add this sentence:
-
-  ```text
-  Set the `COPILOT_LEDGER_HOME` environment variable to keep these files in another directory.
-  ```
-
-- In "The rates overlay", after its first paragraph, add:
-
-  ```text
-  Run `gh-ledger rates init` to create a starter file, and `gh-ledger rates validate` to check it against the same rules the daemon uses.
-  ```
-
-### Test support
-
-- `FakeCliPlatform : ICliPlatform` (tests only) has settable properties:
-  - `IsWindows`, `IsMacOS`, `HomeDirectory`, `ProcessPath` (default `/opt/gh-ledger/gh-ledger`), and `ShellPath`;
-  - dictionaries `ProcessVariables` and `UserVariables`, and the list `UserVariableWrites` of `(name, value)`, where a write also updates `UserVariables` (null removes);
-  - `PathExecutables` (name → full path) for `FindOnPath`, and `ExistingFiles` for `FileExists`;
-  - `ProcessRuns` with a `RunHandler`, which returns exit code 0 and empty output by default;
-  - `DetachedStarts` with a `StartDetachedHandler`;
-  - `RunningProcesses` and `KilledProcesses`. `IsProcessRunning(pid)` is `pid == Environment.ProcessId || RunningProcesses.Contains(pid)`.
-- `CliHarness : IAsyncDisposable` (tests only) takes a root directory, an optional `FakeCliPlatform`, and an optional `TimeProvider` (default `TimeProvider.System`).
-  - Its context uses `DataDirectory = <root>/data`, `CopilotHome = <root>/copilot-home`, and `WorkingDirectory = <root>`.
-  - It sets `ConfigureWebHost = b => b.UseTestServer()`, `DaemonPollInterval = 50 ms`, and start and stop timeouts of 10 s.
-  - `RunAsync(params string[] args)` and `RunInAsync(string workingDirectory, params string[] args)` return `CliRun(int ExitCode, string Out, string Error)`, using new `StringWriter`s and replacing `\r\n` with `\n`.
-  - `StartInProcessDaemonAsync()` runs `daemon run` on a background task with its own writers and waits up to 10 s for `daemon.json`.
-  - The default `StartDetachedHandler` does the same with the arguments after `daemon run`, and returns `Environment.ProcessId`.
-  - `DisposeAsync` writes `daemon.stop` if an in-process daemon is running, then awaits it for up to 10 s.
-
-### Acceptance criteria
-
-- `CopilotLedger.slnx` lists Core, Storage, Otlp, Cli, and Tests. The Cli `.csproj` matches Step 3, and `Program.cs` matches.
-- The public types are exactly those specified: in Otlp, `OtlpReceiverOptions` and `OtlpReceiverApp` are added; Cli has the five types above.
-- Package versions are exactly System.CommandLine 2.0.15 and Microsoft.AspNetCore.TestHost 10.0.15.
-- `System.Diagnostics.Process` appears only in `src/CopilotLedger.Cli/SystemCliPlatform.cs`. `src/` contains no `double` or `float`.
-- No test opens a socket, starts a process, touches the network, or uses the real `~/.copilot-ledger` or `~/.copilot`. Receiver and daemon tests use `UseTestServer()`.
-- `docs/configuration.md` has the changes above.
-- `rates validate`, `daemon run`, and their tests use the overlay messages exactly as Task 3 produces them, after `Invalid rates overlay: `.
-- `dotnet build CopilotLedger.slnx` succeeds with 0 warnings, and `dotnet test CopilotLedger.slnx` passes everything from earlier tasks plus RC1–RC12, DM1–DM5, and RT1–RT3, with 0 failed and 0 skipped.
-
-### Verify
-
-```shell
-dotnet build CopilotLedger.slnx
-dotnet test CopilotLedger.slnx
-dotnet run --project src/CopilotLedger.Cli -- --help
-```
-
-Report the passed, failed, and skipped counts. The last command must list the `daemon` and `rates` commands.
-
-## Task 5 specification: Reporting Commands, One-Command Install & Single-Binary Packaging
-
-### Files
-
-Create:
-
-```text
-src/CopilotLedger.Cli/Reporting/Period.cs                      (internal)
-src/CopilotLedger.Cli/Reporting/LedgerFormat.cs                (internal)
-src/CopilotLedger.Cli/Reporting/TableWriter.cs                 (internal)
-src/CopilotLedger.Cli/Reporting/ReportCommands.cs              (internal)
-src/CopilotLedger.Cli/Install/CopilotOtelEnvironment.cs        (internal)
-src/CopilotLedger.Cli/Install/InstallManifest.cs               (internal)
-src/CopilotLedger.Cli/Install/InstallCommands.cs               (internal)
-docs/cli.md
-tests/CopilotLedger.Tests/Cli/ReportCommandTests.cs
-tests/CopilotLedger.Tests/Cli/InstallCommandTests.cs
-```
-
-Modify:
-
-```text
-src/CopilotLedger.Cli/CopilotLedger.Cli.csproj
-src/CopilotLedger.Cli/GhLedgerCli.cs              (register the new commands)
-.github/workflows/ci.yml
-docs/configuration.md
-```
-
-No new public types are added.
-
-### Commands in this task
-
-```text
-gh-ledger status [--json]
-gh-ledger branch [--repo <key> | --all-repos] [--since <period>] [--json]
-gh-ledger agents [--repo <key>] [--since <period>] [--json]
-gh-ledger top-prompts [--repo <key>] [--since <period>] [--limit <1-100>] [--json]
-gh-ledger install [--dry-run]
-gh-ledger uninstall [--dry-run]
-```
-
-- `--repo` takes a repository key as the rollups produce it: an `owner/repo` slug, a repository root, or `(none)`.
-- `--limit` defaults to 10. A validator rejects other values with `--limit must be from 1 to 100.`
-- A `branch` validator rejects `--repo` with `--all-repos`: `Use either --repo or --all-repos, not both.`
-
-### Periods (`--since`)
-
-The value is trimmed and case-insensitive, and defaults to `30d`. `now = context.TimeProvider.GetUtcNow()`, `zone = context.TimeProvider.LocalTimeZone`, and `today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, zone).DateTime)`. `Midnight(d)` is `new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), zone.GetUtcOffset(d.ToDateTime(TimeOnly.MinValue)))`.
-
-| Value | Label | From (inclusive) |
-|---|---|---|
-| `today` | `today` | `Midnight(today)` |
-| `<N>d`, where 1 ≤ N ≤ 3650 | `today` when N is 1, else `last <N> days` | `Midnight(today.AddDays(-(N - 1)))` |
-| `all` | `all time` | null |
-| `yyyy-MM-dd` (`DateOnly.TryParseExact`, invariant) | `since yyyy-MM-dd` | `Midnight(date)` |
-
-`To` is always null. Any other value fails validation with `Invalid --since value <value>. Use today, all, <N>d (1-3650), or yyyy-MM-dd.`
-
-### Formatting
-
-- Credits: `Math.Round(v, 2, MidpointRounding.AwayFromZero).ToString("N2", CultureInfo.InvariantCulture)`.
-- USD: `"$"` plus the same rounding and format.
-- Counts: `v.ToString("N0", CultureInfo.InvariantCulture)`.
-- Local time: `TimeZoneInfo.ConvertTime(t, zone).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)`.
-- JSON:
-  - Write with `Utf8JsonWriter` and `Indented = true`.
-  - Money is unrounded: `WritePropertyName(name)` then `WriteRawValue(v.ToString("0.############", CultureInfo.InvariantCulture))`.
-  - Times are `t.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)`, or JSON `null`.
-  - Counts are JSON integers.
-- Tables:
-  - Each column has a header and an alignment. A column's width is the longer of its header and its longest cell.
-  - Cells are padded (left-aligned with `PadRight`, right-aligned with `PadLeft`) and joined with two spaces, and each line is trimmed at the end.
-  - Print the header line, then the rows, each with `WriteLine`. There's no separator line.
-- Money columns, all right-aligned: `Spans`, `Unpriced`, `AI credits`, `GitHub USD`, `BYOK USD`, `Local saved`. Their cells are `SpanCount`, `UnpricedSpanCount`, `AiCredits`, `AiCreditsUsd`, `FoundryByokUsd`, and `LocalSavedUsd`, formatted as counts, credits, then USD.
-
-Every reporting command opens `new SqliteLedgerStore(context.DatabasePath, context.TimeProvider)` and awaits `InitializeAsync()`, which creates an empty ledger if there isn't one.
-
-### status
-
-1. **Daemon line.** If the lock is held, print `running (pid <pid>) on <endpoint> since <local startedAt>` from `daemon.json`, or just `running` if the file can't be read. Otherwise print `not running; start it with: gh-ledger daemon start`.
-2. **Rates line.** If `RatesOverlayPath` exists, load it with `LoadEmbeddedWithOverlay`. On success print its `RatesVersion`; on `InvalidDataException` print `invalid overlay: <ex.Message>`, which starts with the path. Without an overlay, print `LoadEmbedded().RatesVersion`. An invalid overlay doesn't change the exit code.
-3. **Copilot line.** Look up each variable with `Platform.GetUserEnvironmentVariable(name) ?? Platform.GetEnvironmentVariable(name)`, then pick the first matching case:
-   - `COPILOT_OTEL_ENABLED` is `true` (trimmed, case-insensitive): `OTel export enabled (COPILOT_OTEL_ENABLED=true)`.
-   - `OTEL_EXPORTER_OTLP_ENDPOINT` is a local endpoint: `OTel export enabled (OTEL_EXPORTER_OTLP_ENDPOINT=<value>)`. A local endpoint is `http://localhost:4318` or `http://127.0.0.1:4318`, compared after trimming whitespace and trailing `/`, case-insensitive.
-   - Otherwise: `OTel export not enabled; run: gh-ledger install`.
-4. **Warnings** come from `CopilotOtelEnvironment.GetWarnings`, using the same lookup.
-5. **Periods** are `today`, `7d`, and `30d`. Each total is the exact sum of the `GetRollupAsync(LedgerGrouping.Repository, new LedgerFilter { From = from })` rows.
-
-Text output (one line per item, blank line before the table):
-
-```text
-gh-ledger <Version>
-Daemon:  <daemon line>
-Ledger:  <DatabasePath>
-Rates:   <rates line>
-Copilot: <copilot line>
-Warning: <each warning, one line each>
-
-<table: Period (left) + money columns; rows "Today", "Last 7 days", "Last 30 days">
-```
-
-JSON output:
-
-```json
-{
-  "version": "0.2.0",
-  "daemon": { "running": false, "processId": null, "endpoint": null, "startedAt": null },
-  "databasePath": "/home/me/.copilot-ledger/ledger.db",
-  "ratesVersion": "2026-11-20",
-  "ratesError": null,
-  "copilotOtelEnabled": false,
-  "warnings": [],
-  "periods": [
-    {
-      "label": "today",
-      "from": "2026-11-21T05:00:00.0000000+00:00",
-      "spans": 3,
-      "unpricedSpans": 0,
-      "inputTokens": 2600000,
-      "outputTokens": 162000,
-      "cacheReadInputTokens": 1200000,
-      "cacheWriteInputTokens": 100000,
-      "aiCredits": 342,
-      "aiCreditsUsd": 3.42,
-      "foundryByokUsd": 0,
-      "localSavedUsd": 0.23
+      "id": 1,
+      "rule": "retry_churn",
+      "repository": "swigerb/copilot-ledger",
+      "branch": "feature/ledger",
+      "conversationId": "982f73ad-18f4-49ef-a1f9-70748fa013fb",
+      "traceId": "0a000000000000000000000000000001",
+      "trippedAt": "2026-11-21T00:17:17.2600000+00:00",
+      "detail": "5 failed tool calls in a row",
+      "resetCommand": "gh-ledger breaker reset --id 1"
     }
   ]
 }
 ```
 
-`periods` holds three objects, labeled `today`, `last 7 days`, and `last 30 days`. `ratesVersion` is null when the overlay is invalid, and `ratesError` then holds `ex.Message`.
+`SyncAsync(store, root)`:
 
-### branch, agents, and top-prompts
+1. If `!Directory.Exists(root)`, return.
+2. Let `path = GetPath(root)` and `applied` be unset. Repeat at most three times:
+   1. Read `settings = GetBreakerSettingsAsync()`. `trips` is `GetOpenBreakerTripsAsync(new BreakerTripFilter { RepositoryRoot = root })` when `settings.FlagFile`, and empty otherwise. `desired` is null when `trips` is empty, otherwise `Render(root, trips)`.
+   2. If `applied` is set and `desired` equals it (ordinal; two nulls are equal), return.
+   3. Apply `desired`. For null: if `File.Exists(path)`, `File.Delete(path)`. Otherwise:
+      - `Directory.CreateDirectory(Path.Combine(root, DirectoryName))`;
+      - if `<root>/.copilot-ledger/.gitignore` doesn't exist, write `*\n`;
+      - write `desired` to `path + "." + Guid.NewGuid().ToString("N") + ".tmp"`;
+      - `File.Move(temp, path, overwrite: true)`.
 
-The **scope** is the repository key that filters a report:
+      All files are UTF-8 without a BOM (`new UTF8Encoding(false)`).
+   4. Set `applied = desired`.
 
-- `--repo <key>` uses that key.
-- `--all-repos` means every repository; it applies to `branch` only.
-- Otherwise, `branch` resolves `context.WorkingDirectory` with `new FileSystemGitContextResolver()` and uses `RepositorySlug ?? RepositoryRoot`, or every repository if that resolves to nothing. `agents` and `top-prompts` use every repository.
+The `.gitignore` is never deleted.
 
-A scope name is the key, or `all repositories`.
+### Acceptance criteria
 
-| Command | Rows | Title | Columns before the money columns | Empty message |
-|---|---|---|---|---|
-| `branch` | `GetRollupAsync(Branch, filter)` | `Branches in <scope> (<label>)` | `Branch` (left) for one repository; `Repository`, `Branch` (left) for all | `No spend recorded in <scope> (<label>).` |
-| `agents` | `GetRollupAsync(Agent, filter)` | `Agents in <scope> (<label>)` | `Agent` (left) | `No spend recorded in <scope> (<label>).` |
-| `top-prompts` | `GetTopPromptChainsAsync(filter, limit)` | `Top <n> prompts by cost in <scope> (<label>)`, or `Top 1 prompt by cost ...` when n is 1 | see below | `No prompts recorded in <scope> (<label>).` |
+- BR1–BR4 and BM1–BM10 pass, and every earlier test passes unchanged, including all `LedgerIngestorTests`, which use the four-argument constructor.
+- Replaying live run A trips rule 2 once, at the fifth failing `powershell` call (2026-11-21T00:17:17.260Z), when the sixth export request arrives, and not before.
+- The rules are pure: `BreakerRules` reads no clock and does no I/O.
+- `src/` contains no `double` or `float`. No new package.
 
-The filter is `new LedgerFilter { From = period.From, Repository = scope key or null }`. Text output is the title, a blank line, then the table, or only the empty message.
+### Verify
 
-`top-prompts` uses its own column list:
+```shell
+dotnet build CopilotLedger.slnx
+dotnet test CopilotLedger.slnx
+```
 
-- `#` (right; the rank, starting at 1);
-- `Started` (left; local start time);
-- `Repository` (left);
-- `Agents` and `Models` (left; joined with `, `, or `-` when empty);
-- `Spans`, `AI credits`, `GitHub USD`, `BYOK USD`, and `Local saved` (right);
-- `Trace` (left; the full trace ID).
+Report the passed, failed, and skipped counts.
 
-JSON output for all three: `{ "period": <label>, "from": <time or null>, "repository": <scope key or null>, "rows": [...] }`. Each row has:
+## Task 3 specification: Breaker Alerts and the Breaker & Budget Commands
 
-- **branch:** `repository` and `branch`;
-- **agents:** `agent`;
-- **top-prompts:** `rank`, `traceId`, `conversationId`, `startTime`, `endTime`, `repository`, `branch`, `agents` (array), and `models` (array).
+### Files
 
-Every row then has `spans`, `unpricedSpans`, `inputTokens`, `outputTokens`, `cacheReadInputTokens`, `cacheWriteInputTokens`, `aiCredits`, `aiCreditsUsd`, `foundryByokUsd`, and `localSavedUsd`.
+- `src/CopilotLedger.Cli/Breaker/BreakerCommands.cs` (new, `internal static`): `Create(CliContext context)` yields the `breaker` and `budget` commands.
+- `src/CopilotLedger.Cli/Alerts/AlertDispatcher.cs` and `Alerts/DesktopNotifier.cs` (new, `internal`).
+- `src/CopilotLedger.Cli/Daemon/DaemonHost.cs`: create the dispatcher and monitor, and pass the monitor to the ingestor.
+- `src/CopilotLedger.Cli/GhLedgerCli.cs`: add `foreach (Command command in BreakerCommands.Create(context)) { root.Add(command); }` after the install commands.
+- `docs/cli.md`: the "Circuit breaker" and "Budgets" sections below.
+- Tests: `TestSupport/CliHarness.cs` and `TestSupport/FakeCliPlatform.cs` (changes below), `TestSupport/BreakerTraces.cs` (adds `TraceVJson`), `Cli/BreakerCommandTests.cs` (BC1–BC6, new), and `Cli/AlertDaemonTests.cs` (AD1–AD3, new).
 
-### CopilotOtelEnvironment
+### Commands in this task
 
-`internal static IReadOnlyList<string> GetWarnings(Func<string, string?> lookup)`. A variable is set when its value isn't null or whitespace. Values are trimmed before comparison. Warnings come in this order:
+| Command | Options |
+|---|---|
+| `breaker status` | `--json` |
+| `breaker reset` | `--id <id>`, `--all`, `--repo <key>`, `--branch <name>` |
+| `breaker config` | `--velocity-credits <credits>`, `--velocity-minutes <minutes>`, `--churn-failures <count>`, `--flag-file <on\|off>`, `--notifications <on\|off>` |
+| `budget set <credits>` | `--repo <key>`, `--branch <name>` |
+| `budget clear` | `--repo <key>`, `--branch <name>` |
+| `budget list` | `--json` |
 
-1. `OTEL_EXPORTER_OTLP_ENDPOINT` is set and isn't a local endpoint: `OTEL_EXPORTER_OTLP_ENDPOINT is <value>; Copilot exports there instead of to CopilotLedger at http://localhost:4318.`
-2. `COPILOT_OTEL_FILE_EXPORTER_PATH` is set: `COPILOT_OTEL_FILE_EXPORTER_PATH is set; Copilot writes telemetry to that file instead of exporting it to CopilotLedger.`
-3. `COPILOT_OTEL_EXPORTER_TYPE` is set and isn't `otlp-http` (case-insensitive): `COPILOT_OTEL_EXPORTER_TYPE is <value>; remove it or set it to otlp-http.`
-4. For each set variable among `OTEL_EXPORTER_OTLP_CERTIFICATE`, `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE`, `OTEL_EXPORTER_OTLP_CLIENT_KEY`, `OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE`, `OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE`, and `OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY`, in that order: `<name> is set; Copilot turns off export to http:// endpoints while TLS settings are set.`
-5. For `OTEL_EXPORTER_OTLP_PROTOCOL`, then `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`, when the value is `grpc` (case-insensitive): `<name> is grpc; CopilotLedger accepts only http/protobuf and http/json.`
+Descriptions: `breaker` "Show and control the runaway-loop circuit breaker.", `breaker status` "Show the breaker's state, rules, and open trips.", `breaker reset` "Close open trips.", `breaker config` "Show or change the breaker's rules.", `budget` "Set soft AI-credit budgets for branches.", `budget set` "Set the current branch's budget.", `budget clear` "Remove the current branch's budget.", and `budget list` "List branch budgets and their spend." Every command opens `new SqliteLedgerStore(context.DatabasePath, context.TimeProvider)` and calls `InitializeAsync`, like the report commands.
 
-### install
+Every option value is a `string` parsed by the command, except `--id` (`Option<long?>`), `--all` and `--json` (`Option<bool>`), and the integer options (`Option<int?>`). Validation errors are added with `result.AddError(message)` in a validator, so the exit code is 1 and the message is on `Error`:
 
-The manifest `<DataDirectory>/install.json` is written with `System.Text.Json`, camelCase names, and `WriteIndented = true`. It deserializes into the internal `InstallManifest` record:
+| Check | Message |
+|---|---|
+| `--velocity-credits`: `decimal.TryParse(value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out d)`, `1 <= d <= 1000000`, `decimal.Round(d, 2) == d` | `--velocity-credits must be a number from 1 to 1000000 with at most 2 decimal places.` |
+| `--velocity-minutes` from 1 to 1440 | `--velocity-minutes must be from 1 to 1440.` |
+| `--churn-failures` from 2 to 100 | `--churn-failures must be from 2 to 100.` |
+| `--flag-file` is `on` or `off` (ordinal) | `--flag-file must be on or off.` |
+| `--notifications` is `on` or `off` (ordinal) | `--notifications must be on or off.` |
+| `budget set <credits>`: the same parse, `0 < d <= 1000000`, `decimal.Round(d, 2) == d` | `Credits must be a number greater than 0 and at most 1000000 with at most 2 decimal places.` |
+| `breaker reset`: more than one of `--id`, `--all`, and (`--repo` or `--branch`) | `Use only one of --id, --all, or --repo with --branch.` |
+| `breaker reset`, `budget set`, `budget clear`: exactly one of `--repo` and `--branch` | `--repo and --branch must be used together.` |
+
+**Scope.** `breaker reset` with no option, `budget set`, and `budget clear` without `--repo` and `--branch` use the current branch: `new FileSystemGitContextResolver().Resolve(context.WorkingDirectory)`, with the repository `RepositorySlug ?? RepositoryRoot` and the branch `BranchName ?? "(none)"`. Outside a Git repository they write one line to `Error` and return 1: `Not in a Git repository. Pass --repo and --branch, --id, or --all.` for `breaker reset`, and `Not in a Git repository. Pass --repo and --branch.` for the budget commands.
+
+### breaker status
+
+Text output, with `<rules>` = `BreakerMessages.RulesSummary(settings)` and `<on|off>` from the settings:
+
+```text
+Circuit breaker: closed
+Rules: <rules>
+Flag file: <on|off>. Notifications: <on|off>.
+```
+
+When `GetOpenBreakerTripsAsync(BreakerTripFilter.All)` returns `n` trips, the first line is `Circuit breaker: open (<n> trip)` for 1 and `Circuit breaker: open (<n> trips)` otherwise. Then come the rules and flag lines, an empty line, two lines per trip in the store's order, and a final line:
+
+```text
+Trip <id> at <LedgerFormat.LocalTime(TrippedAt)>: <repository> @ <branch>: <detail> on one prompt
+  rule <rule name>, trace <trace id>, session <conversation id or (none)>
+Reset a trip with: gh-ledger breaker reset --id <id>
+```
+
+The last line is literal: it shows `<id>`, not a number.
+
+`--json` writes this object with `ReportCommands`' writer options (`Indented = true`, `UnsafeRelaxedJsonEscaping`; declare an identical `JsonOptions` field in `BreakerCommands`), `LedgerFormat.WriteMoney`, and `LedgerFormat.WriteTime`:
 
 ```json
 {
-  "schemaVersion": 1,
-  "installedAt": "2026-11-21T15:00:00.0000000+00:00",
-  "executablePath": "C:\\tools\\gh-ledger.exe",
-  "windowsUserVariableSet": true,
-  "windowsUserVariablePreviousValue": null,
-  "profileFiles": [],
-  "ghAliasSet": true
+  "state": "open",
+  "settings": {
+    "velocityCredits": 150,
+    "velocityWindowMinutes": 5,
+    "churnFailures": 5,
+    "flagFile": false,
+    "notifications": true
+  },
+  "openTrips": [
+    {
+      "id": 1,
+      "rule": "credit_velocity",
+      "repository": "swigerb/copilot-ledger",
+      "branch": "feature/ledger",
+      "repositoryRoot": null,
+      "conversationId": null,
+      "traceId": "11111111111111111111111111111111",
+      "trippedAt": "2026-11-21T10:03:00.0000000+00:00",
+      "detail": "180.00 AI credits in 5 minutes",
+      "windowAiCredits": 180,
+      "windowMinutes": 5,
+      "failureCount": null,
+      "recordedAt": "2026-11-21T12:00:00.0000000+00:00",
+      "notifiedAt": null
+    }
+  ]
 }
 ```
 
-Steps, in output order. `--dry-run` prints the `Would ...` lines instead and changes nothing: no variable, no file, no process, and no manifest.
+`state` is `closed` with an empty `openTrips`. `velocityCredits` and `windowAiCredits` (`WindowCostUsd / 0.01`, or `null`) use `WriteMoney`; the other numbers are integers or `null`.
 
-1. **Check the executable.** `exe = Platform.ProcessPath`. Take its file name as the text after the last `/` or `\`, and drop a trailing `.exe` (case-insensitive). If that isn't `gh-ledger`, write `Run install from the gh-ledger executable (current process: <exe or unknown>).` to `Error` and return 1 without changes.
-2. **Warnings.** Print `Warning: <text>` for each `CopilotOtelEnvironment.GetWarnings(lookup)` result, using status's lookup.
-3. **Read the old manifest.** Read `install.json` if it exists and parses; otherwise there's no previous manifest.
-4. **Enable Copilot's OTel export.**
-   - **Windows.** `current = Platform.GetUserEnvironmentVariable("COPILOT_OTEL_ENABLED")`.
-     - If `current` is `true` (trimmed, case-insensitive), print `COPILOT_OTEL_ENABLED=true is already set for your user account.`
-     - Otherwise call `Platform.SetUserEnvironmentVariable("COPILOT_OTEL_ENABLED", "true")` and print `Set COPILOT_OTEL_ENABLED=true for your user account.` In dry-run mode, print `Would set COPILOT_OTEL_ENABLED=true for your user account.` instead.
+### breaker reset
 
-     The new manifest records `windowsUserVariableSet = true` when this run or a previous manifest set the variable. Its `windowsUserVariablePreviousValue` is the previous manifest's value when that manifest set the variable; otherwise it's `current`.
-   - **Other platforms.** Pick the profile from the file name of `Platform.ShellPath`, the text after its last `/`: `zsh` uses `~/.zshrc`; `bash` uses `~/.bash_profile` on macOS and `~/.bashrc` elsewhere; anything else uses `~/.profile`. `~` is `Platform.HomeDirectory`.
-     - If the profile already contains the line `# >>> copilot-ledger >>>`, print `<profile> already sets COPILOT_OTEL_ENABLED.`
-     - Otherwise append a separator and the block below, then print `Added COPILOT_OTEL_ENABLED=true to <profile>.` (dry run: `Would add COPILOT_OTEL_ENABLED=true to <profile>.`). The separator is `""` when the file is missing or empty, `"\n"` when it ends with `\n`, and `"\n\n"` otherwise.
+The filter is `{ Id = id }` for `--id`, `BreakerTripFilter.All` for `--all`, and `{ Repository, Branch }` otherwise. Call `ResetBreakerTripsAsync`, then write `Reset 1 trip.`, `Reset <n> trips.`, or `No open trips to reset.` and return 0. Then, for each distinct non-null `RepositoryRoot` of the reset trips (ordinal order), call `CircuitFlagFile.SyncAsync(store, root)`. Catch only `IOException` and `UnauthorizedAccessException`, write `Warning: could not update <path>: <message>` to `Error`, and still return 0.
 
-       ```text
-       # >>> copilot-ledger >>>
-       export COPILOT_OTEL_ENABLED=true
-       # <<< copilot-ledger <<<
-       ```
+### breaker config
 
-       The block is written with `\n` line endings and a final `\n`.
+With no option, write the `Rules:` and `Flag file:` lines exactly as in `breaker status`. With options, apply them to the current settings (`settings with { … }`), call `UpdateBreakerSettingsAsync`, and write `Updated the circuit breaker settings.` followed by the two lines with the new values. If `--flag-file` was given and its value differs from the previous setting, sync the flag file (as `breaker reset` does, with the same warning handling) for each distinct non-null `RepositoryRoot` of `GetOpenBreakerTripsAsync(BreakerTripFilter.All)`.
 
-     `profileFiles` is the union of the previous manifest's files and this profile.
-5. **gh alias.** `gh = Platform.FindOnPath("gh")`.
-   - If `gh` is null, print `GitHub CLI (gh) was not found, so the gh ledger alias was not set. Run gh-ledger directly.`
-   - Otherwise:
-     - Build `expansion = Quote(target) + " \"$@\""`. `target` is `exe` with `\` replaced by `/` on Windows, and `Quote(s) = "'" + s.Replace("'", "'\\''") + "'"`.
-     - Run `Platform.RunAsync(gh, ["alias", "set", "ledger", expansion, "--shell", "--clobber"], ct)`. Pass the expansion as one argument, never through stdin.
-     - Exit code 0 prints `Set gh alias: gh ledger runs <exe>.` Any other result prints `Warning: could not set the gh alias: <trimmed stderr, or exit code N when stderr is empty>`.
-     - Dry run prints `Would set gh alias: gh ledger runs <exe>.` instead.
-     - Then, on Windows, if `FindSh()` is null, print `Warning: GitHub CLI needs sh.exe from Git for Windows to run shell aliases, so gh ledger won't work until Git for Windows is installed. Run gh-ledger directly.`
+### budget set, clear, and list
 
-     `FindSh()` is `Platform.FindOnPath("sh")` if that isn't null. Otherwise, when `git = Platform.FindOnPath("git")` isn't null, it's the first of `<dir>\..\bin\sh.exe` and `<dir>\..\apps\git\current\bin\sh.exe` for which `Platform.FileExists` is true, where `<dir>` is `git` up to its last `\` or `/`. Build both paths by string concatenation with `\`. If neither exists, it's null.
-   - `ghAliasSet` is true when this run set the alias or a previous manifest says it was set.
-6. **Manifest.** Write `install.json`, except in dry-run mode.
-7. **Daemon.** Run the `daemon start` logic on port 4318 and print its line. In dry-run mode, print `Would start the gh-ledger daemon.` instead. If it fails, install still finishes, and its exit code is 1.
-8. **Last line.** Print `CopilotLedger is installed. Restart the GitHub Copilot app, VS Code, and open terminals so they pick up COPILOT_OTEL_ENABLED.`, or `Dry run: no changes made.` in dry-run mode. Return 0 unless step 7 failed.
+- `budget set <credits>`: `SetBranchBudgetAsync(repository, branch, credits)`, then read the row back and write `Budget for <repository> @ <branch>: <Credits(budget)> AI credits. Spent so far: <Credits(spent)>.` When the row is `Exceeded`, add the line `This branch is already over its budget.`
+- `budget clear`: `Cleared the budget for <repository> @ <branch>.` when `ClearBranchBudgetAsync` returns true; otherwise `No budget is set for <repository> @ <branch>.`
+- `budget list`: `No branch budgets are set.` when there are none; otherwise one line per row, `<repository> @ <branch>: <Credits(spent)> of <Credits(budget)> AI credits`, followed by ` (over budget)` when it's `Exceeded`.
+- `budget list --json`, with the same writer options:
+
+```json
+{
+  "budgets": [
+    {
+      "repository": "contoso/api",
+      "branch": "main",
+      "budgetAiCredits": 40.5,
+      "spentAiCredits": 31.5,
+      "exceeded": false,
+      "setAt": "2026-11-21T12:00:00.0000000+00:00",
+      "alertedAt": null
+    }
+  ]
+}
+```
+
+`Credits` here is `BreakerMessages.Credits`.
+
+### Alert dispatcher
+
+```csharp
+namespace CopilotLedger.Cli.Alerts;
+
+internal sealed class AlertDispatcher : IBreakerAlertSink
+{
+    // log writes one daemon log line. Throws ArgumentNullException for null arguments.
+    public AlertDispatcher(CliContext context, SqliteLedgerStore store, Action<string> log);
+
+    public void Publish(BreakerAlert alert);           // Channel.CreateUnbounded<BreakerAlert>(new UnboundedChannelOptions { SingleReader = true }); TryWrite
+    public void Warn(string message);                  // log("Warning: " + message)
+
+    // Publishes, oldest first, the open trips and then the budget alerts recorded since context.TimeProvider.GetUtcNow() - 1 hour
+    // that were never notified, with ShowNotification = the current BreakerSettings.Notifications.
+    public Task EnqueuePendingAsync(CancellationToken cancellationToken);
+
+    // Handles alerts until Complete() has been called and the channel is empty. Cancellation stops it (OperationCanceledException).
+    public Task RunAsync(CancellationToken cancellationToken);
+
+    public void Complete();                            // Writer.TryComplete()
+}
+```
+
+For each alert, `RunAsync`:
+
+1. calls `log($"ALERT {alert.Title}: {alert.Body}")`;
+2. if `alert.ShowNotification`, awaits `DesktopNotifier.ShowAsync(context, alert.Title, alert.Body, log, cancellationToken)`;
+3. records the notification: `MarkBreakerTripNotifiedAsync(alert.TripId!.Value)` for a trip, or `MarkBranchBudgetNotifiedAsync(alert.Repository, alert.Branch)` for a budget. It catches only `SqliteException` here, logging `Warning: could not record the notification: <message>`.
+
+Step 3 runs even when the notification failed or was skipped, so a restart doesn't repeat it.
+
+### Desktop notifier
+
+`internal static class DesktopNotifier` has `Task ShowAsync(CliContext context, string title, string body, Action<string> log, CancellationToken cancellationToken)`. It chooses one command from `context.Platform`:
+
+| Platform | File name | Arguments |
+|---|---|---|
+| `IsWindows` | `<SystemRoot>\System32\WindowsPowerShell\v1.0\powershell.exe` | `-NoProfile`, `-NonInteractive`, `-Command`, `<script>` |
+| `IsMacOS` | `/usr/bin/osascript` | `-e`, `on run argv`, `-e`, `display notification (item 2 of argv) with title (item 1 of argv)`, `-e`, `end run`, `<title>`, `<body>` |
+| otherwise | `FindOnPath("notify-send")` | `--app-name=CopilotLedger`, `<title>`, `<body>` |
+
+- `<SystemRoot>` is `GetEnvironmentVariable("SystemRoot")` with trailing `\` removed, or `C:\Windows` when that's null or empty. Join it with string concatenation, not `Path.Combine`, so the expected value is the same when tests run on Linux.
+- On Windows, first write `Path.Combine(context.DataDirectory, "alert-toast.xml")`, UTF-8 without a BOM:
+
+  ```xml
+  <toast><visual><binding template="ToastGeneric"><text>TITLE</text><text>BODY</text></binding></visual></toast>
+  ```
+
+  `TITLE` and `BODY` are `SecurityElement.Escape(title)` and `SecurityElement.Escape(body)`, and the file has no line break. `<script>` is this single line, with `XMLPATH` replaced by the XML file's path with each `'` doubled:
+
+  ```text
+  $ErrorActionPreference='Stop'; [void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]; [void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom,ContentType=WindowsRuntime]; $x=New-Object Windows.Data.Xml.Dom.XmlDocument; $x.LoadXml([IO.File]::ReadAllText('XMLPATH')); $t=[Windows.UI.Notifications.ToastNotification]::new($x); $t.Tag='copilot-ledger'; $t.Group='alerts'; [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe').Show($t)
+  ```
+
+  Keep it as a C# raw string literal on one line (`"""…"""`), not an interpolated one, and use `Replace("XMLPATH", …, StringComparison.Ordinal)`. The tag and group make a new alert replace the previous one in the notification center.
+- On Linux, when `FindOnPath` returns null, log `Notification skipped: notify-send was not found.` and return.
+
+Run the command with `context.Platform.RunAsync(fileName, arguments, timeout.Token)`, where `timeout` is linked to `cancellationToken` and cancels after 15 seconds. Then:
+
+- an exit code other than 0 logs `Notification failed: <file name> exited with code <n>: <trimmed standard error>`, or `Notification failed: <file name> exited with code <n>.` when standard error is blank;
+- `OperationCanceledException` when `cancellationToken` isn't cancelled logs `Notification timed out after 15 seconds.`;
+- `Win32Exception`, `IOException`, `UnauthorizedAccessException`, and `InvalidOperationException`, including from writing the XML file, log `Notification failed: <exception message>`.
+
+No other catches; an `OperationCanceledException` from `cancellationToken` propagates.
+
+### Daemon changes
+
+In `DaemonHost.RunAsync`:
+
+1. Wrap the log writer: `TextWriter writer = TextWriter.Synchronized(CreateLogWriter(context, logFile, out bool ownsWriter));`, because the dispatcher writes from another thread. Disposal is unchanged.
+2. After pruning `span_links`, create `AlertDispatcher dispatcher = new(context, store, message => WriteLog(writer, context, message))` and `CircuitBreakerMonitor monitor = new(store, dispatcher)`, and pass `monitor` to the five-argument `LedgerIngestor` constructor.
+3. Before `app.StartAsync`, `await dispatcher.EnqueuePendingAsync(cancellationToken)`, and then start `Task dispatching = dispatcher.RunAsync(dispatchStop.Token)`, where `dispatchStop` is a new `CancellationTokenSource`. Enqueuing before the receiver starts means a trip can't be both re-sent and published live.
+4. In `finally`, after `app.StopAsync`, when `dispatching` was started: call `dispatcher.Complete()`. If `dispatching` hasn't finished within 20 seconds (`Task.WhenAny` with `Task.Delay`), call `dispatchStop.Cancel()`. Then await it, catching only `OperationCanceledException`. Dispose `dispatchStop`. Alerts still queued stay unnotified and are re-sent at the next start if they're less than an hour old.
+
+### docs/cli.md changes
+
+Add these two sections after "Reports":
+
+```markdown
+## Circuit breaker
+
+The daemon watches every prompt for two kinds of runaway loop and trips a circuit breaker when it sees one:
+
+- **Credit velocity.** One prompt's billed spend (GitHub AI credits plus BYOK) reaches 150 AI credits ($1.50) within 5 minutes.
+- **Retry churn.** One prompt makes 5 failed tool calls in a row, with no successful command and no new commit between them. A failed call is a shell command that exits with a non-zero code, or a tool call that Copilot reports as an error.
+
+Copilot exports neither the command a shell call ran nor the file an edit changed, so retry churn counts any failing command, and any successful command resets the count. Edits that never run a failing command don't count. VS Code's Local agent harness may not report exit codes, so retry churn may never trip there.
+
+When the breaker trips, the daemon writes an `ALERT` line to `daemon.log` and shows a desktop notification: a toast on Windows, a notification on macOS, or `notify-send` on Linux when it's installed. The trip stays open until you reset it. Each prompt trips each rule at most once.
+
+- `gh-ledger breaker status [--json]` shows the rules and the open trips.
+- `gh-ledger breaker reset` closes the open trips on the current branch. Use `--id <id>` for one trip, `--repo <key> --branch <name>` for another branch, or `--all`.
+- `gh-ledger breaker config` shows the rules. Change them with `--velocity-credits <credits>` (1 to 1000000), `--velocity-minutes <minutes>` (1 to 1440), and `--churn-failures <count>` (2 to 100). `--notifications off` keeps the log line but stops desktop notifications.
+- `gh-ledger breaker config --flag-file on` also writes `.copilot-ledger/CIRCUIT_OPEN` in the repository root while a trip is open, so a wrapper script can stop an agent. The file holds JSON describing the open trips. A `.copilot-ledger/.gitignore` keeps it out of commits, and `breaker reset` removes it. Trips without a local repository root get no file.
+
+## Budgets
+
+A budget is a soft cap in AI credits for one branch. When the branch's billed spend reaches it, the daemon alerts once; nothing is blocked. BYOK spend counts at $0.01 per AI credit.
+
+- `gh-ledger budget set <credits>` sets the current branch's budget. Setting it again re-arms the alert.
+- `gh-ledger budget clear` removes it, and `gh-ledger budget list [--json]` lists every budget with its spend.
+- `budget set` and `budget clear` accept `--repo <key> --branch <name>` for another branch.
+```
+
+### Test support changes
+
+- `FakeCliPlatform.RunAsync`: wrap the `ProcessRuns.Add` in `lock (ProcessRuns)`, because the daemon's dispatcher calls it from another thread. Tests read `ProcessRuns` only after the daemon has stopped.
+- `CliHarness`:
+  - Its `ConfigureWebHost` becomes `builder => { builder.UseTestServer(); builder.ConfigureServices(services => services.AddHostedService(provider => new TestServerCapture(provider.GetRequiredService<IServer>(), server => _daemonServer = server))); }`, where `TestServerCapture` is a private nested `sealed class` implementing `IHostedService`. Its `StartAsync` passes `(TestServer)server` to the callback and returns `Task.CompletedTask`, and its `StopAsync` returns `Task.CompletedTask`.
+  - `public HttpClient CreateDaemonClient()` returns `_daemonServer.CreateClient()`, or throws `InvalidOperationException("No in-process daemon is running.")` when it's null.
+  - `public string DaemonOutput => _daemonOut.ToString().Replace("\r\n", "\n");`. Tests read it only after the in-process daemon task has completed.
+
+### Acceptance criteria
+
+- BC1–BC6 and AD1–AD3 pass, and every earlier test passes unchanged.
+- No test shows a real notification, starts a process, or opens a socket: notifications go through `FakeCliPlatform.RunAsync`, and the daemon uses `TestServer`.
+- `src/` contains no `double` or `float`. No new package.
+
+### Verify
+
+```shell
+dotnet build CopilotLedger.slnx
+dotnet test CopilotLedger.slnx
+```
+
+Report the passed, failed, and skipped counts.
+
+## Task 4 specification: MCP Server
+
+### Files
+
+- `src/CopilotLedger.Mcp/CopilotLedger.Mcp.csproj` (new): references `ModelContextProtocol` 2.4.0 and the Core and Storage projects:
+
+  ```xml
+  <Project Sdk="Microsoft.NET.Sdk">
+    <ItemGroup>
+      <PackageReference Include="ModelContextProtocol" Version="2.4.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\CopilotLedger.Core\CopilotLedger.Core.csproj" />
+      <ProjectReference Include="..\CopilotLedger.Storage\CopilotLedger.Storage.csproj" />
+    </ItemGroup>
+  </Project>
+  ```
+
+- `src/CopilotLedger.Mcp/LedgerMcpContext.cs` and `LedgerMcpServer.cs` (public), and `LedgerMcpTools.cs` (internal: the schemas, argument checks, and results).
+- `CopilotLedger.slnx`: add `<Project Path="src/CopilotLedger.Mcp/CopilotLedger.Mcp.csproj" />` to `/src/`, between Core and Otlp.
+- `src/CopilotLedger.Cli/CopilotLedger.Cli.csproj` and `tests/CopilotLedger.Tests/CopilotLedger.Tests.csproj`: add a `ProjectReference` to the Mcp project.
+- `src/CopilotLedger.Cli/CliContext.cs`: two optional streams. `src/CopilotLedger.Cli/Mcp/McpCommand.cs` (new, `internal static`) and `GhLedgerCli.cs`: the `mcp` command.
+- `docs/cli.md`: the "MCP server" section below.
+- Tests: `TestSupport/McpTestHarness.cs` (new) and `Mcp/LedgerMcpServerTests.cs` (MC1–MC12, new).
+
+### Contracts
+
+```csharp
+namespace CopilotLedger.Mcp;
+
+public sealed record LedgerMcpContext
+{
+    public required string DatabasePath { get; init; }
+    public required string WorkingDirectory { get; init; }                 // the server process's working directory
+    public required Func<string, string?> GetEnvironmentVariable { get; init; }
+    public required IGitContextResolver GitResolver { get; init; }
+    public required TimeProvider TimeProvider { get; init; }               // the store's clock
+    public required string Version { get; init; }                          // serverInfo.version
+}
+
+public static class LedgerMcpServer
+{
+    public const string ServerName = "copilot-ledger";
+    public const string Instructions =
+        "CopilotLedger reports the AI spend that Copilot recorded on this machine, by Git branch. " +
+        "Tools use the current repository and branch unless you pass repository and branch. " +
+        "When a result starts with WARNING, stop and tell the user before doing more work.";
+
+    // ServerInfo = { Name = ServerName, Version = context.Version }, ServerInstructions = Instructions, and the two handlers.
+    public static McpServerOptions CreateOptions(LedgerMcpContext context);
+
+    // McpServer.Create(new StreamServerTransport(input, output, ServerName), CreateOptions(context)), then RunAsync.
+    // Returns when input ends or cancellationToken is cancelled. Writes nothing else to output.
+    public static Task RunAsync(LedgerMcpContext context, Stream input, Stream output, CancellationToken cancellationToken = default);
+}
+```
+
+Add to `CliContext`:
+
+```csharp
+public Stream? StandardInput { get; init; }            // mcp: null uses Console.OpenStandardInput()
+public Stream? StandardOutput { get; init; }           // mcp: null uses Console.OpenStandardOutput()
+```
+
+`gh-ledger mcp` ("Run the CopilotLedger MCP server on standard input and output.") has no options. It runs `LedgerMcpServer.RunAsync` with `DatabasePath = context.DatabasePath`, `WorkingDirectory = context.WorkingDirectory`, `GetEnvironmentVariable = context.Platform.GetEnvironmentVariable`, `GitResolver = new FileSystemGitContextResolver()`, `TimeProvider = context.TimeProvider`, and `Version = GhLedgerCli.Version`, then returns 0. It never writes to `context.Out`, because standard output carries the protocol.
+
+### Tools
+
+`tools/list` returns these four tools in this order. Every `inputSchema` is parsed once from a constant string and cloned (`JsonDocument.Parse(…).RootElement.Clone()`).
+
+| Name | Title | Annotations |
+|---|---|---|
+| `get_branch_ledger` | `Branch ledger` | `ReadOnlyHint = true`, `OpenWorldHint = false` |
+| `get_top_expensive_prompts` | `Top expensive prompts` | `ReadOnlyHint = true`, `OpenWorldHint = false` |
+| `get_agent_breakdown` | `Agent breakdown` | `ReadOnlyHint = true`, `OpenWorldHint = false` |
+| `set_branch_budget` | `Set branch budget` | `ReadOnlyHint = false`, `DestructiveHint = false`, `IdempotentHint = true`, `OpenWorldHint = false` |
+
+Descriptions:
+
+- `get_branch_ledger`: `Spend on one Git branch: AI credits, USD, BYOK USD, local savings, top model, budget, and circuit-breaker status. Uses the current repository and branch unless you pass both.`
+- `get_top_expensive_prompts`: `The most expensive prompt chains on one Git branch, with their output tokens and failed tool calls (retry loops). Uses the current repository and branch unless you pass both. Returns 5 by default, ordered by cost.`
+- `get_agent_breakdown`: `Spend on one Git branch split by agent (gen_ai.agent.name). Uses the current repository and branch unless you pass both.`
+- `set_branch_budget`: `Sets a soft AI-credit budget for one Git branch. CopilotLedger alerts once when the branch's billed spend reaches it; nothing is blocked. Uses the current repository and branch unless you pass both.`
+
+`get_branch_ledger` and `get_agent_breakdown` share this schema:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "repository": { "type": "string", "minLength": 1, "description": "Repository key: owner/repo, a repository root, or (none). Pass with branch." },
+    "branch": { "type": "string", "minLength": 1, "description": "Branch name, or (none). Pass with repository." }
+  },
+  "additionalProperties": false
+}
+```
+
+`get_top_expensive_prompts`:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "repository": { "type": "string", "minLength": 1, "description": "Repository key: owner/repo, a repository root, or (none). Pass with branch." },
+    "branch": { "type": "string", "minLength": 1, "description": "Branch name, or (none). Pass with repository." },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 5, "description": "Number of prompt chains." },
+    "orderBy": { "type": "string", "enum": ["cost", "outputTokens", "failedToolCalls"], "default": "cost", "description": "Sort key, highest first." }
+  },
+  "additionalProperties": false
+}
+```
+
+`set_branch_budget`:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "repository": { "type": "string", "minLength": 1, "description": "Repository key: owner/repo, a repository root, or (none). Pass with branch." },
+    "branch": { "type": "string", "minLength": 1, "description": "Branch name, or (none). Pass with repository." },
+    "aiCredits": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000000, "description": "Budget in AI credits (1 AI credit = $0.01), with at most 2 decimal places." }
+  },
+  "required": ["aiCredits"],
+  "additionalProperties": false
+}
+```
+
+### Handling a call
+
+1. An unknown tool name throws `new McpProtocolException($"Unknown tool: {name}", McpErrorCode.InvalidParams)`.
+2. Check the arguments (null means none), stopping at the first failure. A failure returns `isError: true` with one `TextContentBlock` holding the message, and no `structuredContent`:
+
+   | Check | Message |
+   |---|---|
+   | Every argument name is one of the tool's properties; report the ordinal-first unknown name | `Unknown argument: <name>.` |
+   | `repository`, when present, is a JSON string that isn't blank | `repository must be a non-empty string.` |
+   | `branch`, when present, is a JSON string that isn't blank | `branch must be a non-empty string.` |
+   | Both or neither of `repository` and `branch` | `Pass repository and branch together, or neither.` |
+   | `limit`, when present, is a number with `TryGetInt32` from 1 to 20 | `limit must be an integer from 1 to 20.` |
+   | `orderBy`, when present, is the string `cost`, `outputTokens`, or `failedToolCalls` (ordinal) | `orderBy must be cost, outputTokens, or failedToolCalls.` |
+   | `aiCredits` is present | `aiCredits is required.` |
+   | `aiCredits` is a number with `TryGetDecimal`, `0 < d <= 1000000`, `decimal.Round(d, 2) == d` | `aiCredits must be a number greater than 0 and at most 1000000, with at most 2 decimal places.` |
+
+3. Resolve the scope. Without `repository` and `branch`: the directory is `COPILOT_SESSION_CWD` when it isn't blank, `Path.IsPathFullyQualified`, and `Directory.Exists`; otherwise `context.WorkingDirectory`. `GitResolver.Resolve(directory)` gives the repository `RepositorySlug ?? RepositoryRoot` and the branch `BranchName ?? "(none)"`. A null result returns `isError` with `No Git repository at <directory>. Pass repository and branch.`
+4. Open the store: `new SqliteLedgerStore(context.DatabasePath, context.TimeProvider)` and `InitializeAsync`, once per server, guarded by a `SemaphoreSlim(1, 1)`; a failed open is retried on the next call. Steps 4 and 5 catch only `SqliteException`, `IOException`, `UnauthorizedAccessException`, and `InvalidOperationException`, returning `isError` with `The ledger at <DatabasePath> is unavailable: <exception message>`.
+5. Build the result object below. Return `StructuredContent` = the object, and one `TextContentBlock` whose text is each warning followed by `\n`, then the object as compact JSON (`new JsonWriterOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }`, not indented). `IsError` stays null.
+
+### Results
+
+Every result ends with `circuitBreaker` and `warnings`:
+
+- **Trips.** `GetOpenBreakerTripsAsync(BreakerTripFilter.All)`, keeping, in that order, the trips whose `Repository` and `Branch` equal the scope's, or whose `ConversationId` equals the session ID. The session ID is `COPILOT_AGENT_SESSION_ID` when it isn't blank.
+- **Budget.** `GetBranchBudgetsAsync(repository, branch)`: zero or one row.
+- **`circuitBreaker`** is `{ "state": "open" | "closed", "openTrips": [ … ] }`, where each trip is `{ "id", "rule", "repository", "branch", "traceId", "conversationId", "currentSession", "trippedAt", "detail", "resetCommand" }`. `currentSession` is true when the trip's conversation equals the session ID, and `resetCommand` is `gh-ledger breaker reset --id <id>`.
+- **`warnings`** holds one line per kept trip, `WARNING: CopilotLedger circuit breaker is open for <repository> @ <branch>: <detail> on one prompt (trip <id>). Stop and ask the user before continuing. The user can reset it with: gh-ledger breaker reset --id <id>`, then, when the budget is exceeded, `WARNING: <repository> @ <branch> has spent <Credits(spent)> of its <Credits(budget)> AI credit budget.` `Credits` rounds to 2 places with `MidpointRounding.AwayFromZero` and formats `N2` with the invariant culture.
+- **`budget`** is `null` or `{ "aiCredits", "spentAiCredits", "exceeded" }`.
+
+Money is written raw with `value.ToString("0.############", CultureInfo.InvariantCulture)`, as `LedgerFormat.WriteMoney` does; times as `ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)`. `billedAiCredits` is `AiCredits + FoundryByokUsd / 0.01`.
+
+| Tool | Object (properties in this order) |
+|---|---|
+| `get_branch_ledger` | `repository`, `branch`, `spans`, `unpricedSpans`, `inputTokens`, `outputTokens`, `cacheReadInputTokens`, `cacheWriteInputTokens`, `aiCredits`, `aiCreditsUsd`, `foundryByokUsd`, `localSavedUsd`, `billedAiCredits`, `topModel`, `budget`, `circuitBreaker`, `warnings`. The totals are the single row of `GetRollupAsync(LedgerGrouping.Branch, new LedgerFilter { Repository, Branch })`, or all zeros when there's no row. `topModel` is the first row's `Model` from the Model rollup with the same filter, or `null`. |
+| `get_top_expensive_prompts` | `repository`, `branch`, `orderBy`, `limit`, `prompts`, `circuitBreaker`, `warnings`. Each prompt is `rank`, `traceId`, `conversationId`, `startTime`, `endTime`, `agents`, `models`, `spans`, `unpricedSpans`, `inputTokens`, `outputTokens`, `cacheReadInputTokens`, `cacheWriteInputTokens`, `aiCredits`, `aiCreditsUsd`, `foundryByokUsd`, `localSavedUsd`, `billedAiCredits`, `failedToolCalls`. |
+| `get_agent_breakdown` | `repository`, `branch`, `agents`, `circuitBreaker`, `warnings`. Each agent row of `GetRollupAsync(LedgerGrouping.Agent, filter)`, in its order, is `agent`, `spans`, `unpricedSpans`, `inputTokens`, `outputTokens`, `cacheReadInputTokens`, `cacheWriteInputTokens`, `aiCredits`, `aiCreditsUsd`, `foundryByokUsd`, `localSavedUsd`, `billedAiCredits`. |
+| `set_branch_budget` | `repository`, `branch`, `budget`, `circuitBreaker`, `warnings`, after `SetBranchBudgetAsync(repository, branch, aiCredits)`. |
+
+`get_top_expensive_prompts` takes the candidates from `GetTopPromptChainsAsync(new LedgerFilter { Repository, Branch }, 1000)` and their counts from `GetFailedToolCallCountsAsync` (0 when absent). It sorts them by the `orderBy` key, highest first: billed USD (`AiCreditsUsd + FoundryByokUsd`) for `cost`, `OutputTokens`, or the failed count. Ties go to billed USD (descending), then `StartTime` (descending), then `TraceId` (ordinal, ascending). It takes `limit` (default 5) and ranks them from 1. `orderBy` defaults to `cost`, and the result echoes both values.
+
+### docs/cli.md changes
+
+Add this section after "Budgets":
+
+````markdown
+## MCP server
+
+`gh-ledger mcp` runs an MCP server on standard input and output, so Copilot can read the ledger and see the circuit breaker. Register it once with Copilot CLI:
+
+```shell
+copilot mcp add ledger -- /path/to/gh-ledger mcp
+```
+
+That adds `ledger` to `~/.copilot/mcp-config.json`. VS Code's Copilot agent harness reads the same file. The GitHub Copilot app runs the same agent runtime; if it doesn't list the server, add it in the app's MCP settings with the same command. For VS Code's Local agent harness, add the server to `mcp.json` under `servers`, with `"command": "/path/to/gh-ledger"` and `"args": ["mcp"]`.
+
+The server offers four tools. Each uses the current repository and branch unless you pass `repository` and `branch`:
+
+- `get_branch_ledger`: the branch's spend, top model, budget, and circuit-breaker status.
+- `get_top_expensive_prompts`: the branch's most expensive prompt chains, with output tokens and failed tool calls; `limit` (1 to 20, default 5) and `orderBy` (`cost`, `outputTokens`, or `failedToolCalls`).
+- `get_agent_breakdown`: the branch's spend by agent.
+- `set_branch_budget`: sets the branch's budget in AI credits (`aiCredits`).
+
+The first three are read-only. `set_branch_budget` changes only the budget, so Copilot asks before running it; in prompt mode, allow it with `--allow-tool 'ledger(set_branch_budget)'`. No tool can reset the circuit breaker. While the breaker is open for the branch or the session, or the branch is over its budget, every result starts with a `WARNING:` line.
+````
+
+### Acceptance criteria
+
+- MC1–MC12 pass, and every earlier test passes unchanged.
+- `tools/list` returns exactly the four tools above, and each `inputSchema` has `"additionalProperties": false`.
+- No tool writes anything but `branch_budgets`, and nothing but the MCP protocol is written to standard output.
+- `src/` contains no `double` or `float`; `aiCredits` is read with `TryGetDecimal`. The only new package is `ModelContextProtocol` 2.4.0, and the restore has no `NU190x` warning.
+
+### Verify
+
+```shell
+dotnet build CopilotLedger.slnx
+dotnet test CopilotLedger.slnx
+```
+
+Report the passed, failed, and skipped counts.
+
+## Task 5 specification: Start at Sign-in, Version 0.3.0 & CI
+
+### Files
+
+- `src/CopilotLedger.Cli/ICliPlatform.cs`, `SystemCliPlatform.cs`: `GetStartupCommand` and `SetStartupCommand`.
+- `src/CopilotLedger.Cli/Install/StartupItem.cs` (new, `internal static`), `InstallCommands.cs`, and `InstallManifest.cs`.
+- `src/CopilotLedger.Cli/app.manifest` (new) and `CopilotLedger.Cli.csproj` (`ApplicationManifest`, version 0.3.0).
+- `src/CopilotLedger.Cli/GhLedgerCli.cs`: the fallback version and its comment become `0.3.0`.
+- `.github/workflows/ci.yml` and `docs/cli.md`.
+- Tests: `TestSupport/FakeCliPlatform.cs`; `Cli/InstallCommandTests.cs` (IN1, IN2, IN3, IN9, and IN10 changed; IN11–IN15 new); `Cli/DaemonCommandTests.cs` (DM1's version); and `Cli/ReportCommandTests.cs` (the `status` text's version line).
+
+### Contracts
+
+Add to `ICliPlatform`:
+
+```csharp
+string? GetStartupCommand(string name);                // Windows: the HKCU\Software\Microsoft\Windows\CurrentVersion\Run value; null when absent and on other platforms
+void SetStartupCommand(string name, string? command);  // Windows: sets that value (REG_SZ), or deletes it when command is null; other platforms throw PlatformNotSupportedException
+```
+
+`SystemCliPlatform` implements them with `Microsoft.Win32.Registry.CurrentUser`: `OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", writable: false)` and `GetValue(name) as string` to read; `CreateSubKey(…, writable: true)`, then `SetValue(name, command, RegistryValueKind.String)` or `DeleteValue(name, throwOnMissingValue: false)` to write. Every registry call is inside `if (OperatingSystem.IsWindows())`.
+
+Add to `InstallManifest`, not `required`, so 0.2.0 manifests still load:
+
+```csharp
+public string? StartupItem { get; init; }              // the registered sign-in item: the Run value's full name on Windows, the file path elsewhere; null when none
+```
+
+`FakeCliPlatform` gains `public Dictionary<string, string> StartupCommands { get; } = new(StringComparer.Ordinal);` and `public List<(string Name, string? Command)> StartupCommandWrites { get; } = [];`. `GetStartupCommand` reads `StartupCommands`. `SetStartupCommand` appends to `StartupCommandWrites`, then sets or removes the entry.
+
+### Sign-in items
+
+`StartupItem.Plan(CliContext context, string executable)` returns the item for this platform: its identifier, its expected content, and a skip warning when it can't be registered. `<exe>` is `context.Platform.ProcessPath`.
+
+| Platform | Identifier (`InstallManifest.StartupItem`) | Content | Skipped when |
+|---|---|---|---|
+| `IsWindows` | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CopilotLedger` | Run value `CopilotLedger` = `"<exe>" daemon start` | the command is longer than 260 characters |
+| `IsMacOS` | `Path.Combine(HomeDirectory, "Library", "LaunchAgents", "io.github.swigerb.copilot-ledger.plist")` | the property list below | never |
+| otherwise | `Path.Combine(<config>, "autostart", "copilot-ledger.desktop")` | the desktop entry below | `<exe>` contains a double quote, a backtick, `$`, `\`, `%`, `\n`, or `\r` |
+
+`<config>` is `XDG_CONFIG_HOME` (from `GetEnvironmentVariable`) when it isn't blank and `Path.IsPathFullyQualified`; otherwise `Path.Combine(HomeDirectory, ".config")`.
+
+The property list, where `EXE` is `SecurityElement.Escape(<exe>)` and `LOG` is `SecurityElement.Escape(Path.Combine(context.DataDirectory, "daemon.log"))`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.swigerb.copilot-ledger</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>EXE</string>
+    <string>daemon</string>
+    <string>run</string>
+    <string>--log-file</string>
+    <string>LOG</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+```
+
+The desktop entry, where `EXE` is `<exe>`:
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=CopilotLedger
+Comment=Starts the CopilotLedger daemon
+Exec="EXE" daemon start
+Terminal=false
+```
+
+Both files use `\n` line breaks, end with `\n`, and are UTF-8 without a BOM. Build them from raw string literals with `.ReplaceLineEndings("\n")`, because the repository's checkouts use `core.autocrlf=true`.
+
+### install
+
+Insert this step after the `sh.exe` warning and before the daemon starts:
+
+1. If `context.Platform.GetEnvironmentVariable("COPILOT_LEDGER_HOME")` isn't blank, write `Warning: COPILOT_LEDGER_HOME is set. The daemon that starts when you sign in uses it only if your sign-in environment sets it too.`
+2. If the item is skipped, write its warning, keep the previous manifest's `StartupItem`, and skip steps 3–5:
+   - Windows: `Warning: the gh-ledger path is too long for a sign-in command, so gh-ledger won't start when you sign in. Run gh-ledger daemon start after you sign in.`
+   - Linux: `Warning: the gh-ledger path has characters that a desktop autostart entry can't run, so gh-ledger won't start when you sign in. Run gh-ledger daemon start after you sign in.`
+3. If the item already has exactly the expected content (the Run value equals the command, ordinal; or the file's text equals the content, ordinal), write `gh-ledger already starts when you sign in.`
+4. Otherwise, in a dry run, write `Would start gh-ledger when you sign in.` Otherwise register it: `SetStartupCommand("CopilotLedger", command)` on Windows, or create the directory and write the file elsewhere. Then write `gh-ledger will start when you sign in.`
+5. When the item was registered or already present (and this isn't a dry run), the manifest's `StartupItem` is its identifier.
 
 ### uninstall
 
-1. If `install.json` is missing or can't be parsed, print `CopilotLedger is not installed; nothing to undo.` and return 0.
-2. If the daemon is running, run the `daemon stop` logic and print its line, or `Would stop the gh-ledger daemon.`
-3. **Windows variable.** Only when `windowsUserVariableSet` is true:
-   - If the current user value is `true` (case-insensitive):
-     - With no previous value, set it to null and print `Removed COPILOT_OTEL_ENABLED from your user account.`
-     - Otherwise set it back to the previous value and print `Restored COPILOT_OTEL_ENABLED=<previous> for your user account.`
-     - Dry run prints `Would remove ...` or `Would restore ...` instead.
-   - Otherwise print `Left COPILOT_OTEL_ENABLED unchanged because it is no longer true.`
-4. **Profiles.** For each existing file in `profileFiles`:
-   - Split it on `\n`. Find the first line equal to `# >>> copilot-ledger >>>` at index `s`, and the first line equal to `# <<< copilot-ledger <<<` at index `e`.
-   - If both exist and `s <= e`:
-     - Remove lines `s` through `e`. If `s > 0` and line `s - 1` is empty, remove it too.
-     - Join the remaining lines with `\n` and write the file back.
-     - Print `Removed the CopilotLedger block from <file>.` (dry run: `Would remove ...`).
-   - Otherwise print `Warning: no complete CopilotLedger block in <file>; edit it by hand.`
-5. **gh alias.** Only when `ghAliasSet` is true, look for `gh`:
-   - If it's missing, print `Warning: GitHub CLI (gh) was not found. Remove the alias with: gh alias delete ledger`
-   - Otherwise run `["alias", "delete", "ledger"]`. Exit code 0, or stderr containing `no such alias`, prints `Removed gh alias: ledger.`; anything else prints `Warning: could not remove the gh alias: <stderr>`. Dry run prints `Would remove gh alias: ledger.`
-6. **Finish.** Delete `install.json` and print `CopilotLedger is uninstalled. Your ledger data is still in <DataDirectory>.` In dry-run mode, print `Dry run: no changes made.` instead and delete nothing. Return 0.
+Insert this step right after the daemon is stopped. When `manifest.StartupItem` isn't null and the item exists (`GetStartupCommand("CopilotLedger")` isn't null on Windows, or `File.Exists(StartupItem)` elsewhere): in a dry run write `Would stop starting gh-ledger when you sign in.`; otherwise delete it (`SetStartupCommand("CopilotLedger", null)` or `File.Delete`) and write `gh-ledger will no longer start when you sign in.` When it doesn't exist, write nothing.
 
-### Packaging
+### Application manifest
 
-Add this `PropertyGroup` to `src/CopilotLedger.Cli/CopilotLedger.Cli.csproj`, after the first one:
+`src/CopilotLedger.Cli/app.manifest`:
 
 ```xml
-<PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
-  <SelfContained>true</SelfContained>
-  <PublishSingleFile>true</PublishSingleFile>
-  <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-  <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-</PropertyGroup>
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="gh-ledger.app"/>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and Windows 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <!-- Windows 11 24H2 and later: no console window when started outside a terminal -->
+      <consoleAllocationPolicy xmlns="http://schemas.microsoft.com/SMI/2024/WindowsSettings">detached</consoleAllocationPolicy>
+    </windowsSettings>
+  </application>
+</assembly>
 ```
 
-Publish one binary per runtime identifier, for example `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `osx-x64`, or `osx-arm64`:
-
-```shell
-dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release -r <rid> -o artifacts/gh-ledger
-```
-
-Without a runtime identifier, the build is a normal framework-dependent one. That keeps `dotnet build` and `dotnet test` unchanged.
+In `CopilotLedger.Cli.csproj`, add `<ApplicationManifest>app.manifest</ApplicationManifest>` to the first `PropertyGroup` and change `<Version>0.2.0</Version>` to `<Version>0.3.0</Version>`.
 
 ### CI
 
-Replace `.github/workflows/ci.yml` with:
+In `.github/workflows/ci.yml`, the smoke-test step becomes:
 
 ```yaml
-name: CI
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
-jobs:
-  build-test:
-    name: build-test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            rid: linux-x64
-          - os: windows-latest
-            rid: win-x64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: 10.0.x
-      - run: dotnet build CopilotLedger.slnx
-      - run: dotnet test CopilotLedger.slnx
-      - name: Publish single-file gh-ledger
-        run: dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release -r ${{ matrix.rid }} -o artifacts/gh-ledger
       - name: Smoke-test the published binary
         shell: bash
         env:
           COPILOT_LEDGER_HOME: ${{ runner.temp }}/copilot-ledger
         run: |
-          ./artifacts/gh-ledger/gh-ledger --version
+          test "$(./artifacts/gh-ledger/gh-ledger --version)" = "0.3.0"
           ./artifacts/gh-ledger/gh-ledger rates validate
           ./artifacts/gh-ledger/gh-ledger daemon start
           ./artifacts/gh-ledger/gh-ledger status
+          ./artifacts/gh-ledger/gh-ledger breaker status
+          ./artifacts/gh-ledger/gh-ledger budget list
+          request='{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+          response=$( { echo "$request"; sleep 3; } | ./artifacts/gh-ledger/gh-ledger mcp )
+          echo "$response"
+          grep -q '"get_branch_ledger"' <<< "$response"
           ./artifacts/gh-ledger/gh-ledger daemon stop
 ```
 
-The job names don't change, so required checks named `build-test (ubuntu-latest)` and `build-test (windows-latest)` still match. The smoke step binds port 4318 on the CI runner. It isn't part of `dotnet test`, which stays hermetic.
+The server answers the request, and when `sleep` ends, standard input closes and the server exits 0. The here-string avoids a pipe into `grep -q`, which would fail under `pipefail` when `grep` exits early. Nothing else in the workflow changes.
 
-### docs
+### docs/cli.md changes
 
-- **`docs/configuration.md`:** add this row to the files table, after the `daemon.log` row:
-
-  ```text
-  | `~/.copilot-ledger/install.json` | What `gh-ledger install` changed, so `gh-ledger uninstall` can undo it |
-  ```
-- **`docs/cli.md`:** write it with these sections, in order, stating the facts listed for each:
-  1. **What gh-ledger does.** A local OTLP receiver on `http://localhost:4318` records Copilot CLI, GitHub Copilot app, and VS Code spend in `~/.copilot-ledger/ledger.db`, with no Docker and no cloud service.
-  2. **Build the binary.** The publish command and runtime identifiers above. Keep the binary in a permanent folder, because `install` points the gh alias at it.
-  3. **Install.**
-     - Exactly what `install` changes: `COPILOT_OTEL_ENABLED=true` in the Windows user environment or in a marked block in the shell profile, the `gh ledger` alias, the daemon start, and `install.json`. It changes nothing else, and in particular not `PATH` or other OpenTelemetry variables.
-     - `--dry-run`. Restart Copilot apps and terminals afterward.
-     - The warnings and what they mean.
-     - On Windows, `gh ledger` needs Git for Windows' `sh.exe`; `gh-ledger` works without it.
-  4. **The daemon.**
-     - `daemon run`, `start`, and `stop`; `daemon.json`, `daemon.lock`, and `daemon.log`.
-     - It doesn't start at login yet, so run `gh-ledger daemon start` after you sign in.
-     - Copilot drops telemetry while the daemon isn't running.
-  5. **Reports.**
-     - `status`, `branch`, `agents`, and `top-prompts`, with every option, the `--since` values, and `--json`.
-     - Tables round to cents; JSON is exact.
-     - `(none)` under Agent means no agent name was reported. Copilot's default agent reports none, and built-in subagents such as `explore` report their own names. A custom agent reports the `name` in its `.agent.md` file, both when you start it with `copilot --agent` and when another agent calls it as a subagent. A custom agent without a `name` reports its file name without `.agent.md`.
-  6. **Rates.** `rates init` and `rates validate`, with a link to `configuration.md`.
-  7. **Uninstall.** What it reverses, and that ledger data is kept.
-  8. **Privacy.** No prompt or response content, no working directories, and no remote URLs are stored. Repositories are stored as `owner/repo` slugs or local roots, and credentials are stripped.
-  9. **Troubleshooting.**
-     - Port 4318 in use.
-     - Nothing recorded: check `gh-ledger status` and its warnings, then restart Copilot.
-     - Apps launched outside a terminal, such as from the macOS Dock or a Linux desktop launcher, may not read shell profiles, so they may not see the `COPILOT_OTEL_ENABLED` that `install` put there. If `status` shows nothing recorded after you use such an app, start it from a terminal.
-     - `COPILOT_LEDGER_HOME`.
+- **Install:** after "sets the `gh ledger` alias,", add "registers the daemon to start when you sign in,". After the paragraph, add: "The sign-in item is the `CopilotLedger` value under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run` on Windows, `~/Library/LaunchAgents/io.github.swigerb.copilot-ledger.plist` on macOS, and `copilot-ledger.desktop` in `$XDG_CONFIG_HOME/autostart` (default `~/.config/autostart`) on Linux."
+- **The daemon:** replace "The daemon does not start at login yet. Run `gh-ledger daemon start` after you sign in. Copilot drops telemetry while the daemon is not running." with "After `install`, the daemon starts when you sign in. Copilot drops telemetry while the daemon is not running."
+- **Uninstall:** after "`gh` alias changes", add "and the sign-in item".
+- **Troubleshooting:** add two items:
+  - "**A console window flashes at sign-in.** Windows 11 24H2 and later start `gh-ledger` without a window. Earlier versions of Windows show its window for about a second."
+  - "**The daemon started at sign-in uses the default data directory.** If you set `COPILOT_LEDGER_HOME`, set it where your sign-in session sees it, such as a Windows user environment variable."
 
 ### Acceptance criteria
 
-- The commands, outputs, files, and exit codes match this section. No public types were added. `System.Diagnostics.Process` still appears only in `SystemCliPlatform.cs`. `src/` contains no `double` or `float`.
-- Install and uninstall tests change only temp directories and `FakeCliPlatform`. They never touch the real user environment, shell profile, gh configuration, or processes.
-- The csproj, `ci.yml`, and both docs match this section.
-- `dotnet build CopilotLedger.slnx` succeeds with 0 warnings, and `dotnet test CopilotLedger.slnx` passes everything from earlier tasks plus RP1–RP10 and IN1–IN10, with 0 failed and 0 skipped.
-- `dotnet publish` for your machine's runtime identifier produces one `gh-ledger` executable (plus an optional `.pdb`). Running it with `--version` prints `0.2.0`, and with `rates validate` and `COPILOT_LEDGER_HOME` set to an empty temp folder it exits 0.
+- IN1–IN15, DM1, and the `status` text test pass with the changes below, and every other test passes unchanged.
+- `gh-ledger --version` prints `0.3.0`, and the CI smoke test passes on `ubuntu-latest` and `windows-latest`, including the MCP `tools/list` check.
+- No test touches the real registry, `~/Library`, `~/.config`, or any file outside its `TempDirectory`.
+- `src/` contains no `double` or `float`. No new package.
 
 ### Verify
 
 ```shell
 dotnet build CopilotLedger.slnx
 dotnet test CopilotLedger.slnx
-dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release -r <your rid> -o artifacts/gh-ledger
+dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release -r <rid> -o artifacts/gh-ledger
 ```
 
-Then run `artifacts/gh-ledger/gh-ledger --version`, and `artifacts/gh-ledger/gh-ledger rates validate` with `COPILOT_LEDGER_HOME` set to a temp folder. Report the test counts and both outputs. Don't run `install` on your own machine.
+Use your machine's runtime identifier. Then run the CI smoke commands against `artifacts/gh-ledger` with `COPILOT_LEDGER_HOME` set to a temporary directory, and report the passed, failed, and skipped counts. Don't run `install` on your machine.
 
 ## Test specifications
 
-Shared rules for every task, which extend Sprint 1's:
+Shared rules for every task, which extend Sprint 2's:
 
-- **Money.** Assertions use `decimal`. In JSON output, read money with `JsonElement.GetDecimal()`; never use `GetDouble`. Decimal equality ignores trailing zeros.
-- **Public API only.** Tests use the public API, with no `InternalsVisibleTo`. CLI behavior is tested through `GhLedgerCli.InvokeAsync`.
+- **Money.** Assertions use `decimal`. In JSON, compare money by value: read it with `GetDecimal()` or compare whole documents with `JsonNode.DeepEquals`, which compares numbers by value (`2.86` equals `2.860`). Never use `GetDouble`.
+- **Public API only.** No `InternalsVisibleTo`. CLI behavior is tested through `GhLedgerCli.InvokeAsync` (`CliHarness`), and the MCP server through the SDK's `McpClient` over in-memory pipes.
 - **Isolation.**
-  - Each test that writes files gets its own `TempDirectory`, called `<root>` below. A path written `<root>/a/b` means `Path.Combine(<root>, "a", "b")`, so it uses `\` on Windows. `Path.GetTempPath()` already expands Windows 8.3 short names (verified on .NET 10: a `TMP` of `C:\PROGRA~1` gives `C:\Program Files\`), so `Path.GetFullPath` leaves these paths unchanged.
-  - Nothing touches the real `~/.copilot-ledger`, `~/.copilot`, gh configuration, user environment variables, or shell profiles.
-  - Nothing touches the network or sockets, starts processes, or runs `git`.
-  - Receivers and daemons use `UseTestServer()`.
-- **SQLite and disposal.**
-  - Every test that opens SQLite keeps the database under its `TempDirectory`. That includes opening it through a store, an ingestor, a receiver, a `CliHarness` command, or an in-process daemon. `TempDirectory.Dispose()` calls `SqliteConnection.ClearAllPools()` before deleting the folder, which Windows needs. Don't delete test folders any other way, and don't add another temp-folder helper.
-  - Dispose everything that uses the folder before the `TempDirectory`. Declare the `TempDirectory` first, so C# disposes it last: `using var temp = new TempDirectory();`, then `await using var harness = new CliHarness(temp.Path);` or `await using var app = OtlpReceiverApp.Build(...);`.
-  - That order stops any in-process daemon (`CliHarness.DisposeAsync`) and the receiver's host before the pools are cleared, so no connection is reopened afterward.
-- **Text.** Compare text after replacing `\r\n` with `\n`. Convert hex with `Convert.FromHexString`. Expected command output is shown without its final newline. Commands write whole lines, so when a case says `Out` or `Error` *is* a text, compare with that text plus `\n`.
-- **Git fixtures** follow Sprint 1's resolver tests: files end with `\n`, and `SHA1 = 0123456789abcdef0123456789abcdef01234567`.
+  - Each test that writes files gets its own `TempDirectory`, called `<root>`. A path written `<root>/a/b` means `Path.Combine(<root>, "a", "b")`. Build every path in a test with `Path.Combine`; never write `\` or `/` into a path, because CI runs on Linux and Windows.
+  - Nothing touches the real registry, `~/.copilot`, `~/.copilot-ledger`, `~/Library`, `~/.config`, gh, user environment variables, or shell profiles. Notifications and processes go through `FakeCliPlatform`; receivers and daemons use `TestServer`; the MCP server uses pipes. No test opens a socket, starts a process, or runs `git`.
+- **SQLite and disposal.** As in Sprint 2: keep every database under the test's `TempDirectory`, and declare the `TempDirectory` first so it's disposed last (`using TempDirectory temp = new();`, then the harness, store, or app).
+- **Text.**
+  - `CliRun.Out` and `CliRun.Error` already have `\r\n` replaced with `\n`. When a case says `Out` *is* a text, compare it with that text plus a final `\n`.
+  - Files the product writes with `\n` line breaks (the flag file, sign-in items, the toast XML) are compared exactly, without normalizing.
+  - Write multi-line expected text as raw string literals followed by `.ReplaceLineEndings("\n")`, because checkouts use `core.autocrlf=true` and a raw literal takes the file's line endings.
+- **JSON.** Compare JSON with `JsonNode.DeepEquals(JsonNode.Parse(actual), JsonNode.Parse(expected))`. In expected JSON, a path is inserted as `JsonSerializer.Serialize(path, RelaxedJson)`, where `RelaxedJson` is `new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }`, so `\` is escaped on Windows and the text matches files written with that encoder even when the temp path isn't ASCII.
+- **Clocks.** `NOW` is `2026-11-21T12:00:00Z` and `T0` is `2026-11-21T10:00:00Z`. "A store at `NOW`" is `new SqliteLedgerStore(<path>, new ManualTimeProvider(NOW))`. `ManualTimeProvider.Advance` moves it.
+- **Waiting.** Tests that wait for the daemon use a private `WaitUntilAsync(Func<Task<bool>> condition)` that checks every 25 ms for up to 10 seconds and then throws `TimeoutException`.
+- **Git fixture.** Unless a case says otherwise, `<root>/repo` is the fixture from `LedgerIngestorTests`: `.git/HEAD` = `ref: refs/heads/feature/ledger`, `.git/refs/heads/feature/ledger` = `SHA1`, and `.git/config` with `[remote "origin"]` and `\turl = https://github.com/swigerb/copilot-ledger.git`. Files end with `\n`. `SHA1 = 0123456789abcdef0123456789abcdef01234567` and `SHA2 = 89abcdef0123456789abcdef0123456789abcdef`. `FEATURE` is `new GitWorkspaceContext(<root>/repo, <root>/repo/.git, "feature/ledger", SHA1, "https://github.com/swigerb/copilot-ledger.git", "swigerb/copilot-ledger")`.
+- **MCP tool hash.** `HASH` is `c3d1fe831856c77818bb8c1242d32d6efa6c37366eb902e56c5fd0054c1dcbc3/918a44e755cc5eee09b08d214831e8339a645158ef1f831a0fa02bd43999700f`, the `gen_ai.tool.name` of run C's `probe_write`.
 
 ### Task 1 tests
 
-#### Fixtures (`OtlpFixtures`)
-
-`PGold1Hex` is this 456-byte payload, on one line. `PGold1 = Convert.FromHexString(PGold1Hex)`.
-
-```text
-0ac5030a220a200a0c736572766963652e6e616d6512100a0e6769746875622d636f70696c6f7412f5020a100a0e6769746875622e636f70696c6f7412e0020a105b8efff798038103d269b633813fc60c1208eee19b7ec3c1b1742208eee19b7ec3c1b1732a0f63686174206d61692d636f64652d32300339c07e7b7387d4e9184140211fda87d4e9184a1f0a1567656e5f61692e6f7065726174696f6e2e6e616d6512060a04636861744a240a1467656e5f61692e726571756573742e6d6f64656c120c0a0a6d61692d636f64652d324a210a1967656e5f61692e75736167652e696e7075745f746f6b656e73120418aa86014a200a1a67656e5f61692e75736167652e6f75747075745f746f6b656e73120218054a2b0a2467656e5f61692e75736167652e63616368655f726561642e696e7075745f746f6b656e73120318801c4a240a176769746875622e636f70696c6f742e6e616e6f5f616975120921000000f8b295c4414a2c0a1e67656e5f61692e726573706f6e73652e66696e6973685f726561736f6e73120a2a080a060a0473746f707a008501010100001a2768747470733a2f2f6f70656e74656c656d657472792e696f2f736368656d61732f312e34352e30
-```
-
-It is one `ExportTraceServiceRequest` with one `ResourceSpans`:
-
-- the resource attribute `service.name = "github-copilot"`;
-- one `ScopeSpans`, whose scope name is `github.copilot`;
-- `schema_url` `https://opentelemetry.io/schemas/1.45.0`;
-- one span:
-  - trace `5b8efff798038103d269b633813fc60c`, span `eee19b7ec3c1b174`, parent `eee19b7ec3c1b173`;
-  - name `chat mai-code-2`, kind 3;
-  - start `1795199604707000000` (2026-11-20T18:33:24.707Z), end `1795199606429000000` (2026-11-20T18:33:26.429Z);
-  - an empty `status` and flags 257;
-  - these attributes, in order:
-    1. `gen_ai.operation.name` = `chat`;
-    2. `gen_ai.request.model` = `mai-code-2`;
-    3. `gen_ai.usage.input_tokens` = 17194;
-    4. `gen_ai.usage.output_tokens` = 5;
-    5. `gen_ai.usage.cache_read.input_tokens` = 3584;
-    6. `github.copilot.nano_aiu` = the double 690710000.0, bits `0x41C495B2F8000000`;
-    7. `gen_ai.response.finish_reasons` = an array holding `"stop"`.
-
-`PGold1Json` encodes the same request as OTLP/JSON. It uses upper-case IDs, a numeric `endTimeUnixNano`, and a numeric `intValue`, all of which are legal:
-
-```json
-{
-  "resourceSpans": [
-    {
-      "resource": { "attributes": [ { "key": "service.name", "value": { "stringValue": "github-copilot" } } ] },
-      "scopeSpans": [
-        {
-          "scope": { "name": "github.copilot" },
-          "spans": [
-            {
-              "traceId": "5B8EFFF798038103D269B633813FC60C",
-              "spanId": "EEE19B7EC3C1B174",
-              "parentSpanId": "EEE19B7EC3C1B173",
-              "name": "chat mai-code-2",
-              "kind": 3,
-              "startTimeUnixNano": "1795199604707000000",
-              "endTimeUnixNano": 1795199606429000000,
-              "attributes": [
-                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
-                { "key": "gen_ai.request.model", "value": { "stringValue": "mai-code-2" } },
-                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "17194" } },
-                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": 5 } },
-                { "key": "gen_ai.usage.cache_read.input_tokens", "value": { "intValue": "3584" } },
-                { "key": "github.copilot.nano_aiu", "value": { "doubleValue": 690710000.0 } },
-                { "key": "gen_ai.response.finish_reasons", "value": { "arrayValue": { "values": [ { "stringValue": "stop" } ] } } }
-              ],
-              "status": {},
-              "flags": 257
-            }
-          ]
-        }
-      ],
-      "schemaUrl": "https://opentelemetry.io/schemas/1.45.0"
-    }
-  ]
-}
-```
-
-`CopilotChatTraceJson` is a trimmed copy of a real Copilot CLI 1.0.112 export (live capture, run 1), with synthetic IDs:
-
-```json
-{
-  "resourceSpans": [
-    {
-      "resource": {
-        "attributes": [
-          { "key": "service.name", "value": { "stringValue": "github-copilot" } },
-          { "key": "service.version", "value": { "stringValue": "1.0.112" } }
-        ],
-        "droppedAttributesCount": 0,
-        "entityRefs": []
-      },
-      "scopeSpans": [
-        {
-          "scope": { "name": "github.copilot", "version": "1.0.112", "attributes": [], "droppedAttributesCount": 0 },
-          "spans": [
-            {
-              "traceId": "5b8efff798038103d269b633813fc60c",
-              "spanId": "eee19b7ec3c1b174",
-              "traceState": "",
-              "parentSpanId": "eee19b7ec3c1b173",
-              "flags": 257,
-              "name": "chat mai-code-2",
-              "kind": 3,
-              "startTimeUnixNano": "1795199604707000000",
-              "endTimeUnixNano": "1795199606429000000",
-              "attributes": [
-                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
-                { "key": "gen_ai.provider.name", "value": { "stringValue": "github" } },
-                { "key": "gen_ai.request.model", "value": { "stringValue": "mai-code-2" } },
-                { "key": "gen_ai.conversation.id", "value": { "stringValue": "0f8fad5b-d9cb-469f-a165-70867728950e" } },
-                { "key": "gen_ai.response.finish_reasons", "value": { "arrayValue": { "values": [ { "stringValue": "stop" } ] } } },
-                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "17194" } },
-                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "5" } },
-                { "key": "gen_ai.usage.cache_read.input_tokens", "value": { "intValue": "3584" } },
-                { "key": "gen_ai.response.model", "value": { "stringValue": "mai-code-2" } },
-                { "key": "github.copilot.nano_aiu", "value": { "doubleValue": 690710000.0 } }
-              ],
-              "droppedAttributesCount": 0,
-              "events": [],
-              "droppedEventsCount": 0,
-              "links": [],
-              "droppedLinksCount": 0,
-              "status": { "message": "", "code": 0 }
-            },
-            {
-              "traceId": "5b8efff798038103d269b633813fc60c",
-              "spanId": "eee19b7ec3c1b173",
-              "traceState": "",
-              "parentSpanId": "",
-              "flags": 257,
-              "name": "invoke_agent",
-              "kind": 1,
-              "startTimeUnixNano": "1795199604679000000",
-              "endTimeUnixNano": "1795199606444000000",
-              "attributes": [
-                { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
-                { "key": "gen_ai.provider.name", "value": { "stringValue": "github" } },
-                { "key": "gen_ai.conversation.id", "value": { "stringValue": "0f8fad5b-d9cb-469f-a165-70867728950e" } },
-                { "key": "github.copilot.agent.type", "value": { "stringValue": "builtin" } },
-                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "17194" } },
-                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "5" } },
-                { "key": "github.copilot.turn_count", "value": { "intValue": "1" } }
-              ],
-              "droppedAttributesCount": 0,
-              "events": [],
-              "droppedEventsCount": 0,
-              "links": [],
-              "droppedLinksCount": 0,
-              "status": { "message": "", "code": 0 }
-            }
-          ],
-          "schemaUrl": "https://opentelemetry.io/schemas/1.45.0"
-        }
-      ],
-      "schemaUrl": ""
-    }
-  ]
-}
-```
-
-#### Helpers
-
-- **`OtlpProtoWriter`** (tests only) is fluent; each method returns `this`, except `ToArray()`. Its methods are `Varint(int field, ulong value)`, `Fixed64(int field, ulong value)`, `Fixed32(int field, uint value)`, `Bytes(int field, ReadOnlySpan<byte> value)`, `String(int field, string value)`, `Message(int field, OtlpProtoWriter message)`, `Raw(params byte[] bytes)`, and `ToArray()`. Each field is written as its tag varint `(field << 3) | wireType`, followed by the value. Length-delimited values are prefixed with a varint length.
-- **The `PGold1` recipe**, used by PB2. `kv(key, value)` is `new OtlpProtoWriter().String(1, key).Message(2, value)`.
-  - The request is `Message(1, resourceSpans)`.
-  - `resourceSpans` is `.Message(1, resource)`, `.Message(2, scopeSpans)`, and `.String(3, "https://opentelemetry.io/schemas/1.45.0")`.
-  - `resource` is `.Message(1, kv("service.name", .String(1, "github-copilot")))`.
-  - `scopeSpans` is `.Message(1, .String(1, "github.copilot"))` and `.Message(2, span)`.
-  - `span` is:
-    - `.Bytes(1, trace)`, `.Bytes(2, span id)`, `.Bytes(4, parent)`;
-    - `.String(5, "chat mai-code-2")`, `.Varint(6, 3)`;
-    - `.Fixed64(7, 1795199604707000000)`, `.Fixed64(8, 1795199606429000000)`;
-    - seven `.Message(9, kv(...))` entries for the attributes, in order. The values are:
-      - `.String(1, ...)` for strings;
-      - `.Varint(3, n)` for integers;
-      - `.Fixed64(4, 0x41C495B2F8000000)` for the double;
-      - `.Message(5, .Message(1, .String(1, "stop")))` for the array.
-    - `.Message(15, new OtlpProtoWriter())` and `.Fixed32(16, 257)`.
-- **`OtlpRequests`** (tests only) builds `OtlpTraceRequest` records directly:
-  - `Str(key, value)`, `Int(key, value)`, `Dbl(key)` (kind `Double`), and `Emp(key)` (kind `Empty`) make attributes.
-  - `Span(traceId, spanId, parentSpanId, name, startNs, endNs, params OtlpAttribute[] attributes)` makes a span.
-  - `Request(IReadOnlyList<OtlpAttribute> resourceAttributes, params OtlpSpan[] spans)` makes one `ResourceSpans`.
-  - `CopilotResource` is `[Str("service.name", "github-copilot")]`.
-
-Unless a case says otherwise, a normalization span uses the `CopilotResource`, trace `5b8efff798038103d269b633813fc60c`, span `eee19b7ec3c1b174`, no parent, start `1795199604707000000`, end `1795199606429000000`, and the attribute `Str("gen_ai.operation.name", "chat")`.
-
 #### Protobuf decoding: `OtlpProtobufDecodingTests`
 
-| # | Input | Expected |
+**PB8** (theory over a case name). Decode `DecodeSingleSpan(span)`, where `span` is `new OtlpProtoWriter().Bytes(2, Convert.FromHexString("eee19b7ec3c1b174"))` followed by the field below. Assert the span's `SpanId` is `eee19b7ec3c1b174` and its `StatusCode`:
+
+| Case | Field after the span ID | `StatusCode` |
 |---|---|---|
-| PB1 | `PGold1` | One `ResourceSpans`. `ResourceAttributes` = [`service.name`: `String` `github-copilot`]. One span: `TraceId` `5b8efff798038103d269b633813fc60c`, `SpanId` `eee19b7ec3c1b174`, `ParentSpanId` `eee19b7ec3c1b173`, `Name` `chat mai-code-2`, start 1795199604707000000, end 1795199606429000000. Attributes, in order: operation `String` `chat`; request model `String` `mai-code-2`; input `Int` 17194; output `Int` 5; cache read `Int` 3584; `nano_aiu` `Double`; finish reasons `Array`. `SpanCount` is 1. |
-| PB2 | The recipe above | `ToArray()` equals `PGold1` byte for byte |
-| PB3 | An empty payload | 0 `ResourceSpans` |
-| PB4 | (theory) `PGold1` without its last byte; `0b`; `0affffffff0f`; `08ffffffffffffffffff7f`; `00`; `0a020a`; `0a030a0105` | `OtlpDecodeException` |
-| PB5 | A span with a 15-byte `trace_id` (`0x01` repeated), an 8-byte all-zero `span_id`, an 8-byte all-zero parent, and start 1 | `TraceId`, `SpanId`, and `ParentSpanId` are all null |
-| PB6 | Attributes: key bytes `67 c3 28` with string `x`; `int_value` encoded as `ff ff ff ff ff ff ff ff ff 01`; `bool_value` 1; a key with no value; an empty key | Key `g\uFFFD(` with `String` `x`; `Int` −1; `Bool` true; `Empty`; the empty-key attribute is dropped (4 attributes) |
-| PB7 | Field 1 of the span sent as a varint (`08 01`) plus a valid `span_id`, and an unknown request field `12 00` | No exception: `TraceId` is null, and `SpanId` is set |
+| `error` | `.Message(15, new OtlpProtoWriter().String(2, "Tool failed").Varint(3, 2))` | 2 |
+| `ok` | `.Message(15, new OtlpProtoWriter().Varint(3, 1))` | 1 |
+| `empty` | `.Message(15, new OtlpProtoWriter())` | 0 |
+| `unknown-code` | `.Message(15, new OtlpProtoWriter().Varint(3, 7))` | 0 |
+| `last-wins` | `.Message(15, new OtlpProtoWriter().Varint(3, 2).Varint(3, 1))` | 1 |
+| `status-wrong-wire-type` | `.Varint(15, 2)` | 0 |
+| `code-wrong-wire-type` | `.Message(15, new OtlpProtoWriter().String(3, "2"))` | 0 |
+| `missing` | nothing | 0 |
 
 #### JSON decoding: `OtlpJsonDecodingTests`
 
-| # | Input | Expected |
-|---|---|---|
-| JS1 | `PGold1Json` | The same values as PB1. Share the assertion helper. |
-| JS2 | `CopilotChatTraceJson` | Two spans. The first has `ParentSpanId` `eee19b7ec3c1b173` and 10 attributes; `github.copilot.nano_aiu` is `Double`, `gen_ai.response.finish_reasons` is `Array`, and `gen_ai.usage.input_tokens` is `Int` 17194. The second has `ParentSpanId` null (from `""`), start 1795199604679000000, and end 1795199606444000000. There are 2 resource attributes. |
-| JS3 | (theory) `{}`; `{"resourceSpans":[]}`; `{"resourceSpans":null}`; the bytes `EF BB BF 7B 7D` | 0 `ResourceSpans` |
-| JS4 | (theory) `{`; `[]`; `{"resourceSpans":{}}`; `{"resourceSpans":[1]}`; `{"resourceSpans":[{"scopeSpans":[{"spans":{}}]}]}`; `{"resourceSpans":[{"resource":"x"}]}`; `{"resourceSpans":[],}`; `{"resourceSpans":[]} // c` | `OtlpDecodeException` |
-| JS5 | `{"resourceSpans":[{"scopeSpans":[{"spans":[{"trace_id":"5b8efff798038103d269b633813fc60c","span_id":"eee19b7ec3c1b174","startTimeUnixNano":"1"}]}]}]}` | One span: `TraceId` and `SpanId` are null (snake_case is ignored), and start is 1 |
-| JS6 | (theory) The value object of a single attribute (table below) | The kind and value listed |
-| JS7 | `startTimeUnixNano` of `"abc"`; of the number `1795199604707000000`; `endTimeUnixNano` of `"-1"` | 0; exactly 1795199604707000000 (a `double` would round it); 0 |
-| JS8 | Write this in a C# raw string literal, so each `\u` stays a JSON escape: `{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"5b8efff798038103d269b633813fc60c","spanId":"eee19b7ec3c1b174","parentSpanId":"\udc00","\udc00":1,"name":"a\ud800","startTimeUnixNano":"1","attributes":[{"key":"k\ud800","value":{"stringValue":"x"}},{"key":"gen_ai.agent.name","value":{"stringValue":"a\ud800b"}},{"key":"gen_ai.operation.name","value":{"stringValue":"chat"}}]}]}]}]}` | No exception. One span: `TraceId` and `SpanId` set, `ParentSpanId` null, `Name` `""`, and start 1. Two attributes, in order: `gen_ai.agent.name` `Empty`, then `gen_ai.operation.name` `String` `chat`. The `k\ud800` attribute is skipped. |
+**JS10** (theory). Decode `SingleSpan(json)` for this JSON, where `STATUS` is empty in the `missing` case and otherwise `,"status":` followed by the value below:
 
-JS6 cases:
+```text
+{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"5b8efff798038103d269b633813fc60c","spanId":"eee19b7ec3c1b174","name":"execute_tool powershell pwsh.exe","startTimeUnixNano":"1795220217552000000"STATUS}]}]}]}
+```
 
-| Value | Kind and value |
+Assert `SpanId` is `eee19b7ec3c1b174` and `StatusCode`:
+
+| `status` value | `StatusCode` |
 |---|---|
-| `{"intValue":"12x"}` | `Empty` |
-| `{"intValue":1.5}` | `Empty` |
-| `{"intValue":true}` | `Empty` |
-| `{"intValue":"-7"}` | `Int` −7 |
-| `{"intValue":9223372036854775807}` | `Int` 9,223,372,036,854,775,807 |
-| `{"doubleValue":"NaN"}` | `Double` |
-| `{}` | `Empty` |
-| `{"stringValue":"a","intValue":"1"}` | `String` `a` (the first recognized property wins) |
-| `{"foo":1,"boolValue":false}` | `Bool` false |
-| `{"stringValue":5}` | `Empty` |
+| `{"code":2,"message":"Tool failed"}` | 2 |
+| `{"message":"","code":0}` | 0 |
+| `{"code":1}` | 1 |
+| `{"code":"2"}` | 0 |
+| `{"code":"STATUS_CODE_ERROR"}` | 0 |
+| `{"code":3}` | 0 |
+| `{"code":2.5}` | 0 |
+| `{"code":1,"code":2}` | 2 |
+| `null` | 0 |
+| `"error"` | 0 |
+| (missing) | 0 |
 
 #### Normalization: `GenAiSpanNormalizerTests`
 
-**NZ1.** `Normalize(DecodeJson(CopilotChatTraceJson))` gives Received 2, Rejected 0, and a null `FirstRejectionReason`.
+**NZ12.** Normalize `Request(CopilotResource, …)` with these 8 spans, in this order. Each uses `Span(spanId: <id>, attributes: [...])` with the other defaults, and `with { StatusCode = <status> }` where a status is given. In the table, `execute_tool` stands for `Str("gen_ai.operation.name", "execute_tool")`:
 
-It has one inference span:
+| # | Span ID | Attributes | Status |
+|---|---|---|---|
+| 1 | `00000000000000a1` | `Str("gen_ai.operation.name", "execute_tool")`, `Str("gen_ai.tool.name", "powershell")`, `Int("process.exit.code", 1)` | |
+| 2 | `00000000000000a2` | `execute_tool`, `Str("gen_ai.tool.name", "apply_patch")` | |
+| 3 | `00000000000000a3` | `execute_tool`, `Str("gen_ai.tool.name", HASH)` | 2 |
+| 4 | `00000000000000a4` | `execute_tool`, `Str("gen_ai.tool.name", "powershell")`, `Int("process.exit.code", -1073741510)` | |
+| 5 | `00000000000000a5` | `execute_tool`, `Str("gen_ai.tool.name", "powershell")`, `Str("process.exit.code", "1")` | |
+| 6 | `00000000000000a6` | `execute_tool`, `Int("gen_ai.tool.name", 7)` | |
+| 7 | `00000000000000c1` | `Str("gen_ai.operation.name", "chat")`, `Str("gen_ai.request.model", "mai-code-2")`, `Int("gen_ai.usage.input_tokens", 10)`, `Str("gen_ai.tool.name", "x")`, `Int("process.exit.code", 3)` | 1 |
+| 8 | `00000000000000b1` | none (a `permission` span) | |
 
-| Field | Value |
-|---|---|
-| `TraceId` | `5b8efff798038103d269b633813fc60c` |
-| `SpanId` | `eee19b7ec3c1b174` |
-| `ParentSpanId` | `eee19b7ec3c1b173` |
-| `OperationName` | `chat` |
-| `StartTime` | 2026-11-20T18:33:24.707Z |
-| `EndTime` | 2026-11-20T18:33:26.429Z |
-| `ProviderName` | `github` |
-| `RequestModel`, `ResponseModel` | `mai-code-2` |
-| `AgentName` | null |
-| `ConversationId` | `0f8fad5b-d9cb-469f-a165-70867728950e` |
-| `ServerAddress`, `ServerPort`, `WorkingDirectory` | null |
-| `InputTokens` | 17194 |
-| `OutputTokens` | 5 |
-| `CacheReadInputTokens` | 3584 |
-| `CacheWriteInputTokens` | 0 |
+Assert: `ReceivedSpanCount` 8, `RejectedSpanCount` 0, one inference span (`00000000000000c1`), and 8 links in input order with these values:
 
-It has two links, in order. Every Git field is null in both.
+| # | `OperationName` | `ToolName` | `ToolExitCode` | `StatusCode` |
+|---|---|---|---|---|
+| 1 | `execute_tool` | `powershell` | 1 | 0 |
+| 2 | `execute_tool` | `apply_patch` | null | 0 |
+| 3 | `execute_tool` | `HASH` | null | 2 |
+| 4 | `execute_tool` | `powershell` | -1073741510 | 0 |
+| 5 | `execute_tool` | `powershell` | null | 0 |
+| 6 | `execute_tool` | null | null | 0 |
+| 7 | `chat` | null | null | 1 |
+| 8 | null | null | null | 0 |
 
-| | `SpanId` | `ParentSpanId` | `OperationName` | `AgentName` | `ConversationId` | `StartTime` |
-|---|---|---|---|---|---|---|
-| Link 1 | `eee19b7ec3c1b174` | `eee19b7ec3c1b173` | `chat` | null | `0f8fad5b-d9cb-469f-a165-70867728950e` | 2026-11-20T18:33:24.707Z |
-| Link 2 | `eee19b7ec3c1b173` | null | `invoke_agent` | null | `0f8fad5b-d9cb-469f-a165-70867728950e` | 2026-11-20T18:33:24.679Z |
+#### Storage: `SpanLinkStoreTests` and `SqliteLedgerStoreTests`
 
-**NZ2–NZ11:**
+- **SL1** (changed). Its setup SQL becomes `DROP INDEX ix_spans_trace; DROP TABLE span_links; DROP TABLE breaker_trips; DROP TABLE branch_budgets; DROP TABLE breaker_settings; PRAGMA user_version = 1;`, and the expected `user_version` is `3L`. Its other assertions are unchanged.
+- **S1** (changed). The expected `PRAGMA user_version` is `3L`.
+- **SL8.** Migration 3 upgrades a version-2 ledger. Record `Entry("mai-code-2", 1000, 100)` and the link `Link("8", "8888888888888881", null, "execute_tool") with { ToolName = "powershell", ToolExitCode = 1, StatusCode = 2 }`. Through a separate connection run `DROP TABLE breaker_trips; DROP TABLE branch_budgets; DROP TABLE breaker_settings; ALTER TABLE span_links DROP COLUMN tool_name; ALTER TABLE span_links DROP COLUMN tool_exit_code; ALTER TABLE span_links DROP COLUMN status_code; PRAGMA user_version = 2;`. A new store calls `InitializeAsync`. Then, through a separate connection: `PRAGMA user_version` is 3L; `SELECT COUNT(*) FROM spans` is 1L; `SELECT COUNT(*) FROM span_links` is 1L; `SELECT tool_name IS NULL AND tool_exit_code IS NULL AND status_code = 0 FROM span_links` is 1L; `SELECT velocity_threshold_usd_pico FROM breaker_settings WHERE id = 1` is 1500000000000L; and `SELECT COUNT(*) FROM breaker_trips` and `SELECT COUNT(*) FROM branch_budgets` are 0L.
+- **SL9.** `RecordSpanLinksAsync` with `Link("9", <span>, null, <operation>) with { ToolName, ToolExitCode, StatusCode }` for: `9999999999999991` (`execute_tool`, `powershell`, 1, 0); `9999999999999992` (`execute_tool`, `apply_patch`, null, 0); `9999999999999993` (`execute_tool`, `HASH`, null, 2); and `9999999999999994` (`chat`, null, null, 1). It returns 4. Recording `9999999999999991` again with `ToolName = "bash"` returns 0. Then `SELECT span_id, tool_name, tool_exit_code, status_code FROM span_links ORDER BY span_id`, through a separate connection, returns exactly those four rows, with `powershell` for `9999999999999991` and `DBNull` for the nulls.
 
-| # | Case | Expected |
-|---|---|---|
-| NZ2 | `Normalize(DecodeProtobuf(PGold1))` | One inference span: `ProviderName`, `ConversationId`, and `ResponseModel` are null; `RequestModel` is `mai-code-2`; tokens are 17194, 5, 3584, and 0. One link, with operation `chat`. |
-| NZ3 | (theory) Input 1000 plus cache write 300; cache creation 200; both 300 and 200; neither | `CacheWriteInputTokens` is 300, 200, 300, and 0. `InputTokens` stays 1000. |
-| NZ4 | Input 100, cache read 80, cache write 30 | `InputTokens` 210, `CacheReadInputTokens` 80, `CacheWriteInputTokens` 30 |
-| NZ5 | (theory) One-span requests: trace ID null; span ID null; start 0; `Dbl("gen_ai.usage.input_tokens")`; `Int("gen_ai.usage.output_tokens", -1)`; `Str("gen_ai.usage.cache_read.input_tokens", "5")`; input 1 with cache read `long.MaxValue` and cache write 1 | Each has Received 1, Rejected 1, and no spans or links. `FirstRejectionReason`, in order: `invalid traceId`; `invalid spanId`; `missing startTimeUnixNano`; `gen_ai.usage.input_tokens is not a non-negative integer`; `gen_ai.usage.output_tokens is not a non-negative integer`; `gen_ai.usage.cache_read.input_tokens is not a non-negative integer`; `token counts overflow` |
-| NZ6 | Resource `service.name` = `my-app`, with a span that has no `gen_ai.operation.name` | Received 1, Rejected 0, no links, no inference spans |
-| NZ7 | Copilot resource. Span A has no operation and the name `plan`. Span B is `execute_tool` with `Dbl("gen_ai.usage.input_tokens")`. | Two links (operation null, then `execute_tool`), Rejected 0, no inference spans |
-| NZ8 | Resource `service.name` = `copilot-chat`. Span 1 is `invoke_agent` with agent `GitHub Copilot Chat`, `github.copilot.git.repository` = `https://user:s3cr3t@github.com/contoso/webapp.git`, branch `feature/login`, and commit `0123456789ABCDEF0123456789ABCDEF01234567`. Span 2 is `invoke_agent` with legacy `copilot_chat.repo.remote_url` = `git@github.com:contoso/api.git`, `head_branch_name` = `main`, and `head_commit_hash` = `not-a-sha`. | Link 1: slug `contoso/webapp`, branch `feature/login`, commit `0123456789abcdef0123456789abcdef01234567`, agent `GitHub Copilot Chat`. Link 2: slug `contoso/api`, branch `main`, commit null. |
-| NZ9 | Resource with `process.working_directory` = `Path.GetTempPath()`, and a chat span with `server.address` `127.0.0.1` and `server.port` `Int` 11434. The same with `process.working_directory` = `src/app` and `server.port` 70000. | `WorkingDirectory` = `Path.GetTempPath()`, `ServerAddress` `127.0.0.1`, `ServerPort` 11434. Then `WorkingDirectory` and `ServerPort` are null. |
-| NZ10 | (a) end < start; (b) operations `text_completion` and `generate_content`; (c) `gen_ai.request.model` twice, `first` then `second`; (d) `gen_ai.agent.name` = `"   "` | (a) `EndTime == StartTime`; (b) both are inference spans; (c) `RequestModel` is `first`; (d) `AgentName` is null |
-| NZ11 | (theory) One-span requests: (a) `Int("gen_ai.usage.output_tokens", 1000000001)`; (b) `Int("gen_ai.usage.input_tokens", 1000000000)`; (c) input 100, cache read 600,000,000, and cache write 500,000,000, which normalizes input to 1,100,000,100 | (a) and (c): Received 1, Rejected 1, no spans or links, and `FirstRejectionReason` `token count exceeds 1000000000`. (b): Rejected 0 and one inference span with `InputTokens` 1,000,000,000; the cap is inclusive. |
+#### Breaker storage: `BreakerStoreTests` (new)
+
+Each case uses a store at `NOW` on `<root>/ledger.db`, initialized. `ToolLink(trace, span, start, tool, exit, status, operation = "execute_tool", conversation = null)` is a private helper that builds a `GenAiSpanLink` with those values. Trace IDs: `TA = "b5000000000000000000000000000001"`, `TB = "b5000000000000000000000000000002"`, `TC = "b5000000000000000000000000000003"`.
+
+**BS1, `GetTraceActivityAsync`.** Record three entries for `TA`, built with `TestSpans.Chat(...) with { TraceId = TA, SpanId = … }` and priced by the embedded calculator:
+
+- `b500000000000001`: `mai-code-2`, input 1,000, output 100, start `T0`, end `T0 + 2 s`, conversation `conv-b`, Git `FEATURE`;
+- `b500000000000002`: `claude-opus-5.5`, input 100,000, output 10,000, start `T0 + 60 s`, end `T0 + 62 s`, conversation `conv-b`, Git `FEATURE with { HeadCommitSha = SHA2 }`;
+- `b500000000000003`: `qwen3.8-27b-cuda-gpu:1`, server `127.0.0.1:11434`, input 1,000, start `T0 + 30 s`, end `T0 + 31 s`, no conversation, no Git.
+
+Record these links: `ToolLink(TA, "b5000000000000a1", T0 + 20 s, "powershell", 1, 0)`, `ToolLink(TA, "b5000000000000a2", T0 + 40 s, "powershell", 0, 0)`, `ToolLink(TA, "b5000000000000a3", T0 + 40 s, HASH, null, 2)`, `ToolLink(TA, "b500000000000001", T0, null, null, 0, operation: "chat")`, and `ToolLink(TB, "b5000000000000b1", T0, "powershell", 1, 0, conversation: "conv-links")`.
+
+- `GetTraceActivityAsync(TA)`: `TraceId` `TA`, `ConversationId` `conv-b`, `Repository` `swigerb/copilot-ledger`, `Branch` `feature/ledger`, `RepositoryRoot` `<root>/repo`, and `SpanCount` 3.
+  - `Costs` equals `[new CostEvent("b500000000000001", T0 + 2 s, 0.00075m), new CostEvent("b500000000000002", T0 + 62 s, 0.60m)]`.
+  - `ToolCalls` equals `[new ToolCallEvent("b5000000000000a1", T0 + 20 s, "powershell", 1, 0), new ToolCallEvent("b5000000000000a2", T0 + 40 s, "powershell", 0, 0), new ToolCallEvent("b5000000000000a3", T0 + 40 s, HASH, null, 2)]`.
+  - `Commits` equals `[new CommitObservation("b500000000000001", T0, SHA1), new CommitObservation("b500000000000002", T0 + 60 s, SHA2)]`.
+- `GetTraceActivityAsync(TB)`: `ConversationId` `conv-links`, `Repository` `(none)`, `Branch` `(none)`, `RepositoryRoot` null, `SpanCount` 0, empty `Costs` and `Commits`, and `ToolCalls` equal to `[new ToolCallEvent("b5000000000000b1", T0, "powershell", 1, 0)]`.
+- `GetTraceActivityAsync(TC)`: `ConversationId` null, `(none)`, `(none)`, `RepositoryRoot` null, `SpanCount` 0, and three empty lists.
+- `GetTraceActivityAsync(" ")` throws `ArgumentException`.
+
+**BS2, recording and reading trips.** `A` is `NewBreakerTrip { Rule = CreditVelocity, TraceId = TA, Repository = "swigerb/copilot-ledger", Branch = "feature/ledger", RepositoryRoot = <root>/repo, TrippedAt = T0 + 180 s, Detail = "180.00 AI credits in 5 minutes", WindowCostUsd = 1.80m, WindowMinutes = 5 }`. `B` is `{ Rule = RetryChurn, TraceId = TA, ConversationId = "conv-b", the same repository, branch, and root, TrippedAt = T0 + 120 s, Detail = "5 failed tool calls in a row", FailureCount = 5 }`. `C` is `{ Rule = RetryChurn, TraceId = TB, Repository = "contoso/api", Branch = "main", TrippedAt = T0 - 3600 s, Detail = "7 failed tool calls in a row", FailureCount = 7 }`.
+
+- `RecordBreakerTripAsync(A)` returns 1; `A with { Detail = "x" }` returns null; `B` returns 2; `C` returns 3.
+- `GetOpenBreakerTripsAsync(BreakerTripFilter.All)` returns ids 1, 2, 3 in that order. Trip 1 has `Rule` `CreditVelocity`, `TraceId` `TA`, `ConversationId` null, `Repository` `swigerb/copilot-ledger`, `Branch` `feature/ledger`, `RepositoryRoot` `<root>/repo`, `TrippedAt` `T0 + 180 s`, `Detail` `180.00 AI credits in 5 minutes`, `WindowCostUsd` 1.80m, `WindowMinutes` 5, `FailureCount` null, `RecordedAt` `NOW`, and `NotifiedAt` and `ResetAt` null. Trip 2 has `ConversationId` `conv-b`, `WindowCostUsd` null, `WindowMinutes` null, and `FailureCount` 5. Trip 3 has `RepositoryRoot` null and `FailureCount` 7.
+- With filters: `{ Repository = "contoso/api" }` returns [3]; `{ Branch = "feature/ledger" }` returns [1, 2]; `{ RepositoryRoot = <root>/repo }` returns [1, 2]; `{ Id = 2 }` returns [2]; and `{ Repository = "swigerb/copilot-ledger", Branch = "main" }` returns [].
+- `RecordBreakerTripAsync(A with { TraceId = TC, Detail = " " })` throws `ArgumentException`, and `A with { TraceId = TC, WindowCostUsd = -1m }` throws `ArgumentOutOfRangeException`.
+
+**BS3, notifying and resetting.** Record `A`, `B`, and `C` from BS2.
+
+- `GetUnnotifiedBreakerTripsAsync(NOW - 1 h)` returns ids [1, 2, 3].
+- `MarkBreakerTripNotifiedAsync(1)` returns true, again returns false, and `MarkBreakerTripNotifiedAsync(99)` returns false.
+- Advance the clock 30 minutes. `GetUnnotifiedBreakerTripsAsync(NOW - 1 h)` returns [2, 3], and `GetUnnotifiedBreakerTripsAsync(NOW + 1 ms)` returns [].
+- `ResetBreakerTripsAsync({ Repository = "swigerb/copilot-ledger", Branch = "feature/ledger" })` returns trips [1, 2], each with `ResetAt` `NOW + 30 min`; again, it returns [].
+- `GetOpenBreakerTripsAsync(All)` returns [3], and `GetUnnotifiedBreakerTripsAsync(NOW - 1 h)` returns [3].
+- `ResetBreakerTripsAsync({ Id = 3 })` returns [3]. Then `GetOpenBreakerTripsAsync(All)` and `ResetBreakerTripsAsync(All)` return [].
+
+**BS4, settings.** `GetBreakerSettingsAsync()` equals `BreakerSettings.Default` (150, 5, 5, false, true). `UpdateBreakerSettingsAsync(new BreakerSettings { VelocityCredits = 12.34m, VelocityWindowMinutes = 1440, ChurnFailures = 2, FlagFile = true, Notifications = false })`; then `GetBreakerSettingsAsync()` equals it, and through a separate connection `velocity_threshold_usd_pico` is 123400000000L and `updated_at_unix_ms` is `NOW`'s Unix milliseconds. Then, a theory over invalid settings, each `BreakerSettings.Default with { … }`: `VelocityCredits = 0.99m`, `1000000.01m`, `12.345m`; `VelocityWindowMinutes = 0`, `1441`; `ChurnFailures = 1`, `101`. Each throws `ArgumentOutOfRangeException`, and `GetBreakerSettingsAsync()` still equals the defaults. `BreakerSettings.Default with { VelocityCredits = 1000000m }` is valid and round-trips.
+
+**BS5, budgets.** Seed `LedgerSeeds.SeedChainsAsync(store, <root>/repo, <root>/api)`.
+
+- `SetBranchBudgetAsync("swigerb/copilot-ledger", "feature/ledger", 50m)`, `("contoso/api", "main", 40.5m)`, and `("(none)", "(none)", 1m)`.
+- `GetBranchBudgetsAsync()` returns, in order:
+
+  | Repository | Branch | Budget | Spent | Exceeded |
+  |---|---|---|---|---|
+  | `(none)` | `(none)` | 1 | 0 | false |
+  | `contoso/api` | `main` | 40.5 | 31.5 | false |
+  | `swigerb/copilot-ledger` | `feature/ledger` | 50 | 56 | true |
+
+  Each has `SetAt` `NOW` and null `AlertedAt` and `NotifiedAt`.
+- `GetBranchBudgetsAsync("contoso/api")` returns only that row, and `GetBranchBudgetsAsync("swigerb/copilot-ledger", "main")` returns [].
+- `MarkBranchBudgetAlertedAsync("swigerb/copilot-ledger", "feature/ledger")` returns true, again returns false, and `("x", "y")` returns false. `GetUnnotifiedBudgetAlertsAsync(NOW - 1 h)` returns that one row, with `AlertedAt` `NOW`.
+- `MarkBranchBudgetNotifiedAsync("swigerb/copilot-ledger", "feature/ledger")` returns true and again false; `MarkBranchBudgetNotifiedAsync("contoso/api", "main")` returns false, because it was never alerted. `GetUnnotifiedBudgetAlertsAsync(NOW - 1 h)` returns [].
+- Advance the clock 1 hour. `SetBranchBudgetAsync("swigerb/copilot-ledger", "feature/ledger", 60m)`; that row now has budget 60, spent 56, `Exceeded` false, `SetAt` `NOW + 1 h`, and null `AlertedAt` and `NotifiedAt`.
+- `ClearBranchBudgetAsync("contoso/api", "main")` returns true and again false, and `GetBranchBudgetsAsync()` then has 2 rows.
+- A theory over `0m`, `-1m`, `1000000.01m`, and `0.001m` for `SetBranchBudgetAsync("a", "b", …)` throws `ArgumentOutOfRangeException`. `SetBranchBudgetAsync(" ", "b", 1m)` throws `ArgumentException`.
+
+**BS6, failed tool calls.** Record links for trace `X = new string('7', 32)`: `ToolLink(X, "7777777777777771", T0, "powershell", 1, 0)`, `("7777777777777772", T0 + 1 s, "powershell", -1, 0)`, `("7777777777777773", T0 + 2 s, HASH, null, 2)`, `("7777777777777774", T0 + 3 s, "powershell", 0, 0)`, `("7777777777777775", T0 + 4 s, "powershell", 0, 2)`, and `("7777777777777776", T0 + 5 s, "apply_patch", null, 0)`. For `Y = new string('8', 32)`: `("8888888888888881", T0, "bash", 2, 0)`. For `Z = new string('9', 32)`: `("9999999999999991", T0, "powershell", 0, 0)`. `GetFailedToolCallCountsAsync([X, Y, Z, new string('6', 32)])` has exactly 2 entries: `X` 4 and `Y` 1. `GetFailedToolCallCountsAsync([])` is empty.
 
 ### Task 2 tests
 
 #### Test support
 
-- **`ManualTimeProvider : TimeProvider`** is built with `(DateTimeOffset utcNow, TimeZoneInfo? localTimeZone = null)`.
-  - It overrides `GetUtcNow()`, and `LocalTimeZone`, which defaults to `TimeZoneInfo.Utc`. `Advance(TimeSpan)` moves the clock.
-  - `public static readonly TimeZoneInfo UtcMinus5 = TimeZoneInfo.CreateCustomTimeZone("CopilotLedger-Test-0500", TimeSpan.FromHours(-5), "UTC-05:00 (test)", "UTC-05:00 (test)");` has a fixed offset and no daylight saving time, so it behaves the same on every OS.
-- **`CopilotTraces`** builds the requests below with `OtlpRequests`.
-- **`LedgerSeeds.SeedChainsAsync(SqliteLedgerStore store, string repoRoot, string apiRoot)`** records K1–K5 below.
-  - It builds spans with `TestSpans.Chat(...) with { TraceId = ..., SpanId = ... }`, so each span ends 2 s after it starts.
-  - It prices K4 with `JsonRateCardCalculator.Parse(RateFixtures.ByokTestRatesJson)` and the rest with `LoadEmbedded()`.
-  - Git contexts:
-    - `swigerb/copilot-ledger` is `new GitWorkspaceContext(repoRoot, Path.Combine(repoRoot, ".git"), <branch>, SHA1, "https://github.com/swigerb/copilot-ledger.git", "swigerb/copilot-ledger")`;
-    - `contoso/api` is the same shape with `apiRoot` and `https://github.com/contoso/api.git`.
-  - It returns `RecordAsync`'s count, which is 5.
+`RecordingAlertSink : IBreakerAlertSink` keeps `public List<BreakerAlert> Alerts { get; } = []` and `public List<string> Warnings { get; } = []`; `Publish` and `Warn` append to them.
 
-**Trace B** is the subagent prompt from live capture run 2, with synthetic IDs:
-
-- resource `CopilotResource` plus `Str("service.version", "1.0.112")`;
-- trace `4bf92f3577b34da6a3ce929d0e0e4736`;
-- every span carries `gen_ai.conversation.id` = `7c9e6679-7425-40de-944b-e07fc1f90ae7`;
-- every chat span carries `gen_ai.provider.name` `github` and both request and response model.
-
-| Key | Span ID | Parent | Name | Start ns | End ns | Other attributes |
-|---|---|---|---|---|---|---|
-| root | `00f067aa0ba902b7` | none | `invoke_agent` | 1795199708999000000 | 1795199720318000000 | operation `invoke_agent`; provider `github`; `github.copilot.agent.type` `builtin` |
-| main1 | `00f067aa0ba902b8` | root | `chat mai-code-2` | 1795199709019000000 | 1795199712254000000 | operation `chat`; model `mai-code-2`; input 17194; output 99; cache read 15872 |
-| task | `00f067aa0ba902b9` | root | `execute_tool task` | 1795199712265000000 | 1795199716550000000 | operation `execute_tool`; `gen_ai.tool.name` `task` |
-| explore | `00f067aa0ba902ba` | task | `invoke_agent explore` | 1795199712280000000 | 1795199716548000000 | operation `invoke_agent`; provider `github`; agent `explore` |
-| luna1 | `00f067aa0ba902bb` | explore | `chat gpt-6-luna` | 1795199712404000000 | 1795199714391000000 | operation `chat`; model `gpt-6-luna`; input 3665; output 43; cache write 3662 |
-| tool | `00f067aa0ba902bc` | explore | `execute_tool powershell` | 1795199714402000000 | 1795199715770000000 | operation `execute_tool`; `gen_ai.tool.name` `powershell`; agent `explore` |
-| luna2 | `00f067aa0ba902bd` | explore | `chat gpt-6-luna` | 1795199715775000000 | 1795199716540000000 | operation `chat`; model `gpt-6-luna`; input 3764; output 5; cache read 3662; cache write 99 |
-| main2 | `00f067aa0ba902be` | root | `chat mai-code-2` | 1795199716568000000 | 1795199720284000000 | operation `chat`; model `mai-code-2`; input 17333; output 5; cache read 3584 |
-
-Batch A is tool, luna1, luna2, explore, task, and main1, in that order. Batch B is main2, then root.
-
-**Trace D** is a VS Code Local harness prompt:
-
-- resource `[Str("service.name", "copilot-chat")]`;
-- trace `a3ce929d0e0e47364bf92f3577b34da6`;
-- batch D1 is `chat` span `c0ffee0000000002`:
-  - parent `c0ffee0000000001`, start 1795200001000000000, end 1795200002000000000;
-  - operation `chat`, provider `github`, request model `claude-opus-5.5`;
-  - input 100000, output 10000, and `gen_ai.usage.cache_creation.input_tokens` 0;
-- batch D2 is `invoke_agent` span `c0ffee0000000001`:
-  - no parent, start 1795200000000000000, end 1795200010000000000;
-  - agent `GitHub Copilot Chat`, conversation `vscode-session-1`;
-  - `github.copilot.git.repository` = `https://user:s3cr3t@github.com/contoso/webapp.git`, `github.copilot.git.branch` = `feature/login`, and `github.copilot.git.commit_sha` = `0123456789ABCDEF0123456789ABCDEF01234567`.
-
-**Trace E** is one Copilot CLI chat:
-
-- `CopilotResource`, trace `e4c5e6a7b8c9d0e1f2a3b4c5d6e7f809`, span `e4c5e6a7b8c9d0e1`, no parent, start 1795200100000000000, end 1795200102000000000;
-- operation `chat`, provider `github`, response model `claude-opus-5.5`, conversation `d9b2d63d-a233-4123-847a-5a1f3c8e6e1f`;
-- input 1200000, output 50000, cache read 800000, cache write 100000.
-
-**Trace F** is live probe run A, a custom agent at the top level, with synthetic IDs:
-
-- resource `CopilotResource` plus `Str("service.version", "1.0.112")`;
-- trace `c0de0000000000000000000000000f01`;
-- both spans carry `gen_ai.conversation.id` = `f1d5c3a2-9b8e-4d7c-a6f5-e4d3c2b1a0f1`;
-- the chat span carries `gen_ai.provider.name` `github` and both request and response model.
-
-| Key | Span ID | Parent | Name | Start ns | End ns | Other attributes |
-|---|---|---|---|---|---|---|
-| chat | `0f00000000000002` | root | `chat mai-code-2-flash` | 1795207524382000000 | 1795207526444000000 | operation `chat`; model `mai-code-2-flash`; input 4734; output 17 |
-| root | `0f00000000000001` | none | `invoke_agent Ledger Probe Display` | 1795207524370000000 | 1795207526476000000 | operation `invoke_agent`; provider `github`; agent `Ledger Probe Display`; `github.copilot.agent.type` `custom` |
-
-The request holds chat, then root.
-
-**Trace G** is live probe run B, the default agent calling the custom agent with the `task` tool. It has the same resource and synthetic IDs:
-
-- trace `c0de0000000000000000000000000f02`;
-- every span carries `gen_ai.conversation.id` = `f2d5c3a2-9b8e-4d7c-a6f5-e4d3c2b1a0f2`;
-- every chat span carries `gen_ai.provider.name` `github` and both request and response model.
-
-| Key | Span ID | Parent | Name | Start ns | End ns | Other attributes |
-|---|---|---|---|---|---|---|
-| probechat | `0f00000000000015` | probe | `chat mai-code-2-flash` | 1795207544429000000 | 1795207546581000000 | operation `chat`; model `mai-code-2-flash`; input 954; output 5 |
-| probe | `0f00000000000014` | task | `invoke_agent Ledger Probe Display` | 1795207544337000000 | 1795207546589000000 | operation `invoke_agent`; provider `github`; agent `Ledger Probe Display`; `github.copilot.agent.type` `custom` |
-| task | `0f00000000000013` | root | `execute_tool task` | 1795207544328000000 | 1795207546595000000 | operation `execute_tool`; `gen_ai.tool.name` `task`; `gen_ai.transfer.target.name` `Ledger Probe Display` |
-| main1 | `0f00000000000012` | root | `chat mai-code-2-flash` | 1795207542071000000 | 1795207544319000000 | operation `chat`; model `mai-code-2-flash`; input 5560; output 42 |
-| main2 | `0f00000000000016` | root | `chat mai-code-2-flash` | 1795207546608000000 | 1795207549789000000 | operation `chat`; model `mai-code-2-flash`; input 5642; output 5 |
-| root | `0f00000000000011` | none | `invoke_agent` | 1795207542057000000 | 1795207549819000000 | operation `invoke_agent`; provider `github`; `github.copilot.agent.type` `builtin` |
-
-The request holds the spans in table order, the order Copilot sent them.
-
-**Chain seed K1–K5.** Every span is a `chat` span. All except K4 use the embedded rates.
-
-| Key | Trace ID | Span ID | Start (UTC) | Model and endpoint | Usage | Git (slug / branch) | Agent | Conversation | Expected |
-|---|---|---|---|---|---|---|---|---|---|
-| K1 | 32 × `1` | `1111111111111111` | 2026-11-21T14:00:00Z | `claude-opus-5.5` | input 1,200,000; cache read 800,000; cache write 100,000; output 50,000 | `swigerb/copilot-ledger` / `main` | `ledger-architect` | `conv-1` | GitHub, 2.86 USD, 286 credits |
-| K2 | 32 × `2` | `2222222222222221` | 2026-11-21T13:00:00Z | `mai-code-2` | input 1,000,000; cache read 400,000; output 100,000 | `swigerb/copilot-ledger` / `feature/ledger` | `ledger-builder` | `conv-2` | GitHub, 0.56 USD, 56 credits |
-| K3 | 32 × `2` | `2222222222222222` | 2026-11-21T13:05:00Z | `qwen3.8-27b-cuda-gpu:1` at `127.0.0.1:11434` | input 400,000; output 12,000 | `swigerb/copilot-ledger` / `feature/ledger` | `ledger-builder` | `conv-2` | Local, saved 0.23 |
-| K4 | 32 × `3` | `3333333333333333` | 2026-11-18T12:00:00Z | `gpt-6.1-sol` at `contoso.openai.azure.com`, priced by `ByokTestRatesJson` | input 100,000; output 10,000 | `contoso/api` / `main` | null | null | Foundry BYOK, 0.315 USD |
-| K5 | 32 × `4` | `4444444444444444` | 2026-10-01T12:00:00Z | `gpt-unknown` | input 1,000; output 100 | no Git context | `ledger-builder` | `conv-4` | GitHub, `UnknownModel`, 0 |
-
-#### Pricing: `RatesRefreshTests` (embedded rates)
-
-**RR1** (theory, 48 cases) checks every price that Task 2 adds against GitHub's table. Its expected values were computed from the pricing page with decimal math, not from `rates.json` ("GitHub price table"), so they catch a transcription error in `rates.json`.
-
-- Each case prices `TestSpans.Chat(startTime: DateTimeOffset.Parse(start, CultureInfo.InvariantCulture), requestModel: model, inputTokens: input, cacheReadInputTokens: 10_000, cacheWriteInputTokens: 5_000, outputTokens: 2_000)` with `JsonRateCardCalculator.LoadEmbedded()`. Each of the tier's four prices produces its own `Breakdown` component, so a wrong price fails its own assertion.
-- A model with one tier uses input 100,000. A tiered model uses its threshold, which selects `default`, and its threshold + 1, which selects `long_context`. That covers every tier and every tier boundary.
-- Start times are 2026-11-20T12:00:00Z. A model with a promotional window adds one tick before the window ends and the instant it ends.
-- When `tier` is null, the case expects no price for that date: `Status` `NoRateForDate`, `Channel` `GitHubAiCredits`, `ModelId` equal to the model, `RateCardModelId`, `TierName`, and `Breakdown` null, and `UsdCost` and `AiCredits` 0. Its four expected components are placeholders and aren't asserted.
-- Otherwise the case expects `Status` `Priced`, `Channel` `GitHubAiCredits`, `ModelId` and `RateCardModelId` equal to the model, `TierName` equal to `tier`, the four `Breakdown` components, `AiCredits`, and a `UsdCost` equal to the sum of the four expected components.
-
-The theory is `RR1_PublishedPrices_MatchGitHubTable(string model, string start, long input, string? tier, decimal uncachedInputUsd, decimal cacheReadUsd, decimal cacheWriteUsd, decimal outputUsd, decimal aiCredits)`. Copy the data exactly:
+`BreakerTraces` builds requests with the `OtlpRequests` helpers:
 
 ```csharp
-// model, start, input tokens, tier (null: no price for that date), then the expected
-// UncachedInputUsd, CacheReadUsd, CacheWriteUsd, OutputUsd, and AiCredits.
-// Every case also has 10,000 cache-read, 5,000 cache-write, and 2,000 output tokens.
-public static TheoryData<string, string, long, string?, decimal, decimal, decimal, decimal, decimal> PublishedPrices => new()
+public static class BreakerTraces
 {
-    { "gpt-5.3-codex", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.14875m, 0.00175m, 0.00875m, 0.028m, 18.725m },
-    { "gpt-5.4-nano", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.017m, 0.0002m, 0.001m, 0.0025m, 2.07m },
-    { "gpt-5.6-luna", "2026-11-20T12:00:00.0000000+00:00", 200000, "default", 0.037m, 0.0002m, 0.00125m, 0.0024m, 4.085m },
-    { "gpt-5.6-luna", "2026-11-20T12:00:00.0000000+00:00", 200001, "long_context", 0.0740004m, 0.0004m, 0.0025m, 0.0036m, 8.05004m },
-    { "gpt-5.6-sol", "2026-11-20T12:00:00.0000000+00:00", 272000, "default", 1.028m, 0.004m, 0.025m, 0.04m, 109.7m },
-    { "gpt-5.6-sol", "2026-11-20T12:00:00.0000000+00:00", 272001, "long_context", 2.056008m, 0.008m, 0.05m, 0.06m, 217.4008m },
-    { "gpt-6-luna", "2026-11-20T12:00:00.0000000+00:00", 272000, "default", 0.0257m, 0.0001m, 0.000625m, 0.001m, 2.7425m },
-    { "gpt-6-luna", "2026-11-20T12:00:00.0000000+00:00", 272001, "long_context", 0.0514002m, 0.0002m, 0.00125m, 0.0015m, 5.43502m },
-    { "gpt-6-sol", "2026-11-20T12:00:00.0000000+00:00", 272000, "default", 0.514m, 0.002m, 0.0125m, 0.02m, 54.85m },
-    { "gpt-6-sol", "2026-11-20T12:00:00.0000000+00:00", 272001, "long_context", 1.028004m, 0.004m, 0.025m, 0.03m, 108.7004m },
-    { "gpt-6.1-terra", "2026-11-20T12:00:00.0000000+00:00", 272000, "default", 0.257m, 0.0005m, 0.00625m, 0.01m, 27.375m },
-    { "gpt-6.1-terra", "2026-11-20T12:00:00.0000000+00:00", 272001, "long_context", 0.514002m, 0.001m, 0.0125m, 0.015m, 54.2502m },
-    { "gpt-6.2-astra", "2026-11-20T12:00:00.0000000+00:00", 272000, "default", 2.056m, 0.004m, 0.05m, 0.08m, 219.0m },
-    { "gpt-6.2-astra", "2026-11-20T12:00:00.0000000+00:00", 272001, "long_context", 4.112016m, 0.008m, 0.10m, 0.12m, 434.0016m },
-    { "gpt-6.2-sol", "2026-11-20T12:00:00.0000000+00:00", 272000, "default", 0.514m, 0.001m, 0.0125m, 0.02m, 54.75m },
-    { "gpt-6.2-sol", "2026-11-20T12:00:00.0000000+00:00", 272001, "long_context", 1.028004m, 0.002m, 0.025m, 0.03m, 108.5004m },
-    { "claude-haiku-4.5", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.085m, 0.001m, 0.00625m, 0.01m, 10.225m },
-    { "claude-haiku-5.5", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.0085m, 0.0001m, 0.000625m, 0.001m, 1.0225m },
-    { "claude-haiku-5.5", "2026-11-20T12:00:00.0000000+00:00", 100001, "long_context", 0.0425005m, 0.0005m, 0.003125m, 0.005m, 5.11255m },
-    { "claude-sonnet-4", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.255m, 0.003m, 0.01875m, 0.03m, 30.675m },
-    { "claude-sonnet-4.6", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.255m, 0.003m, 0.01875m, 0.03m, 30.675m },
-    { "claude-opus-4.8", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.425m, 0.005m, 0.03125m, 0.05m, 51.125m },
-    { "claude-sonnet-5", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.17m, 0.002m, 0.0125m, 0.02m, 20.45m },
-    { "claude-fable-5", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.85m, 0.01m, 0.0625m, 0.10m, 102.25m },
-    { "claude-fable-5.1", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.85m, 0.0025m, 0.0625m, 0.10m, 101.50m },
-    { "claude-fable-5.2", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.68m, 0.002m, 0.05m, 0.08m, 81.2m },
-    { "gemini-3.8-flash", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.06375m, 0.00075m, 0.00375m, 0.0075m, 7.575m },
-    { "gemini-3.8-flash", "2026-12-31T23:59:59.9999999+00:00", 100000, "default", 0.06375m, 0.00075m, 0.00375m, 0.0075m, 7.575m },
-    { "gemini-3.8-flash", "2027-01-01T00:00:00.0000000+00:00", 100000, null, 0m, 0m, 0m, 0m, 0m },
-    { "gemini-4-argon", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.17m, 0.001m, 0.01m, 0.02m, 20.1m },
-    { "gemini-4-argon", "2026-11-30T23:59:59.9999999+00:00", 100000, "default", 0.17m, 0.001m, 0.01m, 0.02m, 20.1m },
-    { "gemini-4-argon", "2026-12-01T00:00:00.0000000+00:00", 100000, null, 0m, 0m, 0m, 0m, 0m },
-    { "gemini-4-carbon", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.17m, 0.001m, 0.01m, 0.02m, 20.1m },
-    { "gemini-4-carbon", "2026-11-30T23:59:59.9999999+00:00", 100000, "default", 0.17m, 0.001m, 0.01m, 0.02m, 20.1m },
-    { "gemini-4-carbon", "2026-12-01T00:00:00.0000000+00:00", 100000, "default", 0.34m, 0.002m, 0.02m, 0.04m, 40.2m },
-    { "gemini-4-hydrogen", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.1275m, 0.00075m, 0.0075m, 0.015m, 15.075m },
-    { "gemini-4-neon", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.255m, 0.0015m, 0.015m, 0.03m, 30.15m },
-    { "mai-code-1.1-flash", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.017m, 0.0002m, 0.001m, 0.0024m, 2.06m },
-    { "mai-code-2-flash", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.00425m, 0.00005m, 0.00025m, 0.0005m, 0.505m },
-    { "mai-code-2-flash", "2027-05-16T23:59:59.9999999+00:00", 100000, "default", 0.00425m, 0.00005m, 0.00025m, 0.0005m, 0.505m },
-    { "mai-code-2-flash", "2027-05-17T00:00:00.0000000+00:00", 100000, "default", 0.0085m, 0.0001m, 0.0005m, 0.001m, 1.01m },
-    { "grok-4.5", "2026-11-20T12:00:00.0000000+00:00", 200000, "default", 0.37m, 0.005m, 0.01m, 0.012m, 39.7m },
-    { "grok-4.5", "2026-11-20T12:00:00.0000000+00:00", 200001, "long_context", 0.740004m, 0.01m, 0.02m, 0.024m, 79.4004m },
-    { "grok-4.6", "2026-11-20T12:00:00.0000000+00:00", 200000, "default", 0.37m, 0.005m, 0.01m, 0.012m, 39.7m },
-    { "grok-4.6", "2026-11-20T12:00:00.0000000+00:00", 200001, "long_context", 0.740004m, 0.01m, 0.02m, 0.024m, 79.4004m },
-    { "grok-4.7", "2026-11-20T12:00:00.0000000+00:00", 200000, "default", 0.37m, 0.005m, 0.01m, 0.012m, 39.7m },
-    { "grok-4.7", "2026-11-20T12:00:00.0000000+00:00", 200001, "long_context", 0.740004m, 0.01m, 0.02m, 0.024m, 79.4004m },
-    { "kimi-k3", "2026-11-20T12:00:00.0000000+00:00", 100000, "default", 0.255m, 0.003m, 0.015m, 0.03m, 30.3m },
-};
-```
+    public const string TraceH = "0a000000000000000000000000000001";
+    public const string ConversationH = "982f73ad-18f4-49ef-a1f9-70748fa013fb";
+    public const string TraceV = "0b000000000000000000000000000001";
+    public const string TraceW = "0c000000000000000000000000000001";
 
-**RR2** (theory). The two live-capture `gpt-6-luna` spans. Each is GitHub, `Priced`, with the listed tier, `UsdCost`, and `AiCredits`, and its credits equal Copilot's `nano_aiu / 10^9`.
-
-| Model | Input | Cache read | Cache write | Output | Tier | UsdCost | AiCredits |
-|---|---|---|---|---|---|---|---|
-| `gpt-6-luna` | 3,665 | 0 | 3,662 | 43 | default | 0.00047955 | 0.047955 |
-| `gpt-6-luna` | 3,764 | 3,662 | 99 | 5 | default | 0.000051795 | 0.0051795 |
-
-**RR3** (theory). With provider `ollama`, `lm_studio`, `foundry_local`, or `llama_cpp`, no host, model `llama3.3:70b`, input 400,000, and output 12,000: Local, `LocalOffload`, `EstimatedCloudSavedUsd` 0.23, `ModelId` `llama3.3:70b`, and `RateCardModelId` `mai-code-2`.
-
-**RR4.** `JsonRateCardCalculator.LoadEmbedded().RatesVersion` is `2026-11-20`.
-
-#### Git: `CachingGitContextResolverTests`
-
-Use a fake inner `IGitContextResolver` that counts calls, and a `ManualTimeProvider`.
-
-- **CG1.** Two `Resolve("/r")` calls 4 s apart call the inner resolver once and return the same instance.
-- **CG2.** After advancing 5 s more, the inner resolver is called again.
-- **CG3.** Null results are cached: an inner resolver that returns null is called once for two calls within 5 s. Different keys (`/a` and `/b`) are cached separately.
-
-#### Attribution: `CopilotSessionWorkspaceLocatorTests`
-
-The Copilot home is `<root>/copilot-home`. `dir = Path.Combine(<root>, "work")` doesn't need to exist. The session ID is `d9b2d63d-a233-4123-847a-5a1f3c8e6e1f`, and the file is `<home>/session-state/<id>/workspace.yaml`.
-
-| # | Case | Expected |
-|---|---|---|
-| WL1 | (theory) The file holds `id: <id>`, then one `cwd` line, then `branch: x`. The `cwd` line is `cwd: <dir>`; `cwd: <dir> # note`; `cwd: "<dir with \ written as \\ and " as \">"`; or `cwd: '<dir>'`. | `GetWorkingDirectory(id)` is `dir` |
-| WL2 | (theory) No file; a file without a `cwd` line; `cwd: relative/path`; `cwd:`; an indented `  cwd: <dir>` | null |
-| WL3 | (theory) The IDs `""`, `../etc`, `a/b`, `a\b`, `.hidden`, and a 129-character ID of `a`s | null |
-| WL4 | Look up the plain `cwd` file and get `dir`; delete the file; look up again within 60 s, then advance 61 s and look up again | `dir`, then `dir` (cached), then null |
-
-#### Storage: `SpanLinkStoreTests`
-
-Each test uses `<root>/ledger.db` and calls `InitializeAsync` first. For test entries built from `TestSpans.Chat(...)`, override `TraceId`, `SpanId`, and `ParentSpanId` with `with`.
-
-| # | Case | Expected |
-|---|---|---|
-| SL1 | Record one entry, then through a separate `SqliteConnection` run `DROP INDEX ix_spans_trace; DROP TABLE span_links; PRAGMA user_version = 1;`. A new store calls `InitializeAsync`. | `user_version` is 2, `span_links` exists in `sqlite_master`, and the `spans` row count is still 1 |
-| SL2 | `RecordSpanLinksAsync` with 3 links, then the same 3 again | 3, then 0 |
-| SL3 | Trace `0af7651916cd43dd8448eb211c80319c`. Record a `claude-sonnet-5.5` chat entry (span `b7ad6b7169203332`, parent `b7ad6b7169203331`, input 10,000, output 2,000, no agent or conversation) and its link, then back-fill. Then add the `invoke_agent` link (`b7ad6b7169203331`, agent `ledger-builder`, conversation `conv-c`), back-fill, and back-fill again. | The back-fills return 0, 1, and 0. The Agent rollup then has one row: `ledger-builder`, 1 span, `AiCredits` 4, `AiCreditsUsd` 0.04. |
-| SL4 | Trace `a3ce929d0e0e47364bf92f3577b34da6`. Entry chat1 is span `c0ffee0000000002` with no Git. Entry chat2 is span `c0ffee0000000003` with the `swigerb/copilot-ledger` / `main` context. Both are `claude-opus-5.5` with input 100,000 and output 10,000, and have parent `c0ffee0000000001`. Add links for both chats plus the `invoke_agent` link `c0ffee0000000001`: agent `GitHub Copilot Chat`, conversation `vscode-session-1`, slug `contoso/webapp`, branch `feature/login`, commit `0123456789abcdef0123456789abcdef01234567`. Then back-fill. | Returns 3 (the agent statement updates 2 rows, and the Git statement 1). The Branch rollup, in order: `contoso/webapp` / `feature/login` (60 credits), then `swigerb/copilot-ledger` / `main` (60 credits). The Agent rollup: `GitHub Copilot Chat`, 2 spans, 120 credits. A separate connection reads chat1's `head_commit_sha` as `0123456789abcdef0123456789abcdef01234567` and `repo_root` as NULL. |
-| SL5 | Trace `ffffffffffffffffffffffffffffffff`. Links: X (`1111111111111111`, parent `2222222222222222`, `chat`) and Y (`2222222222222222`, parent `1111111111111111`, `invoke_agent`, agent `loop`). Record a `mai-code-2` entry for X with input 1,000, then back-fill. | Returns 1; the recursion stops on the cycle |
-| SL6 | Links starting at 2026-11-01, 2026-11-10, and 2026-11-20 (00:00Z). Prune before 2026-11-10T00:00:00Z; again; then before 2026-12-01T00:00:00Z. | 1, then 0, then 2 |
-| SL7 | `LedgerSeeds.SeedChainsAsync(store, <root>/repo, <root>/api)`. Then: `GetTopPromptChainsAsync(LedgerFilter.All, 10)`; with limit 2; with `Repository = "contoso/api"`; with `From = 2026-11-21T00:00:00Z`; and with limit 0 or 1001. | The four rows in the table below, in order. Then T1 and T2; T3 only; T1 and T2; `ArgumentOutOfRangeException`. |
-
-SL7 rows:
-
-| Rank | Trace | Start | End | Repository | Branch | Agents | Models | Spans | Unpriced | Input | Output | Cache read | Cache write | AiCredits | AiCreditsUsd | FoundryByokUsd | LocalSavedUsd | Conversation |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | T1 (32 × `1`) | 2026-11-21T14:00:00Z | 14:00:02Z | `swigerb/copilot-ledger` | `main` | [`ledger-architect`] | [`claude-opus-5.5`] | 1 | 0 | 1,200,000 | 50,000 | 800,000 | 100,000 | 286 | 2.86 | 0 | 0 | `conv-1` |
-| 2 | T2 (32 × `2`) | 2026-11-21T13:00:00Z | 13:05:02Z | `swigerb/copilot-ledger` | `feature/ledger` | [`ledger-builder`] | [`mai-code-2`, `qwen3.8-27b`] | 2 | 0 | 1,400,000 | 112,000 | 400,000 | 0 | 56 | 0.56 | 0 | 0.23 | `conv-2` |
-| 3 | T3 (32 × `3`) | 2026-11-18T12:00:00Z | 12:00:02Z | `contoso/api` | `main` | [] | [`gpt-6.1-sol`] | 1 | 0 | 100,000 | 10,000 | 0 | 0 | 0 | 0 | 0.315 | 0 | null |
-| 4 | T4 (32 × `4`) | 2026-10-01T12:00:00Z | 12:00:02Z | `(none)` | `(none)` | [`ledger-builder`] | [`gpt-unknown`] | 1 | 1 | 1,000 | 100 | 0 | 0 | 0 | 0 | 0 | 0 | `conv-4` |
-
-#### Ingestion: `LedgerIngestorTests`
-
-Each test sets up:
-
-- the store `<root>/data/ledger.db`, initialized, with `TimeProvider.System`;
-- the embedded calculator;
-- `new CachingGitContextResolver(new FileSystemGitContextResolver(ceilingDirectory: <root>))`;
-- `new CopilotSessionWorkspaceLocator(<root>/copilot-home)`.
-
-The Git fixture at `<root>/repo` has:
-
-- `.git/HEAD` = `ref: refs/heads/feature/ledger`;
-- `.git/refs/heads/feature/ledger` = SHA1;
-- `.git/config` = `[remote "origin"]` followed by `\turl = https://github.com/swigerb/copilot-ledger.git`;
-- an empty directory `<root>/repo/src`.
-
-| # | Case | Expected |
-|---|---|---|
-| IG1 | Ingest `DecodeJson(CopilotChatTraceJson)`, then ingest it again | First: Received 2, Rejected 0, Inference 1, Recorded 1, and a null rejection reason. The Model rollup has one row: `mai-code-2`, `AiCredits` 0.69071, `AiCreditsUsd` 0.0069071, input 17,194, cache read 3,584, output 5. The Agent rollup has one row, `(none)`. Second: Recorded 0. |
-| IG2 | Trace B batch A, then batch B | **Batch A:** Received 6, Rejected 0, Inference 3, Recorded 3. Its Agent rollup: `(none)` with 1 span and 0.13053 credits, then `explore` with 2 spans and 0.0531345 credits. **Batch B:** Received 2, Inference 1, Recorded 1. **Final Agent rollup, in order:** `(none)` (2 spans, input 34,527, output 104, cache read 19,456, cache write 0, `AiCredits` 0.82819, `AiCreditsUsd` 0.0082819), then `explore` (2 spans, input 7,429, output 48, cache read 3,662, cache write 3,761, `AiCredits` 0.0531345, `AiCreditsUsd` 0.000531345). **Final Model rollup:** `mai-code-2` (0.82819), then `gpt-6-luna` (0.0531345). The credits total 0.8813245, which is Copilot's 881,324,500 nano-AIU. |
-| IG3 | (theory) (a) Trace E, with `<home>/session-state/d9b2d63d-a233-4123-847a-5a1f3c8e6e1f/workspace.yaml` containing `cwd: <root>/repo/src` and `branch: stale-branch`. (b) Trace E without its conversation ID, and with the resource attribute `process.working_directory` = `<root>/repo`. | Each Branch rollup has one row: `swigerb/copilot-ledger` / `feature/ledger`, 1 span, `AiCredits` 286, `AiCreditsUsd` 2.86 |
-| IG4 | Trace D1, then D2 | After D1: Recorded 1, and the Branch rollup is `(none)` / `(none)`. After D2: Recorded 0, the Branch rollup is `contoso/webapp` / `feature/login` with 60 credits, and the Agent rollup is `GitHub Copilot Chat`. No TEXT value in any `spans` or `span_links` row contains `s3cr3t`; read every column through a separate connection. |
-| IG5 | One request with two chat spans (distinct span IDs), the second with `Int("gen_ai.usage.output_tokens", -1)` | Received 2, Rejected 1, `FirstRejectionReason` `gen_ai.usage.output_tokens is not a non-negative integer`, Inference 1, Recorded 1 |
-| IG6 | (theory) The IG6 calculator and spans below, in one request: (a) H, M; (b) H, M, N; (c) H9, M | (a) Received 2, Rejected 1, `FirstRejectionReason` `cost out of range`, Inference 1, Recorded 1. (b) Received 3, Rejected 2, `FirstRejectionReason` `gen_ai.usage.output_tokens is not a non-negative integer` (the normalizer's reason wins although N comes last), Inference 1, Recorded 1. For (a) and (b), the Model rollup has one row, `mai-code-2`: 1 span, `AiCredits` 0.075, `AiCreditsUsd` 0.00075. `SELECT COUNT(*) FROM span_links`, through a separate connection, is 2: the cost-rejected H keeps its link, and N has none. (c) Received 2, Rejected 0, Inference 2, Recorded 2. The Model rollup is `ig6-huge` (`AiCredits` 900,000,000, `AiCreditsUsd` 9,000,000), then `mai-code-2` (`AiCredits` 0.075). |
-
-IG6 prices with `JsonRateCardCalculator.LoadEmbeddedWithOverlay(<root>/ig6-rates.json)` instead of the embedded calculator. The file holds:
-
-```json
-{
-  "schemaVersion": 1,
-  "ratesVersion": "ig6",
-  "githubAiCredits": {
-    "models": [
-      { "id": "ig6-huge", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1000000, "outputPer1M": 1000000 } ] } ] }
-    ]
-  }
+    public static OtlpTraceRequest TraceHRequest(int request);                          // run A's export request 1–7
+    public static OtlpTraceRequest TraceVRequest(string repoRoot, params int[] chats);  // Trace V chats 1–3
+    public static OtlpTraceRequest TraceWRequest(string repoRoot);                       // Trace W's three chats
 }
 ```
 
-Its rates are exactly at Task 3's bound, so the file loads both before and after Task 3, and the cost rejection comes from the pico-USD limit, not from an out-of-range rate.
+**Trace H** replays live run A with synthetic IDs and the captured times and token counts. Every span has trace `TraceH`, parent `0a000000000000f0` (except the root), and `Str("gen_ai.conversation.id", ConversationH)`. The resource is `[.. CopilotResource, Str("service.version", "1.0.112")]`.
 
-Build the request with `Request(CopilotResource, ...)`. Each span uses the Task 1 normalization defaults (trace `5b8efff798038103d269b633813fc60c`, no parent, the default start and end, and `Str("gen_ai.operation.name", "chat")`), with this span ID and these extra attributes:
+- A **chat** span is named `chat mai-code-2-flash`, with `Str("gen_ai.operation.name", "chat")`, `Str("gen_ai.provider.name", "github")`, `Str("gen_ai.request.model", "mai-code-2-flash")`, `Str("gen_ai.response.model", "mai-code-2-flash")`, `Int("gen_ai.usage.input_tokens", in)`, `Int("gen_ai.usage.output_tokens", out)`, and, when the cache read isn't 0, `Int("gen_ai.usage.cache_read.input_tokens", cache)`.
+- A **tool** span is named `execute_tool apply_patch` or `execute_tool powershell pwsh.exe`, with `Str("gen_ai.operation.name", "execute_tool")` and `Str("gen_ai.tool.name", "apply_patch" or "powershell")`. A `powershell` span also has `Int("process.exit.code", exit)`.
+- The **root** `0a000000000000f0` has no parent and is named `invoke_agent`, with `Str("gen_ai.operation.name", "invoke_agent")`, `Str("gen_ai.provider.name", "github")`, and `Str("github.copilot.agent.type", "builtin")`. It spans 1795220210353000000–1795220248464000000 and is in request 7.
 
-| Span | Span ID | Attributes | Why |
+Each request holds its spans in this table's order (chats and tools are interleaved by time):
+
+| Request | Span | Kind | Start ns | End ns | Input | Output | Cache read | Exit |
+|---|---|---|---|---|---|---|---|---|
+| 1 | `0a000000000000c1` | chat | 1795220210781000000 | 1795220215181000000 | 17299 | 176 | 6656 | |
+| 1 | `0a000000000000a1` | `apply_patch` | 1795220215194000000 | 1795220215351000000 | | | | |
+| 2 | `0a000000000000c2` | chat | 1795220215368000000 | 1795220217545000000 | 17568 | 44 | 16896 | |
+| 2 | `0a000000000000a2` | `powershell` | 1795220217552000000 | 1795220219452000000 | | | | 1 |
+| 2 | `0a000000000000c3` | chat | 1795220219475000000 | 1795220221084000000 | 17681 | 44 | 16896 | |
+| 2 | `0a000000000000a3` | `apply_patch` | 1795220221093000000 | 1795220221233000000 | | | | |
+| 3 | `0a000000000000c4` | chat | 1795220221248000000 | 1795220222694000000 | 17825 | 44 | 16896 | |
+| 3 | `0a000000000000a4` | `powershell` | 1795220222710000000 | 1795220223969000000 | | | | 1 |
+| 3 | `0a000000000000c5` | chat | 1795220223990000000 | 1795220226844000000 | 17938 | 44 | 16896 | |
+| 3 | `0a000000000000a5` | `apply_patch` | 1795220226853000000 | 1795220227044000000 | | | | |
+| 4 | `0a000000000000c6` | chat | 1795220227064000000 | 1795220228239000000 | 18082 | 44 | 16896 | |
+| 4 | `0a000000000000a6` | `powershell` | 1795220228246000000 | 1795220229660000000 | | | | 1 |
+| 4 | `0a000000000000c7` | chat | 1795220229692000000 | 1795220231435000000 | 18195 | 44 | 0 | |
+| 4 | `0a000000000000a7` | `apply_patch` | 1795220231440000000 | 1795220231604000000 | | | | |
+| 5 | `0a000000000000c8` | chat | 1795220231625000000 | 1795220232986000000 | 18339 | 44 | 17920 | |
+| 5 | `0a000000000000a8` | `powershell` | 1795220232994000000 | 1795220234202000000 | | | | 1 |
+| 5 | `0a000000000000c9` | chat | 1795220234220000000 | 1795220235567000000 | 18452 | 44 | 17920 | |
+| 5 | `0a000000000000a9` | `apply_patch` | 1795220235578000000 | 1795220235717000000 | | | | |
+| 6 | `0a000000000000ca` | chat | 1795220235746000000 | 1795220237251000000 | 18596 | 44 | 17920 | |
+| 6 | `0a000000000000aa` | `powershell` | 1795220237260000000 | 1795220238525000000 | | | | 1 |
+| 6 | `0a000000000000cb` | chat | 1795220238545000000 | 1795220240767000000 | 18709 | 44 | 17920 | |
+| 6 | `0a000000000000ab` | `apply_patch` | 1795220240772000000 | 1795220240870000000 | | | | |
+| 7 | `0a000000000000cc` | chat | 1795220240889000000 | 1795220242864000000 | 18853 | 44 | 6656 | |
+| 7 | `0a000000000000ac` | `powershell` | 1795220242870000000 | 1795220243998000000 | | | | 0 |
+| 7 | `0a000000000000cd` | chat | 1795220244019000000 | 1795220245927000000 | 18964 | 57 | 17920 | |
+| 7 | `0a000000000000ad` | `powershell` | 1795220245934000000 | 1795220246848000000 | | | | 0 |
+| 7 | `0a000000000000ce` | chat | 1795220246868000000 | 1795220248402000000 | 19101 | 6 | 17920 | |
+| 7 | `0a000000000000f0` | root | 1795220210353000000 | 1795220248464000000 | | | | |
+
+The 14 chats total input 255,602, output 723, and cache read 205,312, and they cost 0.372181 AI credits at `mai-code-2-flash`'s promotional price: run A's 372,181,000 nano-AIU. The fifth failing call, `0a000000000000aa`, starts at 2026-11-21T00:17:17.260Z (Unix milliseconds 1795220237260).
+
+**Trace V** has three `claude-opus-5.5` chats, each costing $0.60 (input 100,000 at $4 and output 10,000 at $20 per 1M). Each is a root span (no parent) named `chat claude-opus-5.5` with trace `TraceV`, `Str("gen_ai.operation.name", "chat")`, `Str("gen_ai.provider.name", "github")`, `Str("gen_ai.request.model", "claude-opus-5.5")`, `Str("gen_ai.conversation.id", "conv-v")`, `Int("gen_ai.usage.input_tokens", 100000)`, and `Int("gen_ai.usage.output_tokens", 10000)`. The resource is `[.. CopilotResource, Str("process.working_directory", repoRoot)]`. Chat `k` has span ID `0b000000000000c<k>`, ends at `T0 + 60k s`, and starts 2 seconds earlier:
+
+| Chat | Span | Start ns | End ns |
 |---|---|---|---|
-| H | `0000000000000001` | `Str("gen_ai.request.model", "ig6-huge")`, `Int("gen_ai.usage.input_tokens", 10000000)` | Costs $10,000,000, which is 10^19 pico-USD, above `long.MaxValue`, so `PicoUsd.FromUsd` throws `ArgumentOutOfRangeException` |
-| H9 | `0000000000000001` | `Str("gen_ai.request.model", "ig6-huge")`, `Int("gen_ai.usage.input_tokens", 9000000)` | Costs $9,000,000 (9 × 10^18 pico-USD), just inside the limit |
-| M | `0000000000000002` | `Str("gen_ai.request.model", "mai-code-2")`, `Int("gen_ai.usage.input_tokens", 1000)`, `Int("gen_ai.usage.output_tokens", 100)` | Costs 1,000 × $0.50 + 100 × $2.50 per 1M = $0.00075 |
-| N | `0000000000000004` | `Str("gen_ai.request.model", "mai-code-2")`, `Int("gen_ai.usage.output_tokens", -1)` | Rejected by the normalizer |
+| 1 | `0b000000000000c1` | 1795255258000000000 | 1795255260000000000 |
+| 2 | `0b000000000000c2` | 1795255318000000000 | 1795255320000000000 |
+| 3 | `0b000000000000c3` | 1795255378000000000 | 1795255380000000000 |
 
-These results were computed with the merged Sprint 1 calculator, `PicoUsd`, and store. The overlay also loads unchanged in the Task 3 reference implementation.
+**Trace W** is built the same way with trace `TraceW`, span IDs `0c000000000000c1`–`0c000000000000c3`, conversation `conv-w`, and ends at `T0 + 60 s`, `T0 + 240 s`, and `T0 + 420 s` (end ns 1795255260000000000, 1795255440000000000, and 1795255620000000000). Each starts 2 seconds earlier. Any 5-minute window holds at most two of its chats ($1.20), so it never trips the default rule.
 
-**IG7.** Git context is best effort. Ingest span M from IG6 in a request whose resource is `CopilotResource` plus `Str("process.working_directory", <root>)`. Use the embedded calculator, and instead of the Git resolver above, a private fake `IGitContextResolver` in `LedgerIngestorTests` whose `Resolve` throws `IOException`. The fake is called once, with `<root>`. The result is Received 1, Rejected 0, Inference 1, Recorded 1. The Branch rollup has one row: `(none)` / `(none)`, 1 span, `AiCredits` 0.075.
+#### Rules: `BreakerRulesTests` (new, `tests/CopilotLedger.Tests/Breaker/`)
 
-**IG8.** The ingestor's `OverflowException` catch is defense in depth (decision 18), so it's tested with a fake. Use a private fake `ICreditCalculator` in `LedgerIngestorTests` whose `Calculate` throws `OverflowException` when the span's `RequestModel` is `overflow-model`, and otherwise returns the embedded calculator's result. Its `RatesVersion` is the embedded calculator's. Ingest one request built like IG6's, with span O (`0000000000000003`, `Str("gen_ai.request.model", "overflow-model")`, `Int("gen_ai.usage.input_tokens", 1)`) and then span M from IG6. The result is Received 2, Rejected 1, `FirstRejectionReason` `cost out of range`, Inference 1, Recorded 1. The Model rollup has one row, `mai-code-2`, with `AiCredits` 0.075. `SELECT COUNT(*) FROM span_links`, through a separate connection, is 2.
+**BR1, rule 1** (theory). Costs are `new CostEvent(<id>, T0 + <s> s, <usd>)`, passed in the order given:
 
-**IG9.** Custom agents, replaying live probe runs A and B ("Live capture: custom agents"). Ingest Trace F as one request, then Trace G as one request.
+| Case | Costs (id@seconds=USD) | Threshold USD | Window | Result |
+|---|---|---|---|---|
+| V1 | a@30=0.50, b@120=0.60, c@299=0.40 | 1.50 | 5 min | `T0 + 299 s`, 1.50 |
+| V2 | a@30=0.50, b@120=0.60, c@299=0.39 | 1.50 | 5 min | null |
+| V3 | a@0=1.00, b@300=0.60 | 1.50 | 5 min | null |
+| V4 | a@1=1.00, b@300=0.60 | 1.50 | 5 min | `T0 + 300 s`, 1.60 |
+| V5 | b@200=0.70, z@150=0.00, a@100=0.80 | 1.50 | 5 min | `T0 + 200 s`, 1.50 |
+| V6 | b@60=0.75, a@60=0.75 | 1.50 | 5 min | `T0 + 60 s`, 1.50 |
+| V7 | a@0=1.00, b@59=0.50 | 1.50 | 1 min | `T0 + 59 s`, 1.50 |
+| V8 | a@0=1.00, b@60=0.50 | 1.50 | 1 min | null |
+| V9 | none | 1.50 | 5 min | null |
 
-- Trace F: Received 2, Rejected 0, Inference 1, Recorded 1.
-- Trace G: Received 6, Rejected 0, Inference 3, Recorded 3.
-- The final Agent rollup, in order: `(none)` (2 spans, input 11,202, output 47, `AiCredits` 0.057185, `AiCreditsUsd` 0.00057185), then `Ledger Probe Display` (2 spans, input 5,688, output 22, `AiCredits` 0.02899, `AiCreditsUsd` 0.0002899). The top-level custom agent's chat and the custom subagent's chat both get the agent's `name`, and the default agent's two chats stay under `(none)`.
-- The final Model rollup has one row: `mai-code-2-flash`, 4 spans, `AiCredits` 0.086175. That's 86,175,000 nano-AIU, the sum of the two runs' `--usage-output-file` totals (24,095,000 and 62,080,000), at `mai-code-2-flash`'s promotional price.
+A non-null result is asserted as `Assert.Equal(new VelocityTrip(<time>, <usd>m), result)`.
 
-These results were computed with the merged Sprint 1 calculator and store, Task 2's `rates.json`, and this plan's Migration 2 and back-fill SQL.
+**BR2, rule 2** (theory). The `k`-th tool call in a case has span ID `0k` (two digits) and starts at `T0 + <s> s`. `F` is `("powershell", 1, 0)`, `S` is `("powershell", 0, 0)`, `E` is `(HASH, null, 2)`, `N` is `("apply_patch", null, 0)`, and `X` is `("powershell", 0, 2)`. Commits are `new CommitObservation(<id>, T0 + <s> s, <sha>)`.
+
+| Case | Tool calls (kind@seconds) | Commits | Failures | Result |
+|---|---|---|---|---|
+| C1 | F@1 F@2 F@3 S@4 F@5 F@6 F@7 F@8 | none | 5 | null |
+| C2 | E@1 E@2 E@3 E@4 E@5 | none | 5 | `T0 + 5 s`, 5 |
+| C3 | F@1 F@2 F@3 F@4 F@5 | `c1`@0.5=`aaaa`, `c2`@3.5=`bbbb` | 5 | null |
+| C4 | F@1 F@2 F@3 F@4 F@5 | `c1`@0.5=`aaaa`, `c2`@3.5=`aaaa` | 5 | `T0 + 5 s`, 5 |
+| C5 | F@1 F@2 F@3 F@4 F@5 | `c1`@0.5=`aaaa`, `c2`@5=`bbbb` | 5 | null (a commit sorts before a call at the same time) |
+| C6 | F@1 N@2 F@3 N@4 F@5 N@6 F@7 N@8 F@9 | none | 5 | `T0 + 9 s`, 5 |
+| C7 | F@1 F@2 F@3 F@4 X@5 | none | 5 | `T0 + 5 s`, 5 |
+| C8 | F@1 F@2 | none | 2 | `T0 + 2 s`, 2 |
+| C9 | F@1 F@2 F@3 F@4 N@5 F@6 | none | 5 | `T0 + 6 s`, 5 |
+| C10 | F@1 F@2 F@3 F@4 S@5 F@6 | none | 5 | null |
+| C11 | none | none | 5 | null |
+
+A non-null result is asserted as `Assert.Equal(new ChurnTrip(<time>, <n>), result)`.
+
+**BR3, argument checks.** `FindVelocityTrip(null!, 1m, TimeSpan.FromMinutes(5))` throws `ArgumentNullException`; `FindVelocityTrip([], 0m, TimeSpan.FromMinutes(5))` and `FindVelocityTrip([], 1m, TimeSpan.Zero)` throw `ArgumentOutOfRangeException`. `FindChurnTrip(null!, [], 5)` and `FindChurnTrip([], null!, 5)` throw `ArgumentNullException`, and `FindChurnTrip([], [], 1)` throws `ArgumentOutOfRangeException`.
+
+**BR4, messages.**
+
+- `BreakerMessages.Credits`: 180m → `180.00`, 1234.5m → `1,234.50`, 0.005m → `0.01`, 0.004999m → `0.00`, 2.675m → `2.68`.
+- `Minutes(1)` → `1 minute`; `Minutes(5)` → `5 minutes`.
+- `VelocityDetail(1.80m, 5)` → `180.00 AI credits in 5 minutes`; `VelocityDetail(0.015m, 1)` → `1.50 AI credits in 1 minute`. `ChurnDetail(5)` → `5 failed tool calls in a row`.
+- `RulesSummary(BreakerSettings.Default)` → `150.00 AI credits in 5 minutes on one prompt; 5 failed tool calls in a row on one prompt`. With `VelocityCredits = 12.5m`, `VelocityWindowMinutes = 1`, and `ChurnFailures = 2` → `12.50 AI credits in 1 minute on one prompt; 2 failed tool calls in a row on one prompt`.
+- `ForTrip(trip, false)`, for a trip with `Id = 7`, `Repository = "swigerb/copilot-ledger"`, `Branch = "feature/ledger"`, and `Detail = "5 failed tool calls in a row"`, has `Kind` `Trip`, `TripId` 7, that repository and branch, `Title` `CopilotLedger circuit breaker tripped`, `Body` `swigerb/copilot-ledger @ feature/ledger: 5 failed tool calls in a row on one prompt. Run: gh-ledger breaker status`, and `ShowNotification` false.
+- `ForBudget(row, true)`, for `Repository = "contoso/api"`, `Branch = "main"`, `BudgetAiCredits = 40.5m`, and `SpentAiCredits = 31.5m`, has `Kind` `Budget`, `TripId` null, `Title` `CopilotLedger branch budget reached`, `Body` `contoso/api @ main: 31.50 of 40.50 AI credits spent. Run: gh-ledger budget list`, and `ShowNotification` true.
+
+#### Monitor and ingestion: `CircuitBreakerMonitorTests` (new)
+
+The harness:
+
+- a store at `NOW` on `<root>/data/ledger.db`, initialized; when a case gives settings, `UpdateBreakerSettingsAsync(settings)` runs next;
+- the Git fixture at `<root>/repo`, and `<root>/copilot-home/session-state/982f73ad-18f4-49ef-a1f9-70748fa013fb/workspace.yaml` containing `cwd: <root>/repo` and `\n`;
+- `sink = new RecordingAlertSink()` and `monitor = new CircuitBreakerMonitor(store, sink)`;
+- `new LedgerIngestor(store, JsonRateCardCalculator.LoadEmbedded(), new FileSystemGitContextResolver(ceilingDirectory: <root>), new CopilotSessionWorkspaceLocator(<root>/copilot-home), monitor)`. It uses the uncached resolver, so a new commit is visible at once.
+
+`FLAG` is `<root>/repo/.copilot-ledger/CIRCUIT_OPEN`. `TripH` is the expected trip for Trace H: `Id` 1, `Rule` `RetryChurn`, `TraceId` `TraceH`, `ConversationId` `ConversationH`, `Repository` `swigerb/copilot-ledger`, `Branch` `feature/ledger`, `RepositoryRoot` `<root>/repo`, `TrippedAt` `DateTimeOffset.FromUnixTimeMilliseconds(1795220237260)`, `Detail` `5 failed tool calls in a row`, `WindowCostUsd` null, `WindowMinutes` null, `FailureCount` 5, `RecordedAt` `NOW`, and `NotifiedAt` and `ResetAt` null. Compare trips property by property.
+
+**BM1, run A trips rule 2 once, on request 6.**
+
+- Ingest `TraceHRequest(1)` through `TraceHRequest(5)`. After each, `sink.Alerts` is empty and `GetOpenBreakerTripsAsync(All)` is empty.
+- Ingest request 6: the result is Received 4, Rejected 0, Inference 2, and Recorded 2. `GetOpenBreakerTripsAsync(All)` is `[TripH]`. `sink.Alerts` has one alert: `Kind` `Trip`, `TripId` 1, `Repository` `swigerb/copilot-ledger`, `Branch` `feature/ledger`, `Title` `CopilotLedger circuit breaker tripped`, `Body` `swigerb/copilot-ledger @ feature/ledger: 5 failed tool calls in a row on one prompt. Run: gh-ledger breaker status`, and `ShowNotification` true.
+- Ingest request 7: Received 6, Inference 3, Recorded 3. There's still one alert and one open trip.
+- Ingest request 6 again: Recorded 0, and there's still one alert.
+- The Model rollup has one row: `mai-code-2-flash`, 14 spans, `AiCredits` 0.372181, `AiCreditsUsd` 0.00372181. The Branch rollup has one row: `swigerb/copilot-ledger` / `feature/ledger`.
+- `Directory.Exists(<root>/repo/.copilot-ledger)` is false, and `sink.Warnings` is empty.
+
+**BM2, a new commit resets the count.** Ingest requests 1–4. Overwrite `<root>/repo/.git/refs/heads/feature/ledger` with `SHA2` and `\n`. Ingest requests 5–7. `sink.Alerts` and `GetOpenBreakerTripsAsync(All)` are empty. Through a separate connection, `SELECT COUNT(*) FROM spans WHERE head_commit_sha = '<SHA2>'` is 7L and `… = '<SHA1>'` is 7L.
+
+**BM3, a higher threshold.** Settings `BreakerSettings.Default with { ChurnFailures = 6 }`. Ingest requests 1–7. `sink.Alerts` and `GetOpenBreakerTripsAsync(All)` are empty.
+
+**BM4, budget then velocity.** Call `SetBranchBudgetAsync("swigerb/copilot-ledger", "feature/ledger", 100m)` first.
+
+- Ingest `TraceVRequest(<root>/repo, 1)`: no alerts.
+- Ingest `TraceVRequest(<root>/repo, 2)`: one alert, `Kind` `Budget`, `TripId` null, `Repository` `swigerb/copilot-ledger`, `Branch` `feature/ledger`, `Title` `CopilotLedger branch budget reached`, `Body` `swigerb/copilot-ledger @ feature/ledger: 120.00 of 100.00 AI credits spent. Run: gh-ledger budget list`, and `ShowNotification` true. The budget row's `AlertedAt` is `NOW`.
+- Ingest `TraceVRequest(<root>/repo, 3)`: two alerts. The second has `Kind` `Trip`, `TripId` 1, `Body` `swigerb/copilot-ledger @ feature/ledger: 180.00 AI credits in 5 minutes on one prompt. Run: gh-ledger breaker status`, and `ShowNotification` true. The open trip has `Id` 1, `Rule` `CreditVelocity`, `TraceId` `TraceV`, `ConversationId` `conv-v`, `Repository` `swigerb/copilot-ledger`, `Branch` `feature/ledger`, `RepositoryRoot` `<root>/repo`, `TrippedAt` `T0 + 180 s`, `Detail` `180.00 AI credits in 5 minutes`, `WindowCostUsd` 1.80m, `WindowMinutes` 5, `FailureCount` null, and `RecordedAt` `NOW`.
+- Ingest `TraceVRequest(<root>/repo, 3)` again: still two alerts.
+
+**BM5, the window slides.** Ingest `TraceWRequest(<root>/repo)`. `sink.Alerts` and `GetOpenBreakerTripsAsync(All)` are empty.
+
+**BM6, settings change the trip.** Settings `BreakerSettings.Default with { VelocityCredits = 100m, Notifications = false }`. Ingest `TraceVRequest(<root>/repo, 1, 2)` as one request. One alert: `Kind` `Trip`, `Body` `swigerb/copilot-ledger @ feature/ledger: 120.00 AI credits in 5 minutes on one prompt. Run: gh-ledger breaker status`, and `ShowNotification` false. The trip has `TrippedAt` `T0 + 120 s` and `WindowCostUsd` 1.20m.
+
+**BM7, the flag file.** Settings `BreakerSettings.Default with { FlagFile = true }`. Ingest requests 1–6.
+
+- `File.ReadAllText(FLAG)` is exactly this text, with `ROOT` replaced by `JsonSerializer.Serialize(<root>/repo, RelaxedJson)`, after `.ReplaceLineEndings("\n")`, plus a final `\n`:
+
+  ```text
+  {
+    "schemaVersion": 1,
+    "repositoryRoot": ROOT,
+    "openTrips": [
+      {
+        "id": 1,
+        "rule": "retry_churn",
+        "repository": "swigerb/copilot-ledger",
+        "branch": "feature/ledger",
+        "conversationId": "982f73ad-18f4-49ef-a1f9-70748fa013fb",
+        "traceId": "0a000000000000000000000000000001",
+        "trippedAt": "2026-11-21T00:17:17.2600000+00:00",
+        "detail": "5 failed tool calls in a row",
+        "resetCommand": "gh-ledger breaker reset --id 1"
+      }
+    ]
+  }
+  ```
+
+- `File.ReadAllText(<root>/repo/.copilot-ledger/.gitignore)` is exactly `*\n`.
+- `ResetBreakerTripsAsync(BreakerTripFilter.All)`, then `CircuitFlagFile.SyncAsync(store, <root>/repo)`: `FLAG` doesn't exist, and the `.gitignore` still does.
+- `CircuitFlagFile.SyncAsync(store, <root>/missing)` returns without an exception, and `<root>/missing` doesn't exist.
+- `sink.Warnings` is empty.
+
+**BM8, a flag file that can't be written.** Settings `BreakerSettings.Default with { FlagFile = true }`. Create an empty **file** at `<root>/repo/.copilot-ledger`. Ingest requests 1–6. The trip is recorded (`GetOpenBreakerTripsAsync(All)` is `[TripH]`), `sink.Alerts` has the one trip alert, and `sink.Warnings` has one message starting with `Could not update <FLAG>: ` (the rest is the OS's message).
+
+**BM9, no monitor.** Build the ingestor with the four-argument constructor and ingest requests 1–7. `GetOpenBreakerTripsAsync(All)` is empty, and through a separate connection `SELECT COUNT(*) FROM breaker_trips` is 0L.
+
+**BM10, a trip without a repository.** Settings `BreakerSettings.Default with { FlagFile = true, ChurnFailures = 2 }`. Ingest `Request(CopilotResource, …)` with two spans in trace `0d000000000000000000000000000001`, span IDs `0d000000000000a1` and `0d000000000000a2`, starting at `T0 + 1 s` and `T0 + 2 s` (end 1 second later), each with `Str("gen_ai.operation.name", "execute_tool")`, `Str("gen_ai.tool.name", "powershell")`, and `Int("process.exit.code", 1)`. The open trip has `Repository` `(none)`, `Branch` `(none)`, `RepositoryRoot` null, `ConversationId` null, `TrippedAt` `T0 + 2 s`, `Detail` `2 failed tool calls in a row`, and `FailureCount` 2. The one alert's `Body` is `(none) @ (none): 2 failed tool calls in a row on one prompt. Run: gh-ledger breaker status`. `sink.Warnings` is empty, and `Directory.GetDirectories(<root>, ".copilot-ledger", SearchOption.AllDirectories)` is empty.
 
 ### Task 3 tests
 
-Task 3 changes Sprint 1's rates tests in place, so each case is written once. Every other Sprint 1 test stays unchanged.
+#### Test support
 
-#### Rates overlay: `RateOverlayTests`
+`BreakerTraces.TraceVJson(string repoRoot)` returns Trace V's three chats as one OTLP/JSON request, on one line, with `REPO` replaced by `JsonSerializer.Serialize(repoRoot, RelaxedJson)`:
 
-1. Replace `InvalidOverlays` and `InvalidOverlay_ThrowsWithFilePath` with the data below and the theory `InvalidOverlay_ReportsExactMessage(string overlay, string expected)`. It writes `overlay` with the existing `WriteOverlay` helper, calls `LoadEmbeddedWithOverlay`, and asserts that the `InvalidDataException`'s `Message` equals `expected` after replacing `<file>` with the file's path (ordinal). Copy the data exactly; the first six rows are Sprint 1's overlays.
+```text
+{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"github-copilot"}},{"key":"process.working_directory","value":{"stringValue":REPO}}]},"scopeSpans":[{"scope":{"name":"github.copilot"},"spans":[SPAN1,SPAN2,SPAN3]}]}]}
+```
 
-   ```csharp
-   // Each expected message uses <file> for the overlay's path.
-   public static TheoryData<string, string> InvalidOverlays => new()
-   {
-       // Sprint 1's invalid overlays, now with exact messages.
-       { """{ "schemaVersion": 2 }""", "<file>: schemaVersion: must be 1" },
-       { """{ "schemaVersion": 1, "foundryBYOK": { } }""", "<file>: foundryBYOK: is not a known property; did you mean foundryByok?" },
-       { """{ "schemaVersion": 1, "localOffload": { "baselineModel": "gpt-missing" } }""", "<file>: localOffload.baselineModel: does not resolve to a githubAiCredits model in the merged rates: gpt-missing" },
-       { """{ "schemaVersion": 1, "foundryByok": { "models": [ { "id": "gpt-6.1-sol", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1.75 } ] } ] } ] } }""", "<file>: foundryByok.models[0].windows[0].tiers[0].outputPer1M: is required" },
-       { """{ }""", "<file>: schemaVersion: is required" },
-       { """{ "schemaVersion": 1, "localOffload": { "models": [ { "id": "my-local", "aliases": ["qwen3.8:27b"] } ] } }""", "<file>: localOffload.models[0].aliases[0]: duplicate model identity in the merged rates: qwen3.8:27b (built-in model qwen3.8-27b)" },
+`SPANk` is the following, with `ID`, `START`, and `END` from Trace V's table (chat `k`):
 
-       // Invalid JSON, and a root that isn't an object.
-       { "{ \"schemaVersion\": 1,\n  \"foundryByok\": { \"models\": [ }\n}\n", "<file>: line 2, column 32: invalid JSON" },
-       { "{ \"schemaVersion\": 1,\r\n  \"foundryByok\": { \"models\": [ }\r\n}\r\n", "<file>: line 2, column 32: invalid JSON" },
-       { """{ "schemaVersion": 1, }""", "<file>: line 1, column 23: invalid JSON" },
-       { "", "<file>: line 1, column 1: invalid JSON" },
-       { """{ "schemaVersion": 1 } // note""", "<file>: line 1, column 24: invalid JSON" },
-       { "[]", "<file>: must contain a JSON object" },
+```text
+{"traceId":"0b000000000000000000000000000001","spanId":"ID","parentSpanId":"","name":"chat claude-opus-5.5","kind":3,"startTimeUnixNano":"START","endTimeUnixNano":"END","attributes":[{"key":"gen_ai.operation.name","value":{"stringValue":"chat"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.request.model","value":{"stringValue":"claude-opus-5.5"}},{"key":"gen_ai.conversation.id","value":{"stringValue":"conv-v"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"100000"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"10000"}}],"status":{"code":0}}
+```
 
-       // schemaVersion is checked first.
-       { """{ "schemaVersion": null }""", "<file>: schemaVersion: is required" },
-       { """{ "schemaVersion": "1" }""", "<file>: schemaVersion: must be an integer" },
-       { """{ "foundryBYOK": { }, "schemaVersion": 2 }""", "<file>: schemaVersion: must be 1" },
+`SCRIPT(path)` is Task 3's PowerShell script with `XMLPATH` replaced by `path.Replace("'", "''")`. `WINDOWS` is `new FakeCliPlatform { IsWindows = true, ProcessPath = @"C:\tools\gh-ledger.exe", ProcessVariables = { ["SystemRoot"] = @"C:\Windows" } }`. `RULES` is `Rules: 150.00 AI credits in 5 minutes on one prompt; 5 failed tool calls in a row on one prompt`.
 
-       // Unknown and repeated properties.
-       { """{ "schemaVersion": 1, "currency": "USD" }""", "<file>: currency: is not a known property" },
-       { """{ "schemaVersion": 1, "foundryByok": { "models": [ { "id": "gpt-6.1-sol", "windows": [ { "tiers": [ { "name": "default", "inputPer1m": 1.75, "outputPer1M": 14 } ] } ] } ] } }""", "<file>: foundryByok.models[0].windows[0].tiers[0].inputPer1m: is not a known property; did you mean inputPer1M?" },
-       { """{ "schemaVersion": 1, "localOffload": { }, "localOffload": { } }""", "<file>: localOffload: is defined more than once" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "name": "other", "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].name: is defined more than once" },
+#### Commands: `BreakerCommandTests` (new)
 
-       // A missing required property is reported at its own path.
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new" } ] } }""", "<file>: githubAiCredits.models[0].windows: is required" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "effectiveFrom": null } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers: is required" },
-       { """{ "schemaVersion": 1, "localOffload": { "models": [ { "aliases": [] } ] } }""", "<file>: localOffload.models[0].id: is required" },
+Each case uses `new CliHarness(<root>, platform, new ManualTimeProvider(NOW, ManualTimeProvider.UtcMinus5))` and, to seed, a store at `NOW` on `<root>/data/ledger.db`. Trips are seeded with `RecordBreakerTripAsync`:
 
-       // Values of the wrong kind.
-       { """{ "schemaVersion": 1, "githubAiCredits": [] }""", "<file>: githubAiCredits: must be an object" },
-       { """{ "schemaVersion": 1, "foundryByok": { "hostSuffixes": "contoso.example" } }""", "<file>: foundryByok.hostSuffixes: must be an array" },
-       { """{ "schemaVersion": 1, "foundryByok": { "providerNames": [1] } }""", "<file>: foundryByok.providerNames[0]: must be a string" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": "1.75", "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be a number" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "small", "maxInputTokens": 1.5, "inputPer1M": 1, "outputPer1M": 1 }, { "name": "large", "inputPer1M": 2, "outputPer1M": 2 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].maxInputTokens: must be an integer" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "effectiveFrom": "May 2027", "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].effectiveFrom: must be a date and time, such as 2027-05-17T00:00:00Z" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": null, "windows": [] } ] } }""", "<file>: githubAiCredits.models[0].id: must be a string" },
-       { """{ "schemaVersion": 1, "localOffload": { "models": [ null ] } }""", "<file>: localOffload.models[0]: must be an object" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1e30, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: is too large" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": null } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].outputPer1M: must be a number" },
-       { """{ "schemaVersion": 1, "localOffload": { "models": [ { "id": "\ud800" } ] } }""", "<file>: localOffload.models[0].id: is not valid text" },
-       { """{ "schemaVersion": 1, "localOffload": { "\ud800": 1 } }""", "<file>: localOffload: contains a property name that is not valid text" },
-       { """{ "schemaVersion": 1, "localOffload": { "models": [ { "id": "my-local", "aliases": null } ] } }""", "<file>: localOffload.models[0].aliases: must be an array" },
-       { """{ "schemaVersion": 1, "notes": [null] }""", "<file>: notes[0]: must be a string" },
-       { """{ "schemaVersion": 1, "ratesVersion": 5 }""", "<file>: ratesVersion: must be a string" },
+- `VA`: `{ Rule = CreditVelocity, TraceId = new string('1', 32), Repository = "swigerb/copilot-ledger", Branch = "feature/ledger", TrippedAt = T0 + 180 s, Detail = "180.00 AI credits in 5 minutes", WindowCostUsd = 1.80m, WindowMinutes = 5 }`;
+- `CB`: `{ Rule = RetryChurn, TraceId = new string('2', 32), ConversationId = "conv-2", Repository = "swigerb/copilot-ledger", Branch = "main", TrippedAt = T0 + 300 s, Detail = "5 failed tool calls in a row", FailureCount = 5 }`.
 
-       // Rule errors at paths into the overlay. Sprint 1 reported most of these at merged indexes.
-       { """{ "schemaVersion": 1, "localOffload": { "models": [ { "id": " " } ] } }""", "<file>: localOffload.models[0].id: must not be blank" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1.0000001 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].outputPer1M: must have no more than 6 decimal places" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "mai-code-2", "windows": [ { "effectiveFrom": "2027-05-17T00:00:00Z", "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 5 } ] }, { "effectiveUntil": "2027-05-17T00:00:00Z", "tiers": [ { "name": "default", "inputPer1M": 0.5, "outputPer1M": 2.5 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[1].effectiveFrom: windows must be sorted and must not overlap" },
-       { """{ "schemaVersion": 1, "foundryByok": { "hostSuffixes": [".contoso.example"] } }""", "<file>: foundryByok.hostSuffixes[0]: must be a host suffix without a leading '.', '/', or ':'" },
-       { """{ "schemaVersion": 1, "localOffload": { "baselineModel": " " } }""", "<file>: localOffload.baselineModel: must not be blank" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "maxInputTokens": 1000, "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].maxInputTokens: the last tier must be unbounded" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": -1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be greater than or equal to 0" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1000000.000001, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be less than or equal to 1000000" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "aliases": ["Contoso New"], "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].aliases[0]: duplicate model identity: contoso-new" },
+**BC1, closed.** `breaker status` exits 0, and `Out` is exactly:
 
-       // Checks against the merged rates.
-       { """{ "schemaVersion": 1, "localOffload": { "models": [ { "id": "Qwen-3.8-27B" } ] } }""", "<file>: localOffload.models[0].id: duplicate model identity in the merged rates: qwen-3.8-27b (built-in model qwen3.8-27b)" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "claude-opus-5.5", "aliases": ["MAI Code 2"], "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 4, "outputPer1M": 20 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].aliases[0]: duplicate model identity in the merged rates: mai-code-2 (built-in model mai-code-2)" },
-       { """{ "schemaVersion": 1, "foundryByok": { "models": [ { "id": "gpt-6.1-sol", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1.75, "outputPer1M": 14 } ] } ] } ] }, "githubAiCredits": { "models": [ { "id": "my-sol", "aliases": ["gpt-6.1-sol"], "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].aliases[0]: duplicate model identity in the merged rates: gpt-6.1-sol (built-in model gpt-6.1-sol)" },
+```text
+Circuit breaker: closed
+RULES
+Flag file: off. Notifications: on.
+```
 
-       // Reporting order: reading, then the file's own rules, then the merged rates; document order while reading.
-       { """{ "schemaVersion": 1, "localOffload": { "additionalHosts": [" "], "providerNames": [1] } }""", "<file>: localOffload.providerNames[0]: must be a string" },
-       { """{ "schemaVersion": 1, "localOffload": { "baselineModel": "gpt-missing", "additionalHosts": [" "] } }""", "<file>: localOffload.additionalHosts[0]: must not be blank" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "outputPer1M": "x", "inputPer1M": "y", "name": "default" } ] } ] } ] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].outputPer1M: must be a number" },
-       { """{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1 } ] } ] } ], "hostSuffixes": [".bad"] } }""", "<file>: githubAiCredits.models[0].windows[0].tiers[0].outputPer1M: is required" },
-   };
-   ```
+`breaker status --json` exits 0, and its `Out` deep-equals `{"state":"closed","settings":{"velocityCredits":150,"velocityWindowMinutes":5,"churnFailures":5,"flagFile":false,"notifications":true},"openTrips":[]}`.
 
-2. In `Overlay_DuplicateNormalizedIdsThrow`, replace both `Assert.Contains` calls with `Assert.Equal($"{path}: githubAiCredits.models[1].id: duplicate model identity: duplicate", exception.Message)`.
-3. Add `Overlay_ReplacingBuiltInModelFreesItsAliases`. It loads `{ "schemaVersion": 1, "localOffload": { "models": [ { "id": "qwen3.8-27b", "aliases": ["my-qwen-build"] }, { "id": "my-local", "aliases": ["qwen3.8:27b"] } ] } }` without an error. `Calculate(TestSpans.Chat(requestModel: "qwen3.8:27b", inputTokens: 400_000, outputTokens: 12_000))` has `Status` `LocalOffload` and `ModelId` `my-local`.
-4. Add `Overlay_BaselineCanNameAnOverlayModelByAlias`. It loads `{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "aliases": ["contoso-alias"], "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1, "outputPer1M": 1 } ] } ] } ] }, "localOffload": { "baselineModel": "Contoso Alias" } }`. `Calculate(TestSpans.Chat(serverAddress: "127.0.0.1", requestModel: "qwen3.8:27b", inputTokens: 400_000, outputTokens: 12_000))` has `RateCardModelId` `contoso-new` and `EstimatedCloudSavedUsd` 0.412 (400,000 × $1 + 12,000 × $1 per 1M).
-5. Add `Overlay_RateAtMaximum_Loads`. It loads `{ "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "contoso-new", "windows": [ { "tiers": [ { "name": "default", "inputPer1M": 1000000, "outputPer1M": 1 } ] } ] } ] } }` without an error. `Calculate(TestSpans.Chat(requestModel: "contoso-new", inputTokens: 1))` has `Status` `Priced` and `UsdCost` 1.
-6. Add `DocsExamples_MatchRealMessages`:
-   1. Read `Path.Combine(AppContext.BaseDirectory, "docs", "configuration.md")` with `File.ReadAllLines`, so line endings don't matter.
-   2. An example starts at a line equal to `<!-- rates-error-example -->` and ends at the next line equal to `<!-- /rates-error-example -->`. Its JSON is the lines after the first line equal to ```` ```json ```` up to the next line equal to ```` ``` ````. Its message is the single line after the next line equal to ```` ```text ````, which is followed by a ```` ``` ```` line.
-   3. Assert there are exactly 3 examples.
-   4. For each, write the JSON lines joined with `\n`, plus a final `\n`, to a new `TempDirectory`'s `rates.json`. Assert that `LoadEmbeddedWithOverlay` throws `InvalidDataException` whose `Message` equals the example's message with `/home/me/.copilot-ledger/rates.json` replaced by the file's path.
+**BC2, open.** Seed `VA` (id 1) and `CB` (id 2), then `MarkBreakerTripNotifiedAsync(1)`. `breaker status` exits 0, and `Out` is exactly:
 
-#### Rates loading: `RateCardLoadingTests`
+```text
+Circuit breaker: open (2 trips)
+RULES
+Flag file: off. Notifications: on.
 
-1. Replace `InvalidDocuments` and `Parse_InvalidDocument_Throws` with this data and `Parse_InvalidDocument_ReportsExactMessage(string find, string replacement, string expected)`. It keeps the `Assert.Contains(find, json)` guard and asserts `Assert.Equal(expected, exception.Message)`. The last two rows are new.
+Trip 2 at 2026-11-21 05:05: swigerb/copilot-ledger @ main: 5 failed tool calls in a row on one prompt
+  rule retry_churn, trace 22222222222222222222222222222222, session conv-2
+Trip 1 at 2026-11-21 05:03: swigerb/copilot-ledger @ feature/ledger: 180.00 AI credits in 5 minutes on one prompt
+  rule credit_velocity, trace 11111111111111111111111111111111, session (none)
+Reset a trip with: gh-ledger breaker reset --id <id>
+```
 
-   ```csharp
-   public static TheoryData<string, string, string> InvalidDocuments => new()
-   {
-       { "\"schemaVersion\": 1,", "\"schemaVersion\": 2,", "schemaVersion: must be 1" },
-       { "\"inputPer1M\": 2.00,", "\"inputPer1M\": 2.0000001,", "githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must have no more than 6 decimal places" },
-       { "\"baselineModel\": \"claude-sonnet-5.5\"", "\"baselineModel\": \"gpt-missing\"", "localOffload.baselineModel: does not resolve to a githubAiCredits model: gpt-missing" },
-       { "\"schemaVersion\": 1,", "\"schemaVersion\": 1, \"currency\": \"USD\",", "currency: is not a known property" },
-       { "\"maxInputTokens\": null, \"inputPer1M\": 2.00", "\"maxInputTokens\": 1000, \"inputPer1M\": 2.00", "githubAiCredits.models[0].windows[0].tiers[0].maxInputTokens: the last tier must be unbounded" },
-       { "\"inputPer1M\": 2.00,", "\"inputPer1M\": -2.00,", "githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be greater than or equal to 0" },
-       { "\"ratesVersion\": \"test-fixture\",", string.Empty, "ratesVersion: is required" },
-       { ", \"retrievedOn\": \"2026-11-20\" }", " }", "source.retrievedOn: is required" },
-       { "\"inputPer1M\": 2.00,", "\"inputPer1M\": 1000000.000001,", "githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be less than or equal to 1000000" },
-   };
-   ```
+`breaker status --json` deep-equals:
 
-2. `Parse_MalformedJson_Throws` also asserts the message `line 49, column 1: invalid JSON`.
-3. In `Parse_NullCollectionElement_ThrowsWithExactPath`, replace both assertions with `Assert.Equal("githubAiCredits.hostSuffixes[1]: must be a string", exception.Message)`.
-4. In `Parse_InvalidBaseWithOverlay_DoesNotAddOverlayPrefix`, replace both assertions with `Assert.Equal("githubAiCredits.models[0].windows[0].tiers[0].inputPer1M: must be greater than or equal to 0", exception.Message)`.
-5. Add `Parse_InvalidOverlay_NamesTheOverlay`: `JsonRateCardCalculator.Parse(RateFixtures.ByokTestRatesJson, """{ "schemaVersion": 2 }""")` throws `InvalidDataException` with the message `overlay: schemaVersion: must be 1`.
-6. Add `Parse_RateAtMaximum_Loads`: replace every `"inputPer1M": 2.00,` in `RateFixtures.ByokTestRatesJson` with `"inputPer1M": 1000000,` (ordinal). `Parse` succeeds, and `Calculate(TestSpans.Chat(requestModel: "claude-sonnet-5.5", inputTokens: 1))` has `Status` `Priced` and `UsdCost` 1.
+```json
+{
+  "state": "open",
+  "settings": { "velocityCredits": 150, "velocityWindowMinutes": 5, "churnFailures": 5, "flagFile": false, "notifications": true },
+  "openTrips": [
+    { "id": 2, "rule": "retry_churn", "repository": "swigerb/copilot-ledger", "branch": "main", "repositoryRoot": null, "conversationId": "conv-2", "traceId": "22222222222222222222222222222222", "trippedAt": "2026-11-21T10:05:00.0000000+00:00", "detail": "5 failed tool calls in a row", "windowAiCredits": null, "windowMinutes": null, "failureCount": 5, "recordedAt": "2026-11-21T12:00:00.0000000+00:00", "notifiedAt": null },
+    { "id": 1, "rule": "credit_velocity", "repository": "swigerb/copilot-ledger", "branch": "feature/ledger", "repositoryRoot": null, "conversationId": null, "traceId": "11111111111111111111111111111111", "trippedAt": "2026-11-21T10:03:00.0000000+00:00", "detail": "180.00 AI credits in 5 minutes", "windowAiCredits": 180, "windowMinutes": 5, "failureCount": null, "recordedAt": "2026-11-21T12:00:00.0000000+00:00", "notifiedAt": "2026-11-21T12:00:00.0000000+00:00" }
+  ]
+}
+```
 
-`InvalidOverlays` grows from 6 cases to 53 and `InvalidDocuments` from 7 to 9, and there are 6 new facts. Task 3 adds 55 test cases in all.
+**BC3, reset.** Create the Git fixture. Seed `VA` (1), `CB` (2), `CB with { TraceId = new string('3', 32), Repository = "contoso/api" }` (3), and `CB with { TraceId = new string('4', 32) }` (4). In order:
+
+1. `breaker reset --id 2 --all` and `breaker reset --all --repo x --branch y` each exit 1, with `Error` containing `Use only one of --id, --all, or --repo with --branch.`
+2. `breaker reset --repo swigerb/copilot-ledger` exits 1, with `Error` containing `--repo and --branch must be used together.`
+3. `breaker reset`, run in `<root>`, exits 1, and `Error` is exactly `Not in a Git repository. Pass --repo and --branch, --id, or --all.`
+4. `breaker reset` run in `<root>/repo` (`RunInAsync`) exits 0 with `Out` exactly `Reset 1 trip.`; run again, `No open trips to reset.`
+5. `breaker reset --repo swigerb/copilot-ledger --branch main` prints exactly `Reset 2 trips.`
+6. `breaker reset --id 3` prints exactly `Reset 1 trip.`; run again, `No open trips to reset.`
+7. `breaker reset --all` prints exactly `No open trips to reset.`, and `GetOpenBreakerTripsAsync(All)` is empty.
+
+**BC4, config.** `breaker config` exits 0, and `Out` is exactly `RULES` and `Flag file: off. Notifications: on.` on two lines. `breaker config --velocity-credits 12.5 --velocity-minutes 1 --churn-failures 2 --notifications off` exits 0, and `Out` is exactly:
+
+```text
+Updated the circuit breaker settings.
+Rules: 12.50 AI credits in 1 minute on one prompt; 2 failed tool calls in a row on one prompt
+Flag file: off. Notifications: off.
+```
+
+`GetBreakerSettingsAsync()` then equals `{ VelocityCredits = 12.5m, VelocityWindowMinutes = 1, ChurnFailures = 2, FlagFile = false, Notifications = false }`. Then, a theory in a fresh harness: each of these exits 1 with `Error` containing the message, and the settings still equal `BreakerSettings.Default`:
+
+| Arguments | Message |
+|---|---|
+| `--velocity-credits 0.99`, `1000000.01`, `1.001`, `1e2`, `1,5` | `--velocity-credits must be a number from 1 to 1000000 with at most 2 decimal places.` |
+| `--velocity-minutes 0`, `1441` | `--velocity-minutes must be from 1 to 1440.` |
+| `--churn-failures 1`, `101` | `--churn-failures must be from 2 to 100.` |
+| `--flag-file yes` | `--flag-file must be on or off.` |
+| `--notifications ON` | `--notifications must be on or off.` |
+
+**BC5, the flag file follows the setting.** Create the directory `<root>/repo` and seed `VA with { RepositoryRoot = <root>/repo }` (id 1).
+
+- `breaker config --flag-file on` exits 0 with `Out` exactly `Updated the circuit breaker settings.`, `RULES`, and `Flag file: on. Notifications: on.` on three lines. `<root>/repo/.copilot-ledger/CIRCUIT_OPEN` then holds exactly BM7's text, with `"rule": "credit_velocity"`, `"branch": "feature/ledger"`, `"conversationId": null`, `"traceId": "11111111111111111111111111111111"`, `"trippedAt": "2026-11-21T10:03:00.0000000+00:00"`, and `"detail": "180.00 AI credits in 5 minutes"` in place of Trace H's values.
+- `breaker config --flag-file off` exits 0, and the flag file doesn't exist.
+
+**BC6, budgets.** Create the Git fixture.
+
+1. `budget list` exits 0 with `Out` exactly `No branch budgets are set.`
+2. Seed `LedgerSeeds.SeedChainsAsync(store, <root>/repo, <root>/api)`.
+3. `budget set 50` in `<root>/repo` exits 0, and `Out` is exactly `Budget for swigerb/copilot-ledger @ feature/ledger: 50.00 AI credits. Spent so far: 56.00.` and `This branch is already over its budget.` on two lines.
+4. `budget set 40.5 --repo contoso/api --branch main` prints exactly `Budget for contoso/api @ main: 40.50 AI credits. Spent so far: 31.50.`
+5. `budget list` prints exactly `contoso/api @ main: 31.50 of 40.50 AI credits` and `swigerb/copilot-ledger @ feature/ledger: 56.00 of 50.00 AI credits (over budget)` on two lines.
+6. `budget list --json` deep-equals `{"budgets":[{"repository":"contoso/api","branch":"main","budgetAiCredits":40.5,"spentAiCredits":31.5,"exceeded":false,"setAt":"2026-11-21T12:00:00.0000000+00:00","alertedAt":null},{"repository":"swigerb/copilot-ledger","branch":"feature/ledger","budgetAiCredits":50,"spentAiCredits":56,"exceeded":true,"setAt":"2026-11-21T12:00:00.0000000+00:00","alertedAt":null}]}`.
+7. `budget clear --repo contoso/api --branch main` prints exactly `Cleared the budget for contoso/api @ main.`; again, `No budget is set for contoso/api @ main.`
+8. `budget set 0`, `budget set abc`, `budget set 1000000.01`, and `budget set 0.001` (in `<root>/repo`) each exit 1 with `Error` containing `Credits must be a number greater than 0 and at most 1000000 with at most 2 decimal places.`
+9. `budget set 5` in `<root>` exits 1, and `Error` is exactly `Not in a Git repository. Pass --repo and --branch.`
+10. `budget clear --branch main` exits 1 with `Error` containing `--repo and --branch must be used together.`
+
+#### Daemon alerts: `AlertDaemonTests` (new)
+
+Each case waits with `WaitUntilAsync`, then runs `daemon stop` and awaits `harness.InProcessDaemon` before reading `ProcessRuns` or `DaemonOutput`. `ALERT_A` is `ALERT CopilotLedger circuit breaker tripped: swigerb/copilot-ledger @ feature/a: 5 failed tool calls in a row on one prompt. Run: gh-ledger breaker status`.
+
+**AD1, end to end on Windows.** `WINDOWS` platform, `TimeProvider.System`, and the Git fixture.
+
+1. `breaker config --flag-file on` exits 0.
+2. `StartInProcessDaemonAsync()`. With `harness.CreateDaemonClient()`, post `TraceVJson(<root>/repo)` to `/v1/traces` as `application/json`: the status is 200 and the body is `{}`.
+3. `<root>/repo/.copilot-ledger/CIRCUIT_OPEN` exists as soon as the response arrives.
+4. Wait until the store's single open trip has a non-null `NotifiedAt`. `breaker status` exits 0, and `Out` starts with `Circuit breaker: open (1 trip)\n`.
+5. Stop the daemon. `ProcessRuns` has exactly one entry: `@"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"` with arguments `["-NoProfile", "-NonInteractive", "-Command", SCRIPT(<root>/data/alert-toast.xml)]`.
+6. `File.ReadAllText(<root>/data/alert-toast.xml)` is exactly `<toast><visual><binding template="ToastGeneric"><text>CopilotLedger circuit breaker tripped</text><text>swigerb/copilot-ledger @ feature/ledger: 180.00 AI credits in 5 minutes on one prompt. Run: gh-ledger breaker status</text></binding></visual></toast>`.
+7. `DaemonOutput` contains `ALERT CopilotLedger circuit breaker tripped: swigerb/copilot-ledger @ feature/ledger: 180.00 AI credits in 5 minutes on one prompt. Run: gh-ledger breaker status`.
+8. `breaker reset` in `<root>/repo` prints exactly `Reset 1 trip.`. The flag file no longer exists, and `<root>/repo/.copilot-ledger/.gitignore` does. `breaker status` then prints `Circuit breaker: closed` as its first line.
+
+**AD2, a restart re-sends recent alerts.** `new FakeCliPlatform { IsMacOS = true }`, with the harness on `new ManualTimeProvider(NOW)`. Before starting the daemon, seed through stores on `<root>/data/ledger.db` whose clocks are set as shown. Each trip is `{ Rule = RetryChurn, TraceId = new string(<c>, 32), Repository = "swigerb/copilot-ledger", Branch = <branch>, TrippedAt = <clock>, Detail = "5 failed tool calls in a row", FailureCount = 5 }`:
+
+| Clock | Action |
+|---|---|
+| `NOW - 30 min` | `LedgerSeeds.SeedChainsAsync(store, <root>/repo, <root>/api)`; trip `'1'`, `feature/a` (id 1) |
+| `NOW - 2 h` | trip `'2'`, `feature/b` (id 2) |
+| `NOW - 15 min` | trip `'3'`, `feature/c` (id 3), then `MarkBreakerTripNotifiedAsync(3)` |
+| `NOW - 10 min` | trip `'4'`, `feature/d` (id 4), then `ResetBreakerTripsAsync(new BreakerTripFilter { Id = 4 })` |
+| `NOW - 20 min` | `SetBranchBudgetAsync("swigerb/copilot-ledger", "feature/ledger", 50m)`, then `MarkBranchBudgetAlertedAsync` for that branch |
+
+Start the daemon, and wait until trip 1's `NotifiedAt` and the budget's `NotifiedAt` are both set. After stopping:
+
+- `ProcessRuns` has exactly two entries, both `/usr/bin/osascript` with arguments `["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", <title>, <body>]`. The first has `CopilotLedger circuit breaker tripped` and `swigerb/copilot-ledger @ feature/a: 5 failed tool calls in a row on one prompt. Run: gh-ledger breaker status`. The second has `CopilotLedger branch budget reached` and `swigerb/copilot-ledger @ feature/ledger: 56.00 of 50.00 AI credits spent. Run: gh-ledger budget list`.
+- Trip 1's `NotifiedAt` is `NOW`, trip 2 is still open with a null `NotifiedAt`, and the budget's `NotifiedAt` is `NOW`.
+- `DaemonOutput` contains `ALERT_A` and `ALERT CopilotLedger branch budget reached: swigerb/copilot-ledger @ feature/ledger: 56.00 of 50.00 AI credits spent. Run: gh-ledger budget list`, and doesn't contain `feature/b`, `feature/c`, or `feature/d`.
+
+**AD3, notification outcomes** (theory over a case name). The harness uses `new ManualTimeProvider(NOW)`. Before starting the daemon, seed trip `'1'` on `feature/a` (as in AD2) with a store at `NOW`. Wait until its `NotifiedAt` is set. In every case, `NotifiedAt` is then `NOW` and `DaemonOutput` contains `ALERT_A`. Then:
+
+| Case | Platform and setup | Expected |
+|---|---|---|
+| `linux-notify-send` | `new FakeCliPlatform { PathExecutables = { ["notify-send"] = "/usr/bin/notify-send" } }` | `ProcessRuns` is exactly `[("/usr/bin/notify-send", ["--app-name=CopilotLedger", "CopilotLedger circuit breaker tripped", "swigerb/copilot-ledger @ feature/a: 5 failed tool calls in a row on one prompt. Run: gh-ledger breaker status"])]` |
+| `linux-missing` | `new FakeCliPlatform()` | `ProcessRuns` is empty; `DaemonOutput` contains `Notification skipped: notify-send was not found.` |
+| `notifications-off` | `WINDOWS`, and `breaker config --notifications off` before starting | `ProcessRuns` is empty |
+| `windows-exit-code` | `WINDOWS` with `RunHandler = (_, _, _) => Task.FromResult(new ProcessRunResult(1, "", "boom\n"))` | `DaemonOutput` contains `Notification failed: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe exited with code 1: boom` |
+| `windows-throws` | `WINDOWS` with `RunHandler = (_, _, _) => throw new Win32Exception(2, "The system cannot find the file specified.")` | `DaemonOutput` contains `Notification failed: The system cannot find the file specified.` |
 
 ### Task 4 tests
 
-#### Receiver: `OtlpReceiverTests`
+#### Test support
 
-Build each receiver with `OtlpReceiverApp.Build(options, ingestor, b => b.UseTestServer())`, then `StartAsync`, and use `app.GetTestClient()`.
+`McpTestHarness` (new) connects the SDK client to the server over two `System.IO.Pipelines.Pipe`s:
 
-`RecordingIngestor` (tests only) implements `ILedgerIngestor`. It records each request and returns a settable `IngestResult`; the default is all zeros. It can be set to throw.
+```csharp
+public sealed class McpTestHarness : IAsyncDisposable
+{
+    // Starts LedgerMcpServer.RunAsync(context, toServer.Reader.AsStream(), toClient.Writer.AsStream()) and connects
+    // McpClient.CreateAsync(new StreamClientTransport(toServer.Writer.AsStream(), toClient.Reader.AsStream()),
+    //     new McpClientOptions { ClientInfo = new Implementation { Name = "ledger-tests", Version = "1.0" } }).
+    public static Task<McpTestHarness> StartAsync(LedgerMcpContext context);
 
-To change the `Host` header, set `HttpRequestMessage.Headers.Host`. TestServer passes it through. To read a protobuf `Status`, take byte 0 as `0x12` and byte 1 as the length (under 128 here); the rest is UTF-8.
+    public McpClient Client { get; }
 
-| # | Request | Expected |
+    // Disposes the client, completes toServer.Writer, and waits up to 10 seconds for the server task.
+    public ValueTask DisposeAsync();
+}
+```
+
+`CallAsync(harness, tool, json)` is a private helper that turns a JSON object into arguments (`JsonDocument.Parse(json).RootElement.EnumerateObject().ToDictionary(p => p.Name, p => (object?)p.Value.Clone())`) and calls `Client.CallToolAsync(tool, arguments)`. `Text(result)` is the `Text` of the single `TextContentBlock` in `result.Content`.
+
+The context is `new LedgerMcpContext { DatabasePath = <root>/data/ledger.db, WorkingDirectory = <root>/repo, GetEnvironmentVariable = name => env.GetValueOrDefault(name), GitResolver = new FileSystemGitContextResolver(ceilingDirectory: <root>), TimeProvider = new ManualTimeProvider(NOW), Version = "9.9.9" }`, where `env` is a `Dictionary<string, string>` that starts empty. The Git fixture is at `<root>/repo`.
+
+**Seeds** (`SeedAsync`, with a store at `NOW`):
+
+1. `LedgerSeeds.SeedChainsAsync(store, <root>/repo, <root>/api)`.
+2. `T5 = new string('5', 32)`: `TestSpans.Chat(startTime: 2026-11-21T15:00:00Z, requestModel: "claude-sonnet-5.5", conversationId: "conv-5", inputTokens: 100_000, outputTokens: 50_000) with { TraceId = T5, SpanId = "5555555555555555" }`, with Git `FEATURE`; it costs $0.70.
+3. `T6 = new string('6', 32)`: `TestSpans.Chat(startTime: 2026-11-21T16:00:00Z, requestModel: "mai-code-2", conversationId: "conv-6", inputTokens: 10_000, outputTokens: 200_000) with { TraceId = T6, SpanId = "6666666666666666" }`, with Git `FEATURE`; it costs $0.505.
+4. `execute_tool` links for `T5`: `55555555555555a1`–`55555555555555a5` (`powershell`, exit 1, starting at 15:00:01–15:00:05) and `55555555555555a6` (`powershell`, exit 0, 15:00:06). For `T6`: `66666666666666a1` (`HASH`, no exit code, status 2, 16:00:01).
+
+So `swigerb/copilot-ledger` / `feature/ledger` holds `T2` (from `LedgerSeeds`, 56 AI credits), `T5` (70), and `T6` (50.5).
+
+`BRANCH` is the expected `get_branch_ledger` object for that branch with no trips and no budget:
+
+```json
+{
+  "repository": "swigerb/copilot-ledger",
+  "branch": "feature/ledger",
+  "spans": 4,
+  "unpricedSpans": 0,
+  "inputTokens": 1510000,
+  "outputTokens": 362000,
+  "cacheReadInputTokens": 400000,
+  "cacheWriteInputTokens": 0,
+  "aiCredits": 176.5,
+  "aiCreditsUsd": 1.765,
+  "foundryByokUsd": 0,
+  "localSavedUsd": 0.23,
+  "billedAiCredits": 176.5,
+  "topModel": "mai-code-2",
+  "budget": null,
+  "circuitBreaker": { "state": "closed", "openTrips": [] },
+  "warnings": []
+}
+```
+
+#### MCP: `LedgerMcpServerTests` (new, `tests/CopilotLedger.Tests/Mcp/`)
+
+For a successful call, "the result is X" means: `IsError` isn't true; `Content` is one `TextContentBlock`; its text, split on `\n`, is the warnings in order followed by one line of compact JSON; that JSON and `JsonNode.Parse(StructuredContent.Value.GetRawText())` both deep-equal X; and the warning lines equal X's `warnings` array.
+
+**MC1, `tools/list`.** No seeds. `Client.ServerInfo.Name` is `copilot-ledger`, `Client.ServerInfo.Version` is `9.9.9`, and `Client.ServerInstructions` equals `LedgerMcpServer.Instructions`. `ListToolsAsync()` returns the four tools in Task 4's order. For each, `ProtocolTool.Title` and `Description` equal Task 4's text, `InputSchema` deep-equals Task 4's schema, `OutputSchema` is null, and the annotations are: `ReadOnlyHint` true, `DestructiveHint` null, `IdempotentHint` null, and `OpenWorldHint` false for the read tools; and `ReadOnlyHint` false, `DestructiveHint` false, `IdempotentHint` true, and `OpenWorldHint` false for `set_branch_budget`.
+
+**MC2, the branch ledger.** Seeds. `get_branch_ledger` with `{}`: the result is `BRANCH`.
+
+**MC3, warnings.** Seeds. Then, with the store, trips 1–3 and a budget:
+
+- trip 1: `{ Rule = RetryChurn, TraceId = T5, ConversationId = "conv-5", Repository = "swigerb/copilot-ledger", Branch = "feature/ledger", RepositoryRoot = <root>/repo, TrippedAt = 2026-11-21T15:00:05Z, Detail = "5 failed tool calls in a row", FailureCount = 5 }`;
+- trip 2: `{ Rule = RetryChurn, TraceId = new string('a', 32), ConversationId = "conv-other", Repository = "contoso/api", Branch = "main", TrippedAt = 2026-11-21T09:00:00Z, Detail = "7 failed tool calls in a row", FailureCount = 7 }`;
+- trip 3: `{ Rule = RetryChurn, TraceId = new string('b', 32), ConversationId = "conv-5", Repository = "swigerb/copilot-ledger", Branch = "main", TrippedAt = 2026-11-21T14:30:00Z, Detail = "6 failed tool calls in a row", FailureCount = 6 }`;
+- `SetBranchBudgetAsync("swigerb/copilot-ledger", "feature/ledger", 150m)`.
+
+`OPEN1` is `{"id":1,"rule":"retry_churn","repository":"swigerb/copilot-ledger","branch":"feature/ledger","traceId":"55555555555555555555555555555555","conversationId":"conv-5","currentSession":S,"trippedAt":"2026-11-21T15:00:05.0000000+00:00","detail":"5 failed tool calls in a row","resetCommand":"gh-ledger breaker reset --id 1"}`, and `OPEN3` is `{"id":3,"rule":"retry_churn","repository":"swigerb/copilot-ledger","branch":"main","traceId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","conversationId":"conv-5","currentSession":true,"trippedAt":"2026-11-21T14:30:00.0000000+00:00","detail":"6 failed tool calls in a row","resetCommand":"gh-ledger breaker reset --id 3"}`. The warnings are:
+
+- `W1`: `WARNING: CopilotLedger circuit breaker is open for swigerb/copilot-ledger @ feature/ledger: 5 failed tool calls in a row on one prompt (trip 1). Stop and ask the user before continuing. The user can reset it with: gh-ledger breaker reset --id 1`
+- `W3`: `WARNING: CopilotLedger circuit breaker is open for swigerb/copilot-ledger @ main: 6 failed tool calls in a row on one prompt (trip 3). Stop and ask the user before continuing. The user can reset it with: gh-ledger breaker reset --id 3`
+- `WB`: `WARNING: swigerb/copilot-ledger @ feature/ledger has spent 176.50 of its 150.00 AI credit budget.`
+
+Without `COPILOT_AGENT_SESSION_ID`, `get_branch_ledger` `{}` gives `BRANCH` with `budget` `{"aiCredits":150,"spentAiCredits":176.5,"exceeded":true}`, `circuitBreaker` `{"state":"open","openTrips":[OPEN1 with S = false]}`, and `warnings` `[W1, WB]`. With `env["COPILOT_AGENT_SESSION_ID"] = "conv-5"` in a new harness, the same call gives `openTrips` `[OPEN1 with S = true, OPEN3]` and `warnings` `[W1, W3, WB]`.
+
+**MC4, an explicit scope.** Seeds. `get_branch_ledger` with `{"repository":"contoso/api","branch":"main"}`: the result is `{"repository":"contoso/api","branch":"main","spans":1,"unpricedSpans":0,"inputTokens":100000,"outputTokens":10000,"cacheReadInputTokens":0,"cacheWriteInputTokens":0,"aiCredits":0,"aiCreditsUsd":0,"foundryByokUsd":0.315,"localSavedUsd":0,"billedAiCredits":31.5,"topModel":"gpt-6.1-sol","budget":null,"circuitBreaker":{"state":"closed","openTrips":[]},"warnings":[]}`. With `{"repository":"swigerb/copilot-ledger","branch":"nope"}`, every count and amount is 0, `topModel` is `null`, `budget` is `null`, and the breaker is closed.
+
+**MC5, top prompts.** Seeds. `P5`, `P2`, and `P6` are these prompt objects (without `rank`):
+
+- `P5`: `{"traceId":"55555555555555555555555555555555","conversationId":"conv-5","startTime":"2026-11-21T15:00:00.0000000+00:00","endTime":"2026-11-21T15:00:02.0000000+00:00","agents":[],"models":["claude-sonnet-5.5"],"spans":1,"unpricedSpans":0,"inputTokens":100000,"outputTokens":50000,"cacheReadInputTokens":0,"cacheWriteInputTokens":0,"aiCredits":70,"aiCreditsUsd":0.7,"foundryByokUsd":0,"localSavedUsd":0,"billedAiCredits":70,"failedToolCalls":5}`
+- `P2`: `{"traceId":"22222222222222222222222222222222","conversationId":"conv-2","startTime":"2026-11-21T13:00:00.0000000+00:00","endTime":"2026-11-21T13:05:02.0000000+00:00","agents":["ledger-builder"],"models":["mai-code-2","qwen3.8-27b"],"spans":2,"unpricedSpans":0,"inputTokens":1400000,"outputTokens":112000,"cacheReadInputTokens":400000,"cacheWriteInputTokens":0,"aiCredits":56,"aiCreditsUsd":0.56,"foundryByokUsd":0,"localSavedUsd":0.23,"billedAiCredits":56,"failedToolCalls":0}`
+- `P6`: `{"traceId":"66666666666666666666666666666666","conversationId":"conv-6","startTime":"2026-11-21T16:00:00.0000000+00:00","endTime":"2026-11-21T16:00:02.0000000+00:00","agents":[],"models":["mai-code-2"],"spans":1,"unpricedSpans":0,"inputTokens":10000,"outputTokens":200000,"cacheReadInputTokens":0,"cacheWriteInputTokens":0,"aiCredits":50.5,"aiCreditsUsd":0.505,"foundryByokUsd":0,"localSavedUsd":0,"billedAiCredits":50.5,"failedToolCalls":1}`
+
+| Arguments | `orderBy`, `limit` | `prompts` |
 |---|---|---|
-| RC1 | `POST /v1/traces`, `application/x-protobuf`, `PGold1` | 200, `Content-Type` `application/x-protobuf`, an empty body. The ingestor got one request with `SpanCount` 1 and trace `5b8efff798038103d269b633813fc60c`. |
-| RC2 | `application/json`, `CopilotChatTraceJson` | 200, `application/json`, body `{}`. The ingestor got `SpanCount` 2. |
-| RC3 | (theory) gzip(`PGold1`) with `Content-Encoding: gzip`; the same with `GZIP`; JSON with `Content-Type: application/json; charset=utf-8` | 200 |
-| RC4 | (theory) `text/plain`; no `Content-Type`; protobuf with `Content-Encoding: br` | 415. The first two respond in JSON with the messages `Unsupported Content-Type text/plain. Use application/x-protobuf or application/json.` and `Unsupported Content-Type (none). Use application/x-protobuf or application/json.`. The third responds in protobuf with `Unsupported Content-Encoding br. Use gzip or no encoding.`. The ingestor isn't called. |
-| RC5 | `MaxRequestBodyBytes = 4096`: 8,192 zero bytes as protobuf, uncompressed; gzip of 1,048,576 zero bytes (1,051 bytes compressed) as protobuf | 413 for both. The body is exactly `12205265717565737420626f6479206578636565647320343039362062797465732e`, which is `Request body exceeds 4096 bytes.` |
-| RC6 | Protobuf body `0b`; JSON body `{`; `Content-Encoding: gzip` with the body `not gzip` | 400 for each. The messages start with `Invalid OTLP protobuf payload: ` and `Invalid OTLP JSON payload: `; the third is `Invalid gzip body.` |
-| RC7 | (theory) `Host` values `evil.example:4318`; `127.0.0.1:4318`; `[::1]:4318`; `LOCALHOST:4318` | 400 with `Host evil.example is not a loopback name.`, then 200, 200, and 200 |
-| RC8 | The ingestor throws `InvalidOperationException` | 503, `Retry-After: 5`, and the JSON message `The ledger is unavailable; retry later.` |
-| RC9 | The ingestor returns `RejectedSpans` 2 and `FirstRejectionReason` `invalid traceId`; send once as protobuf and once as JSON | Protobuf body exactly `0a270802122332207370616e2873292072656a65637465643a20696e76616c69642074726163654964`. JSON: `partialSuccess.rejectedSpans` is the string `"2"`, and `partialSuccess.errorMessage` is `2 span(s) rejected: invalid traceId`. |
-| RC10 | `GET /v1/traces`; `POST /v1/unknown` | 405; 404 |
-| RC11 | `POST /v1/metrics` as protobuf (10 bytes); `POST /v1/logs` as JSON `{"resourceLogs":[]}` | 200 with an empty protobuf body; 200 with `{}`. The ingestor isn't called. |
-| RC12 | The real `LedgerIngestor` set up as in IG1: post `CopilotChatTraceJson`, then `PGold1`, which repeats the same trace and span IDs | 200 and 200. The Model rollup has one row: `mai-code-2`, `AiCredits` 0.69071, 1 span. The duplicate isn't stored twice. |
+| `{}` | `cost`, 5 | `P5` (rank 1), `P2` (2), `P6` (3) |
+| `{"orderBy":"outputTokens","limit":2}` | `outputTokens`, 2 | `P6` (1), `P2` (2) |
+| `{"orderBy":"failedToolCalls"}` | `failedToolCalls`, 5 | `P5` (1), `P6` (2), `P2` (3) |
 
-#### Daemon: `DaemonCommandTests` (with `CliHarness`)
+Each result is `{"repository":"swigerb/copilot-ledger","branch":"feature/ledger","orderBy":…,"limit":…,"prompts":[…],"circuitBreaker":{"state":"closed","openTrips":[]},"warnings":[]}`, where each prompt is the object above with `"rank"` added first.
 
-| # | Case | Expected |
+**MC6, agents.** Seeds. `get_agent_breakdown` with `{}`: the result is `{"repository":"swigerb/copilot-ledger","branch":"feature/ledger","agents":[{"agent":"(none)","spans":2,"unpricedSpans":0,"inputTokens":110000,"outputTokens":250000,"cacheReadInputTokens":0,"cacheWriteInputTokens":0,"aiCredits":120.5,"aiCreditsUsd":1.205,"foundryByokUsd":0,"localSavedUsd":0,"billedAiCredits":120.5},{"agent":"ledger-builder","spans":2,"unpricedSpans":0,"inputTokens":1400000,"outputTokens":112000,"cacheReadInputTokens":400000,"cacheWriteInputTokens":0,"aiCredits":56,"aiCreditsUsd":0.56,"foundryByokUsd":0,"localSavedUsd":0.23,"billedAiCredits":56}],"circuitBreaker":{"state":"closed","openTrips":[]},"warnings":[]}`.
+
+**MC7, setting a budget.** Seeds.
+
+- `set_branch_budget` with `{"aiCredits":200}`: the result is `{"repository":"swigerb/copilot-ledger","branch":"feature/ledger","budget":{"aiCredits":200,"spentAiCredits":176.5,"exceeded":false},"circuitBreaker":{"state":"closed","openTrips":[]},"warnings":[]}`. `GetBranchBudgetsAsync()` then has one row: that branch, budget 200, `SetAt` `NOW`.
+- With `{"aiCredits":150.5,"repository":"swigerb/copilot-ledger","branch":"feature/ledger"}`: `budget` is `{"aiCredits":150.5,"spentAiCredits":176.5,"exceeded":true}`, and `warnings` is `["WARNING: swigerb/copilot-ledger @ feature/ledger has spent 176.50 of its 150.50 AI credit budget."]`.
+- With `aiCredits` set to `JsonDocument.Parse("1e2").RootElement`: `budget` is `{"aiCredits":100,"spentAiCredits":176.5,"exceeded":true}`.
+
+**MC8, invalid arguments** (theory). Each returns `IsError` true, one `TextContentBlock` with exactly the message, and a null `StructuredContent`. After the `set_branch_budget` cases, `GetBranchBudgetsAsync()` is empty.
+
+| Tool | Arguments | Message |
 |---|---|---|
-| DM1 | Start an in-process daemon, then run `daemon start`, a second `daemon run`, `daemon stop`, and `daemon stop` again | `daemon.json` has `processId` = `Environment.ProcessId`, `endpoint` `http://localhost:4318`, `version` `0.2.0`, and `databasePath` `<root>/data/ledger.db`. `daemon start` exits 0 with `gh-ledger daemon is already running (pid <pid>).`. The second `daemon run` exits 1, and its output contains `gh-ledger daemon is already running.`. `daemon stop` exits 0 with `gh-ledger daemon stopped.`; the background run returns 0, and neither `daemon.json` nor `daemon.stop` exists. The last `daemon stop` exits 0 with `gh-ledger daemon is not running.`. |
-| DM2 | `daemon start`, with the harness's in-process `StartDetachedHandler` | Exit 0: `gh-ledger daemon started (pid <Environment.ProcessId>) on http://localhost:4318.`. `DetachedStarts` has one call: `/opt/gh-ledger/gh-ledger`, with the arguments `daemon run --port 4318 --log-file <root>/data/daemon.log` and working directory `<root>/data`. |
-| DM3 | `daemon start` where `StartDetachedHandler` returns 999999, which isn't running | Exit 1; `Error` is `gh-ledger daemon did not start; see <root>/data/daemon.log.` |
-| DM4 | (theory) `ProcessPath` of `/usr/bin/dotnet`; `C:\tools\GH-LEDGER.EXE`; `/opt/bin/gh-ledger` | Exit 1 with `Run this command from the gh-ledger executable (current process: /usr/bin/dotnet).`, then exit 0, then exit 0 |
-| DM5 | Create `<root>/data` and write the malformed overlay from RT3 (b) to `<root>/data/rates.json`. Run `daemon run`, then `daemon stop`. | `daemon run` exits 1. Its `Out` contains `Invalid rates overlay: <root>/data/rates.json: line 2, column 32: invalid JSON` and doesn't contain `gh-ledger daemon stopped`. `daemon.json` doesn't exist. `daemon stop` exits 0 with `gh-ledger daemon is not running.`, which shows the lock was released. |
+| `get_branch_ledger` | `{"repository":"a/b"}` | `Pass repository and branch together, or neither.` |
+| `get_branch_ledger` | `{"branch":"main"}` | `Pass repository and branch together, or neither.` |
+| `get_branch_ledger` | `{"repository":"","branch":"main"}` | `repository must be a non-empty string.` |
+| `get_branch_ledger` | `{"repository":"   ","branch":"main"}` | `repository must be a non-empty string.` |
+| `get_branch_ledger` | `{"repository":"a/b","branch":5}` | `branch must be a non-empty string.` |
+| `get_branch_ledger` | `{"extra":1,"another":2}` | `Unknown argument: another.` |
+| `get_agent_breakdown` | `{"limit":5}` | `Unknown argument: limit.` |
+| `get_top_expensive_prompts` | `{"limit":0}`, `{"limit":21}`, `{"limit":5.5}`, `{"limit":"5"}` | `limit must be an integer from 1 to 20.` |
+| `get_top_expensive_prompts` | `{"orderBy":"Cost"}`, `{"orderBy":null}` | `orderBy must be cost, outputTokens, or failedToolCalls.` |
+| `set_branch_budget` | `{}` | `aiCredits is required.` |
+| `set_branch_budget` | `{"aiCredits":0}`, `{"aiCredits":-1}`, `{"aiCredits":1000000.01}`, `{"aiCredits":0.001}`, `{"aiCredits":"5"}` | `aiCredits must be a number greater than 0 and at most 1000000, with at most 2 decimal places.` |
+| `set_branch_budget` | `{"aiCredits":5,"repository":"a/b"}` | `Pass repository and branch together, or neither.` |
 
-#### Rates: `RatesCommandTests` (with `CliHarness`)
+**MC9, finding the branch.** Seeds, with `WorkingDirectory = <root>`:
 
-| # | Case | Expected |
-|---|---|---|
-| RT1 | `rates init`, then `rates init` again, then `rates init --force` | Exit 0. The file equals the scaffold byte for byte, and the output is `Created <path>. Add your prices, then run: gh-ledger rates validate`. The second run exits 1 with `<path> already exists. Use --force to replace it.`, and the file is unchanged. `--force` exits 0. |
-| RT2 | `rates validate` with no file, then after `rates init` | `No rates overlay at <path>; using the built-in rates (2026-11-20).`; then `<path> is valid. Rates version: 2026-11-20+user.` Both exit 0. |
-| RT3 | (theory) `rates validate --file <root>/bad.json`, where `bad.json` holds (C# string escapes, so `\n` is a newline): (a) `{ "schemaVersion": 2 }`; (b) `{ "schemaVersion": 1,\n  "foundryByok": { "models": [ }\n}\n`; (c) `{ "schemaVersion": 1, "foundryBYOK": { } }`. Then (d) case (a)'s file with the relative `--file bad.json`, run with `RunInAsync(<root>, ...)`; and (e) `rates validate --file <root>/missing.json`. | Each exits 1 with an empty `Out`. `Error` is: (a) and (d) `Invalid rates overlay: <root>/bad.json: schemaVersion: must be 1`; (b) `Invalid rates overlay: <root>/bad.json: line 2, column 32: invalid JSON`; (c) `Invalid rates overlay: <root>/bad.json: foundryBYOK: is not a known property; did you mean foundryByok?`; (e) `<root>/missing.json does not exist.` |
+- With no environment, `get_branch_ledger` `{}` returns `IsError` true and exactly `No Git repository at <root>. Pass repository and branch.`
+- With `env["COPILOT_SESSION_CWD"] = <root>/repo`, the result is `BRANCH`.
+- With `COPILOT_SESSION_CWD` set to `repo` (relative) or to `<root>/missing`, it's the same error as with no environment.
+
+**MC10, an unknown tool.** `Client.CallToolAsync("nope", null)` throws `McpProtocolException` with `ErrorCode` `McpErrorCode.InvalidParams` and a `Message` containing `Unknown tool: nope`.
+
+**MC11, the `mcp` command.** Seeds and a `CliHarness`. Start `GhLedgerCli.InvokeAsync(["mcp"], harness.Context with { StandardInput = toServer.Reader.AsStream(), StandardOutput = toClient.Writer.AsStream(), WorkingDirectory = <root>/repo, Out = output, Error = error })`, where `output` and `error` are `StringWriter`s, and connect a client to the pipes as `McpTestHarness` does. `ListToolsAsync()` returns 4 tools, `Client.ServerInfo.Version` equals `GhLedgerCli.Version`, and `get_branch_ledger` `{}` returns `repository` `swigerb/copilot-ledger` and `branch` `feature/ledger`. Dispose the client and complete `toServer.Writer`: the command returns 0, and `output` is empty.
+
+**MC12, an unavailable ledger.** Create the directory `<root>/dbdir` and use it as `DatabasePath`. `get_branch_ledger` with `{"repository":"a/b","branch":"main"}` returns `IsError` true, with text starting `The ledger at <root>/dbdir is unavailable: `.
 
 ### Task 5 tests
 
-#### Reports: `ReportCommandTests`
+#### Install: `InstallCommandTests` (changed and new)
 
-These tests use a `CliHarness`:
+`RUN_VALUE` is `@"HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CopilotLedger"`. `AUTOSTART` is `<root>/home/.config/autostart/copilot-ledger.desktop`, and `AGENT` is `<root>/home/Library/LaunchAgents/io.github.swigerb.copilot-ledger.plist`.
 
-- `ManualTimeProvider(2026-11-21T15:00:00Z, ManualTimeProvider.UtcMinus5)`, so local now is 2026-11-21 10:00 −05:00;
-- the Git fixture at `<root>/repo`, with `.git/HEAD` = `ref: refs/heads/main` and the origin config for `swigerb/copilot-ledger`;
-- `LedgerSeeds.SeedChainsAsync` on a store at `<root>/data/ledger.db`, with `repoRoot = <root>/repo` and `apiRoot = <root>/api`.
+Changed cases:
 
-Unless a case says otherwise, the daemon isn't running and no environment variables are set. In the expected text, `<DatabasePath>` is `<root>/data/ledger.db`.
+- **IN1.** The expected output gains `gh-ledger will start when you sign in.` between the `sh.exe` warning and the daemon line. Also assert `platform.StartupCommandWrites` equals `[("CopilotLedger", "\"C:\\tools\\gh-ledger.exe\" daemon start")]` and the manifest's `startupItem` is `RUN_VALUE`.
+- **IN2.** The same line comes between `Set gh alias: …` and the daemon line, with the same two assertions.
+- **IN3.** The second install's `Out` also contains `gh-ledger already starts when you sign in.`, and `StartupCommandWrites` has exactly one entry.
+- **IN9.** The expected output gains `Would start gh-ledger when you sign in.` between the `sh.exe` warning and `Would start the gh-ledger daemon.`, and `StartupCommandWrites` is empty.
+- **IN10.** `after-windows` also asserts `Out` contains `gh-ledger will no longer start when you sign in.` and `StartupCommandWrites[^1]` is `("CopilotLedger", null)`. `after-unix` also asserts `Out` contains that line and `AUTOSTART` doesn't exist.
 
-**RP1.** `status` exits 0 and prints exactly:
+New cases, using the existing `WindowsPlatform()` and `UnixPlatform(<root>)` helpers:
 
-```text
-gh-ledger 0.2.0
-Daemon:  not running; start it with: gh-ledger daemon start
-Ledger:  <DatabasePath>
-Rates:   2026-11-20
-Copilot: OTel export not enabled; run: gh-ledger install
+**IN11, Linux autostart.** `UnixPlatform(<root>)`.
 
-Period        Spans  Unpriced  AI credits  GitHub USD  BYOK USD  Local saved
-Today             3         0      342.00       $3.42     $0.00        $0.23
-Last 7 days       4         0      342.00       $3.42     $0.32        $0.23
-Last 30 days      4         0      342.00       $3.42     $0.32        $0.23
-```
+- `install`: `Out` contains `gh-ledger will start when you sign in.`, and `File.ReadAllText(AUTOSTART)` is exactly this, plus a final `\n`:
 
-**RP2–RP10:**
-
-| # | Case | Expected |
-|---|---|---|
-| RP2 | `status --json`, with an in-process daemon running and `UserVariables["COPILOT_OTEL_ENABLED"] = "true"` (`IsWindows = true`) | `daemon.running` true, `daemon.processId` = `Environment.ProcessId`, and `daemon.endpoint` `http://localhost:4318`. `copilotOtelEnabled` true, `warnings` empty, `ratesVersion` `2026-11-20`. **today:** from 2026-11-21T05:00:00Z, spans 3, unpriced 0, `aiCredits` 342, `aiCreditsUsd` 3.42, `foundryByokUsd` 0, `localSavedUsd` 0.23. **last 7 days:** from 2026-11-15T05:00:00Z, spans 4, `foundryByokUsd` 0.315. **last 30 days:** from 2026-10-23T05:00:00Z, spans 4. |
-| RP3 | (theory) `status --json` with one process variable set, per the table below | `warnings` is exactly the listed list. `copilotOtelEnabled` is false, except true for the first row. |
-| RP4 | `branch`, run in `<root>/repo` | Exit 0 and exactly the text below |
-| RP5 | `branch --all-repos --json` | `period` `last 30 days`, `from` 2026-10-23T05:00:00Z, `repository` null. Rows, in order: `swigerb/copilot-ledger` `main` (spans 1, `aiCredits` 286, `aiCreditsUsd` 2.86); `swigerb/copilot-ledger` `feature/ledger` (spans 2, `aiCredits` 56, `aiCreditsUsd` 0.56, `localSavedUsd` 0.23); `contoso/api` `main` (spans 1, `foundryByokUsd` 0.315). |
-| RP6 | `agents --since all` | Exit 0 and exactly the text below |
-| RP7 | `top-prompts --since all --limit 2` | Exit 0 and exactly the text below |
-| RP8 | `top-prompts --since all --json` | 4 rows with `rank` 1–4 and the T1–T4 values from SL7. Row 2: `agents` `["ledger-builder"]`, `models` `["mai-code-2","qwen3.8-27b"]`, `startTime` 2026-11-21T13:00:00Z, `endTime` 2026-11-21T13:05:02Z, `localSavedUsd` 0.23. Row 4: `repository` `(none)`, `unpricedSpans` 1. |
-| RP9 | (theory) `agents --since <v> --json` | See the list below |
-| RP10 | Write the malformed overlay from RT3 (b) to `<root>/data/rates.json`, then run `status` and `status --json` | Both exit 0. The text is RP1's, except the Rates line is `Rates:   invalid overlay: <root>/data/rates.json: line 2, column 32: invalid JSON`. In the JSON, `ratesVersion` is null, `ratesError` is `<root>/data/rates.json: line 2, column 32: invalid JSON`, and `periods` matches RP2's values. |
-
-RP3 cases:
-
-| Process variable | Warnings |
-|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318/` | none |
-| `OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.contoso.com:4318` | `OTEL_EXPORTER_OTLP_ENDPOINT is https://collector.contoso.com:4318; Copilot exports there instead of to CopilotLedger at http://localhost:4318.` |
-| `COPILOT_OTEL_FILE_EXPORTER_PATH=/tmp/x.jsonl` | `COPILOT_OTEL_FILE_EXPORTER_PATH is set; Copilot writes telemetry to that file instead of exporting it to CopilotLedger.` |
-| `COPILOT_OTEL_EXPORTER_TYPE=file` | `COPILOT_OTEL_EXPORTER_TYPE is file; remove it or set it to otlp-http.` |
-| `COPILOT_OTEL_EXPORTER_TYPE=OTLP-HTTP` | none |
-| `OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY=/k.pem` | `OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY is set; Copilot turns off export to http:// endpoints while TLS settings are set.` |
-| `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` | `OTEL_EXPORTER_OTLP_PROTOCOL is grpc; CopilotLedger accepts only http/protobuf and http/json.` |
-| `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` | none |
-
-RP9 cases, for `agents --since <v> --json`:
-
-- **Valid values**, with `period` and `from`:
-  - `today` and `TODAY`: `today`, 2026-11-21T05:00:00Z;
-  - `1d`: `today`, 2026-11-21T05:00:00Z;
-  - `7d`: `last 7 days`, 2026-11-15T05:00:00Z;
-  - `30d`: `last 30 days`, 2026-10-23T05:00:00Z;
-  - `all`: `all time`, null;
-  - `2026-11-01`: `since 2026-11-01`, 2026-11-01T05:00:00Z.
-- **Rows for `today`:** `ledger-architect` (spans 1, `aiCredits` 286), then `ledger-builder` (spans 2, `aiCredits` 56, `localSavedUsd` 0.23).
-- **Invalid values** `0d`, `3651d`, `7x`, `2026-13-01`, and `yesterday` exit 1, and `Error` contains `Invalid --since value <v>. Use today, all, <N>d (1-3650), or yyyy-MM-dd.`.
-- `branch --repo a/b --all-repos` exits 1 with `Use either --repo or --all-repos, not both.`.
-- `top-prompts --limit 0` exits 1 with `--limit must be from 1 to 100.`.
-
-RP4 expected text:
-
-```text
-Branches in swigerb/copilot-ledger (last 30 days)
-
-Branch          Spans  Unpriced  AI credits  GitHub USD  BYOK USD  Local saved
-main                1         0      286.00       $2.86     $0.00        $0.00
-feature/ledger      2         0       56.00       $0.56     $0.00        $0.23
-```
-
-RP6 expected text:
-
-```text
-Agents in all repositories (all time)
-
-Agent             Spans  Unpriced  AI credits  GitHub USD  BYOK USD  Local saved
-ledger-architect      1         0      286.00       $2.86     $0.00        $0.00
-ledger-builder        3         1       56.00       $0.56     $0.00        $0.23
-(none)                1         0        0.00       $0.00     $0.32        $0.00
-```
-
-RP7 expected text:
-
-```text
-Top 2 prompts by cost in all repositories (all time)
-
-#  Started           Repository              Agents            Models                   Spans  AI credits  GitHub USD  BYOK USD  Local saved  Trace
-1  2026-11-21 09:00  swigerb/copilot-ledger  ledger-architect  claude-opus-5.5              1      286.00       $2.86     $0.00        $0.00  11111111111111111111111111111111
-2  2026-11-21 08:00  swigerb/copilot-ledger  ledger-builder    mai-code-2, qwen3.8-27b      2       56.00       $0.56     $0.00        $0.23  22222222222222222222222222222222
-```
-
-#### Install: `InstallCommandTests` (with `CliHarness` and `FakeCliPlatform`)
-
-**Windows fixture:**
-
-- `IsWindows = true`, `ProcessPath = C:\tools\gh-ledger.exe`;
-- `PathExecutables`: `gh` → `C:\gh\gh.exe`, and `git` → `C:\git\cmd\git.exe`;
-- `ExistingFiles` empty.
-
-**Unix fixture:**
-
-- `IsWindows = false`, `HomeDirectory = <root>/home`, `ShellPath = /bin/zsh`, `ProcessPath = /opt/bin/gh-ledger`;
-- `PathExecutables`: `gh` → `/usr/bin/gh`;
-- `<root>/home/.zshrc` contains `export FOO=1` with no final newline.
-
-**IN1** (Windows fixture, fresh). `install` exits 0:
-
-- `UserVariableWrites` is `[("COPILOT_OTEL_ENABLED", "true")]`.
-- `ProcessRuns` is `[("C:\gh\gh.exe", ["alias", "set", "ledger", "'C:/tools/gh-ledger.exe' \"$@\"", "--shell", "--clobber"])]`.
-- `Out` is exactly these lines, where `<pid>` is `Environment.ProcessId`:
-
-  ```text
-  Set COPILOT_OTEL_ENABLED=true for your user account.
-  Set gh alias: gh ledger runs C:\tools\gh-ledger.exe.
-  Warning: GitHub CLI needs sh.exe from Git for Windows to run shell aliases, so gh ledger won't work until Git for Windows is installed. Run gh-ledger directly.
-  gh-ledger daemon started (pid <pid>) on http://localhost:4318.
-  CopilotLedger is installed. Restart the GitHub Copilot app, VS Code, and open terminals so they pick up COPILOT_OTEL_ENABLED.
+  ```ini
+  [Desktop Entry]
+  Type=Application
+  Name=CopilotLedger
+  Comment=Starts the CopilotLedger daemon
+  Exec="/opt/bin/gh-ledger" daemon start
+  Terminal=false
   ```
 
-- `install.json` has `executablePath` `C:\tools\gh-ledger.exe`, `windowsUserVariableSet` true, `windowsUserVariablePreviousValue` null, `profileFiles` empty, and `ghAliasSet` true.
+  The manifest's `startupItem` is `AUTOSTART`.
+- A second `install`: `Out` contains `gh-ledger already starts when you sign in.`
+- `uninstall`: `Out` contains `gh-ledger will no longer start when you sign in.`, and `AUTOSTART` doesn't exist.
 
-**IN2–IN10:**
+**IN12, `XDG_CONFIG_HOME`** (theory). `UnixPlatform(<root>)` with `ProcessVariables["XDG_CONFIG_HOME"]` set. With `<root>/xdg`, `install` writes `<root>/xdg/autostart/copilot-ledger.desktop`, and `<root>/home/.config` doesn't exist. With `relative/xdg`, it writes `AUTOSTART`.
 
-| # | Case | Expected |
-|---|---|---|
-| IN2 | IN1 with `ExistingFiles` = `C:\git\cmd\..\bin\sh.exe` | The same, without the `sh.exe` warning line |
-| IN3 | IN1, then `install` again | `UserVariableWrites` still has 1 entry. Line 1 is `COPILOT_OTEL_ENABLED=true is already set for your user account.`, and the daemon line is `gh-ledger daemon is already running (pid <pid>).`. The manifest still has `windowsUserVariableSet` true and previous value null. |
-| IN4 | Windows fixture with `UserVariables["COPILOT_OTEL_ENABLED"] = "false"`: `install`, then `uninstall` | `install` writes `true`, and the manifest's previous value is `false`. `uninstall`'s last variable write is `("COPILOT_OTEL_ENABLED", "false")`, with the line `Restored COPILOT_OTEL_ENABLED=false for your user account.` |
-| IN5 | Unix fixture: `install` twice | `.zshrc` is exactly `export FOO=1\n\n# >>> copilot-ledger >>>\nexport COPILOT_OTEL_ENABLED=true\n# <<< copilot-ledger <<<\n`. The alias expansion argument is `'/opt/bin/gh-ledger' "$@"`. There are no user-variable writes, and no `sh` warning. The output includes `Added COPILOT_OTEL_ENABLED=true to <root>/home/.zshrc.`, and `profileFiles` is that path. The second run leaves the file unchanged and prints `<root>/home/.zshrc already sets COPILOT_OTEL_ENABLED.` |
-| IN6 | (theory) Unix fixture with (`ShellPath`, `IsMacOS`) = (`/bin/bash`, true); (`/usr/bin/bash`, false); (`/usr/bin/fish`, false); (null, false), and the profile missing | The profile is `.bash_profile`, `.bashrc`, `.profile`, and `.profile`. Each file is created holding exactly the 3-line block and a final `\n`. |
-| IN7 | (theory) Windows fixture without `gh`; Windows fixture whose `RunHandler` returns `(1, "", "boom")` | `GitHub CLI (gh) was not found, so the gh ledger alias was not set. Run gh-ledger directly.`; `Warning: could not set the gh alias: boom`. Both exit 0 with `ghAliasSet` false. |
-| IN8 | `ProcessPath = /usr/share/dotnet/dotnet` | Exit 1 with `Error` `Run install from the gh-ledger executable (current process: /usr/share/dotnet/dotnet).`. No writes, runs, detached starts, or `install.json`. |
-| IN9 | Windows fixture: `install --dry-run` | Exit 0. No writes, runs, or detached starts, and no `install.json`. `Out` is exactly `Would set COPILOT_OTEL_ENABLED=true for your user account.`, `Would set gh alias: gh ledger runs C:\tools\gh-ledger.exe.`, the `sh.exe` warning line, `Would start the gh-ledger daemon.`, and `Dry run: no changes made.` |
-| IN10 | (theory) `uninstall` after IN1; after IN5; with no manifest; after IN1 with `RunHandler` returning `(1, "", "no such alias ledger")` for `alias delete`; after IN1 with the user variable changed to `1` | See the cases below |
+**IN13, the macOS LaunchAgent.** `UnixPlatform(<root>)` with `IsMacOS = true`. `install`: `Out` contains `gh-ledger will start when you sign in.`, and `File.ReadAllText(AGENT)` is Task 5's property list with `EXE` = `/opt/bin/gh-ledger` and `LOG` = `SecurityElement.Escape(<root>/data/daemon.log)`, after `.ReplaceLineEndings("\n")`, plus a final `\n`. The manifest's `startupItem` is `AGENT`. `uninstall`: `Out` contains `gh-ledger will no longer start when you sign in.`, and `AGENT` doesn't exist.
 
-IN10 cases:
+**IN14, items that can't be registered** (theory).
 
-- **After IN1:**
-  - The daemon line is `gh-ledger daemon stopped.`.
-  - The last variable write is `("COPILOT_OTEL_ENABLED", null)`, with `Removed COPILOT_OTEL_ENABLED from your user account.`.
-  - The last run is `("C:\gh\gh.exe", ["alias", "delete", "ledger"])`, with `Removed gh alias: ledger.`.
-  - `install.json` is deleted, and the last line is `CopilotLedger is uninstalled. Your ledger data is still in <root>/data.`.
-- **After IN5:** `.zshrc` is exactly `export FOO=1\n`.
-- **No manifest:** `CopilotLedger is not installed; nothing to undo.` and exit 0.
-- **`no such alias`:** prints `Removed gh alias: ledger.`.
-- **Variable changed to `1`:** prints `Left COPILOT_OTEL_ENABLED unchanged because it is no longer true.`, with no variable write.
+- `windows-too-long`: `WindowsPlatform()` with `ProcessPath = @"C:\" + new string('a', 250) + @"\gh-ledger.exe"` (a 267-character path, so a 282-character command). `Out` contains `Warning: the gh-ledger path is too long for a sign-in command, so gh-ledger won't start when you sign in. Run gh-ledger daemon start after you sign in.`, `StartupCommandWrites` is empty, and the manifest's `startupItem` is `null`.
+- `linux-characters`: `UnixPlatform(<root>)` with `ProcessPath = "/opt/my$tools/gh-ledger"`. `Out` contains `Warning: the gh-ledger path has characters that a desktop autostart entry can't run, so gh-ledger won't start when you sign in. Run gh-ledger daemon start after you sign in.`, `AUTOSTART` doesn't exist, and the manifest's `startupItem` is `null`.
+
+Both installs exit 0.
+
+**IN15, `COPILOT_LEDGER_HOME`.** `WindowsPlatform()` with `ProcessVariables["COPILOT_LEDGER_HOME"] = <root>/data`. `install` exits 0, and `Out` contains `Warning: COPILOT_LEDGER_HOME is set. The daemon that starts when you sign in uses it only if your sign-in environment sets it too.` before `gh-ledger will start when you sign in.`
+
+#### Version
+
+- **DM1.** The expected `version` in `daemon.json` is `0.3.0`.
+- **`ReportCommandTests`.** The expected `status` text's first line is `gh-ledger 0.3.0`.
 
 ## Deferred to later sprints
 
-- **Start at login.** Candidates are a Windows Task Scheduler entry, a macOS `launchd` agent, a Linux `systemd --user` unit, or a user-level Copilot CLI `sessionStart` hook that runs `gh-ledger daemon start`. Until then, users run `gh-ledger daemon start` after signing in, and Copilot drops telemetry while the daemon is down.
-- **`gh ledger` on Windows without Git for Windows.** A precompiled gh extension runs without `sh`, but it needs a repository named `gh-*` (for example `swigerb/gh-ledger`) with per-platform release assets. Creating that repository is a user decision; it pairs with Sprint 4's release work.
-- **Binary location.** `install` doesn't copy the binary or edit `PATH`.
-- **A custom port in `install`.** It would need `OTEL_EXPORTER_OTLP_ENDPOINT`, which affects every OpenTelemetry SDK.
-- **Reconciliation.** Verified on 10 spans: `github.copilot.nano_aiu / 10^9` equals the computed AI credits. Next: store each `chat` span's `nano_aiu` and report drift per model. Don't use the root `invoke_agent` span's total: in the custom-agent capture, it left out the subagent's spend. JSON carries the number's text. Protobuf carries an IEEE `double`, so this needs a design that keeps money decimal-only.
-- **Rates follow-ups.** Confirm the nine derived model IDs (A5) and Claude Opus 4.8 (fast mode)'s ID from live telemetry, and add aliases or the model if they differ. Add Gemini 4 Argon's and Gemini 3.8 Flash's post-promotion prices when GitHub publishes them. Both ship with the rates update command.
-- **More live captures:** a BYOK provider and a local provider (assumption A1: provider labels and `server.address`), and VS Code Local harness payloads (A3). Adjust the `rates.json` host and provider lists to match.
-- **File-exporter ingestion** (`COPILOT_OTEL_FILE_EXPORTER_PATH`, JSON lines) as an offline alternative to the daemon. Its line format is undocumented, so capture it first.
-- **Native AOT.** After Task 3 the rates loader has no reflection, but `daemon.json` and `install.json` still need source-generated System.Text.Json, and Microsoft.Data.Sqlite's native library still ships as a separate file.
-- **Overflow-safe rollups.** SQLite's `SUM` over `INTEGER` raises an error on 64-bit overflow, and then every report fails. With the token cap, a span at built-in rates costs at most $100,000 (10^17 pico-USD), so a rollup needs 93 such spans to overflow; an overlay with extreme rates needs fewer. If that ever matters, cap per-span cost at ingestion or aggregate in `decimal`, which changes Sprint 1's Storage.
-- **Sprints 3 and 4,** per the roadmap: the runaway-loop circuit breaker, the MCP server, PR receipts with the GitHub Action, and the rates update command.
+- **Reconciliation with `nano_aiu`** (carried from Sprint 2). Store each `chat` span's `github.copilot.nano_aiu` and report drift per model, never the root `invoke_agent` total, which left out a subagent's spend. Protobuf carries it as an IEEE `double`, so this needs a decimal-only design.
+- **`gh ledger` on Windows without Git for Windows** (carried from Sprint 2). A precompiled gh extension needs a `gh-*` repository with per-platform release assets. Creating it is the user's decision, paired with Sprint 4's release work.
+- **A tool gate.** A user-level `preToolUse` hook that runs a small `gh-ledger` command and denies tools while the breaker is open would stop an agent even when it never calls a ledger tool. It needs the hook contract verified live.
+- **Webhooks** as another alert channel.
+- **Breaker state in `status`.** `status` doesn't show the breaker yet, so that its tested output stays unchanged.
+- **MCP registration in `install`.** `install` could run `copilot mcp add` or edit `~/.copilot/mcp-config.json`, with `uninstall` undoing it.
+- **`COPILOT_LEDGER_HOME` in sign-in items.** Pass the data directory to the sign-in item (a launchd `EnvironmentVariables` entry, an `env` prefix in the desktop entry, or a CLI option) instead of warning.
+- **Headless Linux.** A `systemd --user` unit for machines without a desktop session.
+- **Smarter retry churn.** Telling test and build commands from others needs the command text, which Copilot exports only with content capture. Revisit if Copilot adds a command attribute.
+- **Carried from Sprint 2:** the binary location, a custom port in `install`, rates follow-ups, BYOK, local, and VS Code Local captures, file-exporter ingestion, Native AOT, and overflow-safe rollups, as described in `.github/plans/archive/sprint-2.md`.
+- **Sprint 4,** per the roadmap: PR receipts, the GitHub Action, and the rates update command.
