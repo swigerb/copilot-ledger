@@ -1,6 +1,7 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
 using System.Globalization;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using CopilotLedger.Cli.Daemon;
 using CopilotLedger.Cli.Install;
@@ -12,6 +13,12 @@ namespace CopilotLedger.Cli.Reporting;
 
 internal static class ReportCommands
 {
+    private static readonly JsonWriterOptions JsonOptions = new()
+    {
+        Indented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
     private static readonly TableColumn[] MoneyColumns =
     [
         new("Spans", true),
@@ -345,9 +352,9 @@ internal static class ReportCommands
             return 0;
         }
 
-        string prompt = limit == 1 ? "prompt" : "prompts";
+        string prompt = rows.Count == 1 ? "prompt" : "prompts";
         context.Out.WriteLine(
-            $"Top {limit} {prompt} by cost in {scope} ({period.Label})");
+            $"Top {rows.Count} {prompt} by cost in {scope} ({period.Label})");
         context.Out.WriteLine();
         TableColumn[] columns =
         [
@@ -393,7 +400,7 @@ internal static class ReportCommands
         IReadOnlyList<(string Label, Period Period, LedgerRollupRow Total)> totals)
     {
         using MemoryStream stream = new();
-        using Utf8JsonWriter writer = new(stream, new JsonWriterOptions { Indented = true });
+        using Utf8JsonWriter writer = new(stream, JsonOptions);
         writer.WriteStartObject();
         writer.WriteString("version", GhLedgerCli.Version);
         writer.WritePropertyName("daemon");
@@ -463,7 +470,7 @@ internal static class ReportCommands
         IReadOnlyList<LedgerRollupRow> rows)
     {
         using MemoryStream stream = new();
-        using Utf8JsonWriter writer = new(stream, new JsonWriterOptions { Indented = true });
+        using Utf8JsonWriter writer = new(stream, JsonOptions);
         writer.WriteStartObject();
         writer.WriteString("period", period.Label);
         LedgerFormat.WriteTime(writer, "from", period.From);
@@ -506,7 +513,7 @@ internal static class ReportCommands
         IReadOnlyList<PromptChainRow> rows)
     {
         using MemoryStream stream = new();
-        using Utf8JsonWriter writer = new(stream, new JsonWriterOptions { Indented = true });
+        using Utf8JsonWriter writer = new(stream, JsonOptions);
         writer.WriteStartObject();
         writer.WriteString("period", period.Label);
         LedgerFormat.WriteTime(writer, "from", period.From);

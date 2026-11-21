@@ -20,21 +20,7 @@ public sealed class ReportCommandTests
         CliRun run = await harness.RunAsync("status");
 
         Assert.Equal(0, run.ExitCode);
-        Assert.Equal(
-            Normalize($"""
-            gh-ledger 0.2.0
-            Daemon:  not running; start it with: gh-ledger daemon start
-            Ledger:  {Path.Combine(temp.Path, "data", "ledger.db")}
-            Rates:   2026-11-20
-            Copilot: OTel export not enabled; run: gh-ledger install
-
-            Period        Spans  Unpriced  AI credits  GitHub USD  BYOK USD  Local saved
-            Today             3         0      342.00       $3.42     $0.00        $0.23
-            Last 7 days       4         0      342.00       $3.42     $0.32        $0.23
-            Last 30 days      4         0      342.00       $3.42     $0.32        $0.23
-
-            """),
-            run.Out);
+        Assert.Equal(StatusText(temp.Path), run.Out);
     }
 
     [Fact]
@@ -50,6 +36,8 @@ public sealed class ReportCommandTests
         CliRun run = await harness.RunAsync("status", "--json");
 
         Assert.Equal(0, run.ExitCode);
+        Assert.Contains("+00:00\"", run.Out);
+        Assert.DoesNotContain("\\u002B", run.Out);
         using JsonDocument json = JsonDocument.Parse(run.Out);
         JsonElement root = json.RootElement;
         JsonElement daemon = root.GetProperty("daemon");
@@ -62,11 +50,11 @@ public sealed class ReportCommandTests
         Assert.Empty(root.GetProperty("warnings").EnumerateArray());
         Assert.Equal("2026-11-20", root.GetProperty("ratesVersion").GetString());
         JsonElement[] periods = root.GetProperty("periods").EnumerateArray().ToArray();
+        Assert.Equal(3, periods.Length);
         AssertPeriod(periods[0], "today", "2026-11-21T05:00:00.0000000+00:00", 3, 342m, 3.42m, 0m, 0.23m);
+        Assert.Equal(0, periods[0].GetProperty("unpricedSpans").GetInt64());
         AssertPeriod(periods[1], "last 7 days", "2026-11-15T05:00:00.0000000+00:00", 4, 342m, 3.42m, 0.315m, 0.23m);
-        Assert.Equal(
-            "2026-10-23T05:00:00.0000000+00:00",
-            periods[2].GetProperty("from").GetString());
+        AssertPeriod(periods[2], "last 30 days", "2026-10-23T05:00:00.0000000+00:00", 4, 342m, 3.42m, 0.315m, 0.23m);
     }
 
     public static TheoryData<string, string, string, bool> Warnings => new()
@@ -146,10 +134,12 @@ public sealed class ReportCommandTests
             json.RootElement.GetProperty("from").GetString());
         Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("repository").ValueKind);
         JsonElement[] rows = json.RootElement.GetProperty("rows").EnumerateArray().ToArray();
+        Assert.Equal(3, rows.Length);
         AssertRollup(rows[0], "swigerb/copilot-ledger", "main", 1, 286m, 2.86m);
         AssertRollup(rows[1], "swigerb/copilot-ledger", "feature/ledger", 2, 56m, 0.56m, 0.23m);
         Assert.Equal("contoso/api", rows[2].GetProperty("repository").GetString());
         Assert.Equal("main", rows[2].GetProperty("branch").GetString());
+        Assert.Equal(1, rows[2].GetProperty("spans").GetInt64());
         Assert.Equal(0.315m, rows[2].GetProperty("foundryByokUsd").GetDecimal());
     }
 
@@ -214,21 +204,54 @@ public sealed class ReportCommandTests
         JsonElement[] rows = json.RootElement.GetProperty("rows").EnumerateArray().ToArray();
         Assert.Equal(4, rows.Length);
         Assert.Equal([1, 2, 3, 4], rows.Select(row => row.GetProperty("rank").GetInt32()));
-        Assert.Equal(
-            ["ledger-builder"],
-            rows[1].GetProperty("agents").EnumerateArray().Select(item => item.GetString()));
-        Assert.Equal(
-            ["mai-code-2", "qwen3.8-27b"],
-            rows[1].GetProperty("models").EnumerateArray().Select(item => item.GetString()));
-        Assert.Equal(
+        AssertPromptChain(
+            rows[0],
+            new string('1', 32),
+            "conv-1",
+            "2026-11-21T14:00:00.0000000+00:00",
+            "2026-11-21T14:00:02.0000000+00:00",
+            "swigerb/copilot-ledger",
+            "main",
+            ["ledger-architect"],
+            ["claude-opus-5.5"],
+            1, 0, 1_200_000, 50_000, 800_000, 100_000,
+            286m, 2.86m, 0m, 0m);
+        AssertPromptChain(
+            rows[1],
+            new string('2', 32),
+            "conv-2",
             "2026-11-21T13:00:00.0000000+00:00",
-            rows[1].GetProperty("startTime").GetString());
-        Assert.Equal(
             "2026-11-21T13:05:02.0000000+00:00",
-            rows[1].GetProperty("endTime").GetString());
-        Assert.Equal(0.23m, rows[1].GetProperty("localSavedUsd").GetDecimal());
-        Assert.Equal("(none)", rows[3].GetProperty("repository").GetString());
-        Assert.Equal(1, rows[3].GetProperty("unpricedSpans").GetInt64());
+            "swigerb/copilot-ledger",
+            "feature/ledger",
+            ["ledger-builder"],
+            ["mai-code-2", "qwen3.8-27b"],
+            2, 0, 1_400_000, 112_000, 400_000, 0,
+            56m, 0.56m, 0m, 0.23m);
+        AssertPromptChain(
+            rows[2],
+            new string('3', 32),
+            null,
+            "2026-11-18T12:00:00.0000000+00:00",
+            "2026-11-18T12:00:02.0000000+00:00",
+            "contoso/api",
+            "main",
+            [],
+            ["gpt-6.1-sol"],
+            1, 0, 100_000, 10_000, 0, 0,
+            0m, 0m, 0.315m, 0m);
+        AssertPromptChain(
+            rows[3],
+            new string('4', 32),
+            "conv-4",
+            "2026-10-01T12:00:00.0000000+00:00",
+            "2026-10-01T12:00:02.0000000+00:00",
+            "(none)",
+            "(none)",
+            ["ledger-builder"],
+            ["gpt-unknown"],
+            1, 1, 1_000, 100, 0, 0,
+            0m, 0m, 0m, 0m);
     }
 
     public static TheoryData<string, string, string?> ValidPeriods => new()
@@ -265,9 +288,12 @@ public sealed class ReportCommandTests
         if (expectedLabel == "today")
         {
             JsonElement[] rows = json.RootElement.GetProperty("rows").EnumerateArray().ToArray();
+            Assert.Equal(2, rows.Length);
             Assert.Equal("ledger-architect", rows[0].GetProperty("agent").GetString());
+            Assert.Equal(1, rows[0].GetProperty("spans").GetInt64());
             Assert.Equal(286m, rows[0].GetProperty("aiCredits").GetDecimal());
             Assert.Equal("ledger-builder", rows[1].GetProperty("agent").GetString());
+            Assert.Equal(2, rows[1].GetProperty("spans").GetInt64());
             Assert.Equal(56m, rows[1].GetProperty("aiCredits").GetDecimal());
             Assert.Equal(0.23m, rows[1].GetProperty("localSavedUsd").GetDecimal());
         }
@@ -321,12 +347,36 @@ public sealed class ReportCommandTests
         CliRun jsonRun = await harness.RunAsync("status", "--json");
 
         Assert.Equal(0, text.ExitCode);
-        Assert.Contains($"Rates:   invalid overlay: {expectedError}", text.Out);
+        Assert.Equal(
+            StatusText(temp.Path).Replace(
+                "Rates:   2026-11-20",
+                $"Rates:   invalid overlay: {expectedError}",
+                StringComparison.Ordinal),
+            text.Out);
         Assert.Equal(0, jsonRun.ExitCode);
         using JsonDocument json = JsonDocument.Parse(jsonRun.Out);
         Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("ratesVersion").ValueKind);
         Assert.Equal(expectedError, json.RootElement.GetProperty("ratesError").GetString());
-        Assert.Equal(3, json.RootElement.GetProperty("periods")[0].GetProperty("spans").GetInt64());
+        JsonElement[] periods = json.RootElement.GetProperty("periods")
+            .EnumerateArray().ToArray();
+        Assert.Equal(3, periods.Length);
+        AssertPeriod(periods[0], "today", "2026-11-21T05:00:00.0000000+00:00", 3, 342m, 3.42m, 0m, 0.23m);
+        AssertPeriod(periods[1], "last 7 days", "2026-11-15T05:00:00.0000000+00:00", 4, 342m, 3.42m, 0.315m, 0.23m);
+        AssertPeriod(periods[2], "last 30 days", "2026-10-23T05:00:00.0000000+00:00", 4, 342m, 3.42m, 0.315m, 0.23m);
+    }
+
+    [Fact]
+    public async Task RP11_TitleCountsRowsShown()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = await SeededHarnessAsync(temp.Path);
+
+        CliRun run = await harness.RunAsync("top-prompts", "--since", "all");
+
+        Assert.Equal(0, run.ExitCode);
+        Assert.StartsWith(
+            "Top 4 prompts by cost in all repositories (all time)\n",
+            run.Out);
     }
 
     private static async Task<CliHarness> SeededHarnessAsync(
@@ -395,4 +445,68 @@ public sealed class ReportCommandTests
         Assert.Equal(githubUsd, row.GetProperty("aiCreditsUsd").GetDecimal());
         Assert.Equal(saved, row.GetProperty("localSavedUsd").GetDecimal());
     }
+
+    private static void AssertPromptChain(
+        JsonElement row,
+        string traceId,
+        string? conversationId,
+        string startTime,
+        string endTime,
+        string repository,
+        string branch,
+        IReadOnlyList<string> agents,
+        IReadOnlyList<string> models,
+        long spans,
+        long unpriced,
+        long input,
+        long output,
+        long cacheRead,
+        long cacheWrite,
+        decimal credits,
+        decimal githubUsd,
+        decimal byokUsd,
+        decimal savedUsd)
+    {
+        Assert.Equal(traceId, row.GetProperty("traceId").GetString());
+        Assert.Equal(
+            conversationId,
+            row.GetProperty("conversationId").ValueKind == JsonValueKind.Null
+                ? null
+                : row.GetProperty("conversationId").GetString());
+        Assert.Equal(startTime, row.GetProperty("startTime").GetString());
+        Assert.Equal(endTime, row.GetProperty("endTime").GetString());
+        Assert.Equal(repository, row.GetProperty("repository").GetString());
+        Assert.Equal(branch, row.GetProperty("branch").GetString());
+        Assert.Equal(
+            agents,
+            row.GetProperty("agents").EnumerateArray().Select(item => item.GetString()));
+        Assert.Equal(
+            models,
+            row.GetProperty("models").EnumerateArray().Select(item => item.GetString()));
+        Assert.Equal(spans, row.GetProperty("spans").GetInt64());
+        Assert.Equal(unpriced, row.GetProperty("unpricedSpans").GetInt64());
+        Assert.Equal(input, row.GetProperty("inputTokens").GetInt64());
+        Assert.Equal(output, row.GetProperty("outputTokens").GetInt64());
+        Assert.Equal(cacheRead, row.GetProperty("cacheReadInputTokens").GetInt64());
+        Assert.Equal(cacheWrite, row.GetProperty("cacheWriteInputTokens").GetInt64());
+        Assert.Equal(credits, row.GetProperty("aiCredits").GetDecimal());
+        Assert.Equal(githubUsd, row.GetProperty("aiCreditsUsd").GetDecimal());
+        Assert.Equal(byokUsd, row.GetProperty("foundryByokUsd").GetDecimal());
+        Assert.Equal(savedUsd, row.GetProperty("localSavedUsd").GetDecimal());
+    }
+
+    private static string StatusText(string root) =>
+        Normalize($"""
+        gh-ledger 0.2.0
+        Daemon:  not running; start it with: gh-ledger daemon start
+        Ledger:  {Path.Combine(root, "data", "ledger.db")}
+        Rates:   2026-11-20
+        Copilot: OTel export not enabled; run: gh-ledger install
+
+        Period        Spans  Unpriced  AI credits  GitHub USD  BYOK USD  Local saved
+        Today             3         0      342.00       $3.42     $0.00        $0.23
+        Last 7 days       4         0      342.00       $3.42     $0.32        $0.23
+        Last 30 days      4         0      342.00       $3.42     $0.32        $0.23
+
+        """);
 }

@@ -68,8 +68,46 @@ public sealed class InstallCommandTests
 
         CliRun run = await harness.RunAsync("install");
 
-        Assert.DoesNotContain("needs sh.exe", run.Out);
         Assert.Equal(0, run.ExitCode);
+        Assert.Equal(
+            [("COPILOT_OTEL_ENABLED", "true")],
+            platform.UserVariableWrites);
+        (string gh, IReadOnlyList<string> arguments) =
+            Assert.Single(platform.ProcessRuns);
+        Assert.Equal(@"C:\gh\gh.exe", gh);
+        Assert.Equal(
+            [
+                "alias",
+                "set",
+                "ledger",
+                "'C:/tools/gh-ledger.exe' \"$@\"",
+                "--shell",
+                "--clobber",
+            ],
+            arguments);
+        Assert.Equal(
+            Normalize($"""
+            Set COPILOT_OTEL_ENABLED=true for your user account.
+            Set gh alias: gh ledger runs C:\tools\gh-ledger.exe.
+            gh-ledger daemon started (pid {Environment.ProcessId}) on http://localhost:4318.
+            CopilotLedger is installed. Restart the GitHub Copilot app, VS Code, and open terminals so they pick up COPILOT_OTEL_ENABLED.
+
+            """),
+            run.Out);
+        using JsonDocument manifest = JsonDocument.Parse(
+            await File.ReadAllTextAsync(ManifestPath(temp.Path)));
+        Assert.Equal(
+            @"C:\tools\gh-ledger.exe",
+            manifest.RootElement.GetProperty("executablePath").GetString());
+        Assert.True(
+            manifest.RootElement.GetProperty("windowsUserVariableSet").GetBoolean());
+        Assert.Equal(
+            JsonValueKind.Null,
+            manifest.RootElement
+                .GetProperty("windowsUserVariablePreviousValue").ValueKind);
+        Assert.Empty(
+            manifest.RootElement.GetProperty("profileFiles").EnumerateArray());
+        Assert.True(manifest.RootElement.GetProperty("ghAliasSet").GetBoolean());
     }
 
     [Fact]
@@ -108,6 +146,9 @@ public sealed class InstallCommandTests
         platform.UserVariables["COPILOT_OTEL_ENABLED"] = "false";
         await using CliHarness harness = new(temp.Path, platform);
         Assert.Equal(0, (await harness.RunAsync("install")).ExitCode);
+        Assert.Equal(
+            [("COPILOT_OTEL_ENABLED", "true")],
+            platform.UserVariableWrites);
 
         using (JsonDocument manifest = JsonDocument.Parse(
                    await File.ReadAllTextAsync(ManifestPath(temp.Path))))
@@ -153,6 +194,7 @@ public sealed class InstallCommandTests
             "'/opt/bin/gh-ledger' \"$@\"",
             platform.ProcessRuns[0].Arguments[3]);
         Assert.Contains($"Added COPILOT_OTEL_ENABLED=true to {profile}.", first.Out);
+        Assert.DoesNotContain("sh.exe", first.Out);
         Assert.Contains(
             $"{profile} already sets COPILOT_OTEL_ENABLED.",
             second.Out);
@@ -194,39 +236,39 @@ public sealed class InstallCommandTests
                 Path.Combine(temp.Path, "home", profileName))).Replace("\r\n", "\n"));
     }
 
-    [Fact]
-    public async Task IN7_MissingOrFailingGhDoesNotFailInstall()
+    public static TheoryData<bool, string> GhFailures => new()
     {
-        using TempDirectory tempMissing = new();
-        FakeCliPlatform missing = WindowsPlatform();
-        missing.PathExecutables.Remove("gh");
-        await using (CliHarness missingHarness = new(tempMissing.Path, missing))
+        { true, "GitHub CLI (gh) was not found, so the gh ledger alias was not set. Run gh-ledger directly." },
+        { false, "Warning: could not set the gh alias: boom" },
+    };
+
+    [Theory]
+    [MemberData(nameof(GhFailures))]
+    public async Task IN7_MissingOrFailingGhDoesNotFailInstall(
+        bool missingGh,
+        string expectedMessage)
+    {
+        using TempDirectory temp = new();
+        FakeCliPlatform platform = WindowsPlatform();
+        if (missingGh)
         {
-            CliRun run = await missingHarness.RunAsync("install");
-            Assert.Equal(0, run.ExitCode);
-            Assert.Contains(
-                "GitHub CLI (gh) was not found, so the gh ledger alias was not set. Run gh-ledger directly.",
-                run.Out);
-            Assert.False(
-                JsonDocument.Parse(
-                    await File.ReadAllTextAsync(ManifestPath(tempMissing.Path)))
-                    .RootElement.GetProperty("ghAliasSet").GetBoolean());
+            platform.PathExecutables.Remove("gh");
+        }
+        else
+        {
+            platform.RunHandler = (_, _, _) =>
+                Task.FromResult(new ProcessRunResult(1, "", "boom"));
         }
 
-        using TempDirectory tempFailure = new();
-        FakeCliPlatform failure = WindowsPlatform();
-        failure.RunHandler = (_, _, _) =>
-            Task.FromResult(new ProcessRunResult(1, "", "boom"));
-        await using (CliHarness failureHarness = new(tempFailure.Path, failure))
-        {
-            CliRun run = await failureHarness.RunAsync("install");
-            Assert.Equal(0, run.ExitCode);
-            Assert.Contains("Warning: could not set the gh alias: boom", run.Out);
-            Assert.False(
-                JsonDocument.Parse(
-                    await File.ReadAllTextAsync(ManifestPath(tempFailure.Path)))
-                    .RootElement.GetProperty("ghAliasSet").GetBoolean());
-        }
+        await using CliHarness harness = new(temp.Path, platform);
+        CliRun run = await harness.RunAsync("install");
+
+        Assert.Equal(0, run.ExitCode);
+        Assert.Contains(expectedMessage, run.Out);
+        Assert.False(
+            JsonDocument.Parse(
+                await File.ReadAllTextAsync(ManifestPath(temp.Path)))
+                .RootElement.GetProperty("ghAliasSet").GetBoolean());
     }
 
     [Fact]
@@ -294,14 +336,6 @@ public sealed class InstallCommandTests
             : WindowsPlatform();
         await using CliHarness harness = new(temp.Path, platform);
 
-        if (caseName == "after-unix")
-        {
-            Directory.CreateDirectory(Path.Combine(temp.Path, "home"));
-            await File.WriteAllTextAsync(
-                Path.Combine(temp.Path, "home", ".zshrc"),
-                "export FOO=1");
-        }
-
         if (caseName != "no-manifest")
         {
             Assert.Equal(0, (await harness.RunAsync("install")).ExitCode);
@@ -332,6 +366,7 @@ public sealed class InstallCommandTests
                 "Removed COPILOT_OTEL_ENABLED from your user account.",
                 uninstall.Out);
             Assert.Equal(["alias", "delete", "ledger"], platform.ProcessRuns[^1].Arguments);
+            Assert.Equal(@"C:\gh\gh.exe", platform.ProcessRuns[^1].FileName);
             Assert.Contains("Removed gh alias: ledger.", uninstall.Out);
             Assert.False(File.Exists(ManifestPath(temp.Path)));
             Assert.EndsWith(
@@ -376,11 +411,15 @@ public sealed class InstallCommandTests
             },
         };
 
-    private static FakeCliPlatform UnixPlatform(string root) =>
-        new()
+    private static FakeCliPlatform UnixPlatform(string root)
+    {
+        string home = Path.Combine(root, "home");
+        Directory.CreateDirectory(home);
+        File.WriteAllText(Path.Combine(home, ".zshrc"), "export FOO=1");
+        return new()
         {
             IsWindows = false,
-            HomeDirectory = Path.Combine(root, "home"),
+            HomeDirectory = home,
             ShellPath = "/bin/zsh",
             ProcessPath = "/opt/bin/gh-ledger",
             PathExecutables =
@@ -388,6 +427,7 @@ public sealed class InstallCommandTests
                 ["gh"] = "/usr/bin/gh",
             },
         };
+    }
 
     private static string ManifestPath(string root) =>
         Path.Combine(root, "data", "install.json");

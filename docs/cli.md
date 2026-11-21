@@ -20,7 +20,13 @@ Run `gh-ledger install`. It sets `COPILOT_OTEL_ENABLED=true` in the Windows user
 
 Use `gh-ledger install --dry-run` to print the changes without making them. Restart the GitHub Copilot app, VS Code, and open terminals afterward.
 
-`install` warns about endpoint overrides, the file exporter, a non-`otlp-http` exporter type, TLS variables that turn off export to HTTP endpoints, and gRPC protocol settings. These warnings describe why Copilot might send telemetry somewhere other than CopilotLedger.
+`install` and `gh-ledger status` show these warnings:
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT` set to an endpoint elsewhere means Copilot exports there instead of to CopilotLedger.
+- `COPILOT_OTEL_FILE_EXPORTER_PATH` means Copilot writes telemetry to that file instead of exporting it to CopilotLedger.
+- `COPILOT_OTEL_EXPORTER_TYPE` set to anything other than `otlp-http` means it should be removed or set to `otlp-http`.
+- Any of `OTEL_EXPORTER_OTLP_CERTIFICATE`, `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE`, `OTEL_EXPORTER_OTLP_CLIENT_KEY`, `OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE`, `OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE`, or `OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY` means Copilot turns off export to `http://` endpoints.
+- `OTEL_EXPORTER_OTLP_PROTOCOL` or `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` set to `grpc` is unsupported because CopilotLedger accepts only `http/protobuf` and `http/json`.
 
 On Windows, `gh ledger` needs `sh.exe` from Git for Windows. The `gh-ledger` executable works without it.
 
@@ -50,7 +56,7 @@ Run `gh-ledger rates init` to create a starter overlay and `gh-ledger rates vali
 
 ## Uninstall
 
-`gh-ledger uninstall` reverses exactly the environment variable, profile block, `gh` alias, and daemon changes recorded by `install`, restoring the previous environment value when applicable. `gh-ledger uninstall --dry-run` prints the changes without applying them. Ledger data is kept.
+`gh-ledger uninstall` reverses the environment variable, profile block, and `gh` alias changes recorded by `install`, restoring the previous environment value when applicable, and stops the daemon if it is running. `gh-ledger uninstall --dry-run` prints the changes without applying them. Ledger data is kept.
 
 ## Privacy
 
@@ -60,5 +66,5 @@ CopilotLedger stores no prompt or response content, working directories, or remo
 
 - **Port 4318 in use.** Stop the other listener or the old daemon before starting CopilotLedger.
 - **Nothing recorded.** Run `gh-ledger status`, address its warnings, and restart Copilot.
-- **Desktop-launched apps do not use the profile.** Apps started outside a terminal, such as from the macOS Dock or a Linux desktop launcher, may not read shell profiles. If no data is recorded after using such an app, start it from a terminal.
+- **Desktop-launched apps may not read the profile.** Apps started outside a terminal, such as from the macOS Dock or a Linux desktop launcher, may not read shell profiles, so they may not see the `COPILOT_OTEL_ENABLED` that `install` put there. If no data is recorded after using such an app, start it from a terminal.
 - **Move the data directory.** Set `COPILOT_LEDGER_HOME` before running `gh-ledger`.

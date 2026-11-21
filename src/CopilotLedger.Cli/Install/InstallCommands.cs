@@ -77,6 +77,9 @@ internal static class InstallCommands
         {
             string? current =
                 context.Platform.GetUserEnvironmentVariable("COPILOT_OTEL_ENABLED");
+            previousVariableValue = previous?.WindowsUserVariableSet == true
+                ? previous.WindowsUserVariablePreviousValue
+                : current;
             if (IsTrue(current))
             {
                 context.Out.WriteLine(
@@ -96,11 +99,6 @@ internal static class InstallCommands
                         "true");
                     context.Out.WriteLine(
                         "Set COPILOT_OTEL_ENABLED=true for your user account.");
-                }
-
-                if (!variableSet)
-                {
-                    previousVariableValue = current;
                 }
 
                 variableSet = true;
@@ -136,9 +134,9 @@ internal static class InstallCommands
                         "# >>> copilot-ledger >>>\n" +
                         "export COPILOT_OTEL_ENABLED=true\n" +
                         "# <<< copilot-ledger <<<\n";
-                    await File.WriteAllTextAsync(
+                    await File.AppendAllTextAsync(
                         profile,
-                        (contents ?? string.Empty) + separator + block,
+                        separator + block,
                         cancellationToken);
                     context.Out.WriteLine(
                         $"Added COPILOT_OTEL_ENABLED=true to {profile}.");
