@@ -50,6 +50,30 @@ Tables round money to cents. JSON preserves exact decimal amounts.
 
 `(none)` under Agent means Copilot reported no agent name. Copilot's default agent reports none, while built-in subagents such as `explore` report their own names. A custom agent reports the `name` in its `.agent.md` file both when started with `copilot --agent` and when called as a subagent. A custom agent without a `name` reports its file name without `.agent.md`.
 
+## Circuit breaker
+
+The daemon watches every prompt for two kinds of runaway loop and trips a circuit breaker when it sees one:
+
+- **Credit velocity.** One prompt's billed spend (GitHub AI credits plus BYOK) exceeds 150 AI credits ($1.50) within 5 minutes.
+- **Retry churn.** One prompt makes 5 failed tool calls in a row, with no successful command and no new commit between them. A failed call is a shell command that exits with a non-zero code, or a tool call that Copilot reports as an error.
+
+Copilot exports neither the command a shell call ran nor the file an edit changed, so retry churn counts any failing command, and any successful command resets the count. Edits that never run a failing command don't count. VS Code's Local agent harness may not report exit codes, so retry churn may never trip there.
+
+When the breaker trips, the daemon writes an `ALERT` line to `daemon.log` and shows a desktop notification: a toast on Windows, a notification on macOS, or `notify-send` on Linux when it's installed. The trip stays open until you reset it. Each prompt trips each rule at most once.
+
+- `gh-ledger breaker status [--json]` shows the rules and the open trips.
+- `gh-ledger breaker reset` closes the open trips on the current branch. Use `--id <id>` for one trip, `--repo <key> --branch <name>` for another branch, or `--all`.
+- `gh-ledger breaker config` shows the rules. Change them with `--velocity-credits <credits>` (1 to 1000000), `--velocity-minutes <minutes>` (1 to 1440), and `--churn-failures <count>` (2 to 100). `--notifications off` keeps the log line but stops desktop notifications.
+- `gh-ledger breaker config --flag-file on` also writes `.copilot-ledger/CIRCUIT_OPEN` in the repository root while a trip is open, so a wrapper script can stop an agent. The file holds JSON describing the open trips. A `.copilot-ledger/.gitignore` keeps it out of commits, and `breaker reset` removes it. Trips without a local repository root get no file. If the daemon logs that it couldn't update the file, run `gh-ledger breaker config --flag-file on` again to rewrite it.
+
+## Budgets
+
+A budget is a soft cap in AI credits for one branch. When the branch's billed spend exceeds it, the daemon alerts once; nothing is blocked. BYOK spend counts at $0.01 per AI credit.
+
+- `gh-ledger budget set <credits>` sets the current branch's budget. Setting it again re-arms the alert.
+- `gh-ledger budget clear` removes it, and `gh-ledger budget list [--json]` lists every budget with its spend.
+- `budget set` and `budget clear` accept `--repo <key> --branch <name>` for another branch.
+
 ## Rates
 
 Run `gh-ledger rates init` to create a starter overlay and `gh-ledger rates validate` to validate it. See [configuration.md](configuration.md) for the rates format and pricing channels.

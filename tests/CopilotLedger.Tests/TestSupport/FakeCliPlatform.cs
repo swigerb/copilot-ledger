@@ -58,7 +58,11 @@ public sealed class FakeCliPlatform : ICliPlatform
         IReadOnlyList<string> arguments,
         CancellationToken cancellationToken)
     {
-        ProcessRuns.Add((fileName, arguments));
+        lock (ProcessRuns)
+        {
+            ProcessRuns.Add((fileName, arguments));
+        }
+
         return RunHandler?.Invoke(fileName, arguments, cancellationToken)
             ?? Task.FromResult(new ProcessRunResult(0, string.Empty, string.Empty));
     }

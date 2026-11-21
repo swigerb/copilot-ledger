@@ -1,8 +1,10 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using CopilotLedger.Cli.Alerts;
 using CopilotLedger.Core.Git;
 using CopilotLedger.Core.Pricing;
 using CopilotLedger.Otlp.Attribution;
+using CopilotLedger.Otlp.Breaker;
 using CopilotLedger.Otlp.Ingestion;
 using CopilotLedger.Otlp.Receiver;
 using CopilotLedger.Storage;
@@ -19,7 +21,8 @@ internal static class DaemonHost
         CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(context.DataDirectory);
-        TextWriter writer = CreateLogWriter(context, logFile, out bool ownsWriter);
+        TextWriter writer = TextWriter.Synchronized(
+            CreateLogWriter(context, logFile, out bool ownsWriter));
         FileStream lockStream;
         try
         {
@@ -43,6 +46,9 @@ internal static class DaemonHost
         }
 
         WebApplication? app = null;
+        AlertDispatcher? dispatcher = null;
+        Task? dispatching = null;
+        CancellationTokenSource dispatchStop = new();
         bool started = false;
         PosixSignalRegistration? sighupRegistration = null;
         try
@@ -80,13 +86,19 @@ internal static class DaemonHost
             await store.PruneSpanLinksAsync(
                 lastPrune - TimeSpan.FromDays(7),
                 cancellationToken);
+            dispatcher = new AlertDispatcher(
+                context,
+                store,
+                message => WriteLog(writer, context, message));
+            CircuitBreakerMonitor monitor = new(store, dispatcher);
             LedgerIngestor ingestor = new(
                 store,
                 calculator,
                 new CachingGitContextResolver(
                     new FileSystemGitContextResolver(),
                     context.TimeProvider),
-                new CopilotSessionWorkspaceLocator(context.CopilotHome, context.TimeProvider));
+                new CopilotSessionWorkspaceLocator(context.CopilotHome, context.TimeProvider),
+                monitor);
             app = OtlpReceiverApp.Build(
                 new OtlpReceiverOptions { Port = port },
                 ingestor,
@@ -101,6 +113,8 @@ internal static class DaemonHost
 
             try
             {
+                await dispatcher.EnqueuePendingAsync(cancellationToken);
+                dispatching = dispatcher.RunAsync(dispatchStop.Token);
                 await app.StartAsync(cancellationToken);
                 started = true;
             }
@@ -168,6 +182,29 @@ internal static class DaemonHost
                 await app.StopAsync(CancellationToken.None);
             }
 
+            if (dispatching is not null)
+            {
+                dispatcher!.Complete();
+                if (await Task.WhenAny(
+                    dispatching,
+                    Task.Delay(TimeSpan.FromSeconds(5))) != dispatching)
+                {
+                    dispatchStop.Cancel();
+                    await Task.WhenAny(
+                        dispatching,
+                        Task.Delay(TimeSpan.FromSeconds(1)));
+                }
+
+                if (dispatching.IsFaulted)
+                {
+                    WriteLog(
+                        writer,
+                        context,
+                        $"Warning: the alert dispatcher stopped: {dispatching.Exception!.GetBaseException().Message}");
+                }
+            }
+
+            dispatchStop.Dispose();
             DaemonFiles.DeleteIfExists(DaemonFiles.StatePath(context));
             if (app is not null)
             {

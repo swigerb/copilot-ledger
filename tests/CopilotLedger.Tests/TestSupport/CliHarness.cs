@@ -2,7 +2,10 @@ using System.Globalization;
 using CopilotLedger.Cli;
 using CopilotLedger.Otlp.Decoding;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace CopilotLedger.Tests.TestSupport;
 
@@ -12,6 +15,7 @@ public sealed class CliHarness : IAsyncDisposable
 {
     private readonly StringWriter _daemonOut = new(CultureInfo.InvariantCulture);
     private Task<CliRun>? _daemon;
+    private TestServer? _daemonServer;
 
     public CliHarness(
         string root,
@@ -30,7 +34,15 @@ public sealed class CliHarness : IAsyncDisposable
             WorkingDirectory = root,
             TimeProvider = TimeProvider,
             Platform = Platform,
-            ConfigureWebHost = builder => builder.UseTestServer(),
+            ConfigureWebHost = builder =>
+            {
+                builder.UseTestServer();
+                builder.ConfigureServices(services =>
+                    services.AddHostedService(provider =>
+                        new TestServerCapture(
+                            provider.GetRequiredService<IServer>(),
+                            server => _daemonServer = server)));
+            },
             DaemonPollInterval = TimeSpan.FromMilliseconds(50),
             DaemonStartTimeout = TimeSpan.FromSeconds(10),
             DaemonStopTimeout = TimeSpan.FromSeconds(10),
@@ -55,8 +67,16 @@ public sealed class CliHarness : IAsyncDisposable
     public TimeProvider TimeProvider { get; }
     public CliContext Context { get; }
     public Task<CliRun>? InProcessDaemon => _daemon;
+    public string DaemonOutput =>
+        InProcessDaemon is { IsCompletedSuccessfully: true } run
+            ? run.Result.Out
+            : throw new InvalidOperationException("The in-process daemon hasn't finished.");
 
     public Task<CliRun> RunAsync(params string[] args) => InvokeAsync(Context, args);
+
+    public HttpClient CreateDaemonClient() =>
+        _daemonServer?.CreateClient()
+        ?? throw new InvalidOperationException("No in-process daemon is running.");
 
     public Task<CliRun> RunInAsync(string workingDirectory, params string[] args) =>
         InvokeAsync(Context with { WorkingDirectory = workingDirectory }, args);
@@ -110,5 +130,19 @@ public sealed class CliHarness : IAsyncDisposable
         {
             throw new TimeoutException();
         }
+    }
+
+    private sealed class TestServerCapture(
+        IServer server,
+        Action<TestServer> capture) : IHostedService
+    {
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            capture((TestServer)server);
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken) =>
+            Task.CompletedTask;
     }
 }

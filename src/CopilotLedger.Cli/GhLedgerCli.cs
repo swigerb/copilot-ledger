@@ -1,5 +1,6 @@
 using System.CommandLine;
 using System.Reflection;
+using CopilotLedger.Cli.Breaker;
 using CopilotLedger.Cli.Daemon;
 using CopilotLedger.Cli.Install;
 using CopilotLedger.Cli.Rates;
@@ -35,6 +36,11 @@ public static class GhLedgerCli
         }
 
         foreach (Command command in InstallCommands.Create(context))
+        {
+            root.Add(command);
+        }
+
+        foreach (Command command in BreakerCommands.Create(context))
         {
             root.Add(command);
         }

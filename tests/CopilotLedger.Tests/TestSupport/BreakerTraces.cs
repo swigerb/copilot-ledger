@@ -1,3 +1,5 @@
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using CopilotLedger.Otlp.Decoding;
 using static CopilotLedger.Tests.TestSupport.OtlpRequests;
 
@@ -96,6 +98,19 @@ public static class BreakerTraces
             VelocityChat(TraceW, 'c', 1, (1795255258000000000, 1795255260000000000)),
             VelocityChat(TraceW, 'c', 2, (1795255438000000000, 1795255440000000000)),
             VelocityChat(TraceW, 'c', 3, (1795255618000000000, 1795255620000000000)));
+
+    public static string TraceVJson(string repoRoot) =>
+        """
+        {"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"github-copilot"}},{"key":"process.working_directory","value":{"stringValue":REPO}}]},"scopeSpans":[{"scope":{"name":"github.copilot"},"spans":[{"traceId":"0b000000000000000000000000000001","spanId":"0b000000000000c1","parentSpanId":"","name":"chat claude-opus-5.5","kind":3,"startTimeUnixNano":"1795255258000000000","endTimeUnixNano":"1795255260000000000","attributes":[{"key":"gen_ai.operation.name","value":{"stringValue":"chat"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.request.model","value":{"stringValue":"claude-opus-5.5"}},{"key":"gen_ai.conversation.id","value":{"stringValue":"conv-v"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"100000"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"10000"}}],"status":{"code":0}},{"traceId":"0b000000000000000000000000000001","spanId":"0b000000000000c2","parentSpanId":"","name":"chat claude-opus-5.5","kind":3,"startTimeUnixNano":"1795255318000000000","endTimeUnixNano":"1795255320000000000","attributes":[{"key":"gen_ai.operation.name","value":{"stringValue":"chat"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.request.model","value":{"stringValue":"claude-opus-5.5"}},{"key":"gen_ai.conversation.id","value":{"stringValue":"conv-v"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"100000"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"10000"}}],"status":{"code":0}},{"traceId":"0b000000000000000000000000000001","spanId":"0b000000000000c3","parentSpanId":"","name":"chat claude-opus-5.5","kind":3,"startTimeUnixNano":"1795255378000000000","endTimeUnixNano":"1795255380000000000","attributes":[{"key":"gen_ai.operation.name","value":{"stringValue":"chat"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.request.model","value":{"stringValue":"claude-opus-5.5"}},{"key":"gen_ai.conversation.id","value":{"stringValue":"conv-v"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"100000"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"10000"}}],"status":{"code":0}}]}]}]}
+        """.Replace(
+            "REPO",
+            JsonSerializer.Serialize(
+                repoRoot,
+                new JsonSerializerOptions
+                {
+                    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+                }),
+            StringComparison.Ordinal);
 
     private static OtlpSpan HChat(
         string spanId,
