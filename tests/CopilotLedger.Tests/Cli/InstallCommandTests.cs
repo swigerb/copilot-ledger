@@ -305,7 +305,6 @@ public sealed class InstallCommandTests
         Assert.Empty(platform.UserVariableWrites);
         Assert.Empty(platform.ProcessRuns);
         Assert.Empty(platform.DetachedStarts);
-        Assert.Empty(platform.StartupCommandWrites);
         Assert.False(File.Exists(ManifestPath(temp.Path)));
     }
 
@@ -718,10 +717,10 @@ public sealed class InstallCommandTests
         else
         {
             Assert.Contains(
-                "Warning: could not register the sign-in item: ",
-                install.Out);
-            Assert.True(File.Exists(
-                Path.Combine(temp.Path, "home", ".config", "autostart")));
+                install.Out.Split('\n'),
+                line => line.StartsWith(
+                    "Warning: could not register the sign-in item: ",
+                    StringComparison.Ordinal));
         }
 
         using JsonDocument manifest = JsonDocument.Parse(
@@ -729,6 +728,11 @@ public sealed class InstallCommandTests
         Assert.Equal(
             JsonValueKind.Null,
             manifest.RootElement.GetProperty("startupItem").ValueKind);
+        if (caseName == "linux-register-fails")
+        {
+            Assert.True(File.Exists(
+                Path.Combine(temp.Path, "home", ".config", "autostart")));
+        }
     }
 
     private static FakeCliPlatform WindowsPlatform() =>

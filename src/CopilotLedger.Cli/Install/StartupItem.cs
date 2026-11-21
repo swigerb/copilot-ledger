@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security;
 
 namespace CopilotLedger.Cli.Install;
@@ -24,7 +25,7 @@ internal static class StartupItem
                 "Library",
                 "LaunchAgents",
                 "io.github.swigerb.copilot-ledger.plist");
-            string content = $$"""
+            string template = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
                 <plist version="1.0">
@@ -33,17 +34,23 @@ internal static class StartupItem
                   <string>io.github.swigerb.copilot-ledger</string>
                   <key>ProgramArguments</key>
                   <array>
-                    <string>{{SecurityElement.Escape(executable)}}</string>
+                    <string>{0}</string>
                     <string>daemon</string>
                     <string>run</string>
                     <string>--log-file</string>
-                    <string>{{SecurityElement.Escape(Path.Combine(context.DataDirectory, "daemon.log"))}}</string>
+                    <string>{1}</string>
                   </array>
                   <key>RunAtLoad</key>
                   <true/>
                 </dict>
                 </plist>
                 """.ReplaceLineEndings("\n") + "\n";
+            string content = string.Format(
+                CultureInfo.InvariantCulture,
+                template,
+                SecurityElement.Escape(executable),
+                SecurityElement.Escape(
+                    Path.Combine(context.DataDirectory, "daemon.log")));
             return new StartupItemPlan(identifier, content, null);
         }
 
@@ -57,14 +64,18 @@ internal static class StartupItem
             "autostart",
             "copilot-ledger.desktop");
         bool invalid = executable.IndexOfAny(['"', '`', '$', '\\', '%', '\n', '\r']) >= 0;
-        string desktopContent = $$"""
+        string desktopTemplate = """
             [Desktop Entry]
             Type=Application
             Name=CopilotLedger
             Comment=Starts the CopilotLedger daemon
-            Exec="{{executable}}" daemon start
+            Exec="{0}" daemon start
             Terminal=false
             """.ReplaceLineEndings("\n") + "\n";
+        string desktopContent = string.Format(
+            CultureInfo.InvariantCulture,
+            desktopTemplate,
+            executable);
         return new StartupItemPlan(
             desktop,
             desktopContent,
