@@ -368,6 +368,9 @@ public sealed class SpanLinkStoreTests
                 """);
         }
 
+        // A new process starts with no pooled connections. A pooled connection keeps the schema it loaded,
+        // and SQLite checks ALTER TABLE ADD COLUMN against that cached schema.
+        SqliteConnection.ClearAllPools();
         await new SqliteLedgerStore(DatabasePath(temp)).InitializeAsync();
 
         await using SqliteConnection check = await OpenAsync(DatabasePath(temp));
