@@ -1,1475 +1,537 @@
-# Sprint 3: Runaway-Loop Circuit Breaker & MCP Server
+# Sprint 4: PR Receipts, GitHub Action & gh Extension Release
 
 | | |
 |---|---|
 | Architect | `ledger-architect` (Claude Opus 5.5) |
 | Builder | `ledger-builder` (MAI Code 2) |
 | Target | .NET 10 (`net10.0`), SDK 10.0.x, zero Docker |
-| Plan written | 2026-11-21, against merged Sprint 2 (`main` at `40843c9`) |
-| Status | Current sprint. Sprint 2 is complete and archived at `.github/plans/archive/sprint-2.md`. |
+| Plan written | 2026-11-21, against merged Sprint 3 (`main` at `33a2881`) |
+| Status | Current sprint. Sprint 3 is complete and archived at `.github/plans/archive/sprint-3.md`. |
 
 ## How to use this plan
 
 `ledger-builder` implements one task per run: the first unchecked `Task N:` line below. It follows that task's specification section, runs the verification commands, changes the line to `- [x]`, and stops. Tasks are sequential, and each builds on the ones before it.
 
-Every task ships with its tests, listed under "Test specifications". A task is done only when `dotnet test` runs the whole suite, including its new cases, with 0 failed and 0 skipped.
+Every task ships with its tests, listed under "Test specifications". A task is done only when `dotnet test` runs the whole suite, including its new cases, with 0 failed and 0 skipped. Task 3 also adds PowerShell tests for the action, and its verification runs them.
 
-Each test case lists every assertion it makes. Write all of them, in the order given; don't drop one because it looks redundant. Where a case says "exactly", compare whole values, not substrings.
+Most new code in this plan is marked **copy exactly**. The architect built every task in a scratch copy of `main`, and that code compiled with `TreatWarningsAsErrors` and passed the tests below: 647 tests in `dotnet test`, plus the action's 15 PowerShell cases. Copy it character for character, including every comment line, `using` directive, and blank line. Don't add argument checks (`ThrowIfNull` and the like), cancellation tokens, `ConfigureAwait`, logging, caching, or fast paths that the code doesn't show, and don't "tidy" it.
+
+Each test case lists every assertion it makes; most are given as code. Write all of them, in the order given; don't drop one because it looks redundant, and don't turn an exact comparison into `Contains` or `StartsWith`. Never normalize the product's output in a test (no `ReplaceLineEndings`, `Replace("\r\n", …)`, or `Trim` on an actual value); `CliHarness` already turns `\r\n` into `\n` in `Out` and `Error`.
+
+The final section, "Final step: architect audit", isn't a builder task. It has no checkbox, and `ledger-builder` never runs it.
 
 ## Tasks
 
-- [x] Task 1: Tool-Call Signals & Breaker Storage (CopilotLedger.Otlp, Storage & Core). Decode OTLP span status in both encodings, keep `gen_ai.tool.name` and `process.exit.code` on `execute_tool` links, and add Migration 3: tool columns on `span_links` plus the `breaker_trips`, `branch_budgets`, and `breaker_settings` tables. Add the Core breaker contracts and the store methods that the breaker, the CLI, and the MCP server use. Tests decode status, normalize Copilot's real tool spans, and exercise every new store method.
-- [x] Task 2: Circuit Breaker Engine & Flag File (CopilotLedger.Core & Otlp). Add the two rules, credit velocity and retry churn, as pure functions, and `CircuitBreakerMonitor`, which runs inside the ingestor's gate after back-fill, records each trip once, raises budget alerts, and keeps the opt-in `.copilot-ledger/CIRCUIT_OPEN` flag file in step with the ledger. Tests replay live run A, a five-failure retry loop, batch by batch, plus velocity, commit-reset, budget, and flag-file cases.
-- [x] Task 3: Breaker Alerts and the Breaker & Budget Commands (CopilotLedger.Cli). The daemon logs each alert and shows a desktop notification: a Windows toast, a macOS notification, or `notify-send`. It re-sends alerts it missed while stopped. Add `breaker status|reset|config` and `budget set|clear|list`. Tests drive an in-process daemon over TestServer with the fake platform.
-- [x] Task 4: MCP Server (CopilotLedger.Mcp & Cli). Create `src/CopilotLedger.Mcp` on ModelContextProtocol 2.4.0 with `get_branch_ledger`, `get_top_expensive_prompts`, `get_agent_breakdown`, and `set_branch_budget`, closed input schemas, and breaker and budget warnings in every result; add `gh-ledger mcp`. Tests connect the SDK's client to the server over in-memory pipes.
-- [x] Task 5: Start at Sign-in, Version 0.3.0 & CI (CopilotLedger.Cli). `install` registers a per-user sign-in item (a Windows Run value, a macOS LaunchAgent, or an XDG autostart entry), and `uninstall` removes it. An application manifest stops Windows from opening a console window at sign-in. Bump the version to 0.3.0, extend the CI smoke test with the breaker, budget, and MCP commands, and finish `docs/cli.md`.
+- [ ] Task 1: Detached Daemon Start (CopilotLedger.Cli & CI). `daemon start` gives the daemon its own null standard handles and, on Windows, lets it inherit no other handle, so `x=$(gh-ledger daemon start)` and PowerShell captures return at once instead of waiting for the daemon to exit. Tests cover Windows command-line quoting, and CI captures `daemon start` in bash and PowerShell on Ubuntu and Windows.
+- [ ] Task 2: PR Receipts: `export-pr` (CopilotLedger.Storage & Cli). Add a channel-and-model rollup, a prompt count, and a breaker-trip count to the store, and `gh-ledger export-pr`, which writes the branch's receipt to `.github/copilot-ledger/receipts/<branch>-<hash>.md`: collapsible Markdown with GitHub AI Credits, Foundry BYOK, local offload, breaker trips, and the most expensive prompt, plus its JSON data. Tests compare whole receipts and reconcile them with `branch --json` in decimal.
+- [ ] Task 3: The Receipt Action (action/ & CI). Add `action/action.yml`, a composite action that runs `action/receipt.ps1` on GitHub's PowerShell 7 to find the receipt a pull request commits, validate it, and post or update one comment, with only `contents: read` and `pull-requests: write`. PowerShell tests replay the GitHub REST API offline, CI runs them, and this repository uses the action on its own pull requests.
+- [ ] Task 4: gh Extension Release, Version 0.4.0 & Quickstart (CopilotLedger.Cli, workflows & docs). Add a tag-triggered release workflow that publishes the six binaries under GitHub CLI's precompiled-extension names, `rates.json`, and checksums. When `gh-ledger` runs as the installed extension, `install` skips the alias and `status` says so and names `gh ledger` commands. Bump the version to 0.4.0 and rewrite the README quickstart around `gh extension install`, `export-pr`, and the action.
+- [ ] Task 5: `rates update` (CopilotLedger.Core & Cli). `gh-ledger rates update` downloads `rates.json` from the latest release through the system proxy, validates it, and saves it as `rates.downloaded.json` when it's newer than the rates in use. The daemon, `status`, and `rates validate` use the newer of the built-in and downloaded rates, with the overlay on top. Tests use a fake `HttpMessageHandler`, never the network.
 
 ## Starting point
 
-- Sprint 2 is complete. Tasks 1–5 merged in PRs #13, #14, #15, #18, and #19, with fix #17 (`main` at `40843c9`). `dotnet test CopilotLedger.slnx` passes 440 tests (0 failed, 0 skipped), and CI is green on `ubuntu-latest` and `windows-latest`, including the published single-file smoke test. Sprint 2's plan, with its amendments, is archived at `.github/plans/archive/sprint-2.md`.
-- Merged Sprint 2 behavior that this plan depends on (read from the code at `40843c9`):
-  - `GenAiSpanNormalizer` emits a `GenAiSpanLink` for every valid span that has `gen_ai.operation.name` or comes from a Copilot resource (`service.name` `github-copilot` or `copilot-chat`). So Copilot's `execute_tool` spans already reach `span_links`, with their conversation ID. Its private `Text()` helper ignores attributes that aren't non-blank strings.
-  - `OtlpProtobufTraceReader.ReadSpan` reads `Span` fields 1, 2, 4, 5, 7, 8, and 9 and skips the rest. `OtlpJsonTraceReader` ignores unknown properties and finds properties with its non-throwing `TryFindProperty` helper (last match wins). The JSON decoding tests have a `SingleSpan(json)` helper that returns the one `OtlpSpan`, and the protobuf tests have `DecodeSingleSpan(OtlpProtoWriter)`, which returns the whole `OtlpTraceRequest`.
-  - `LedgerIngestor.IngestAsync` normalizes outside its `SemaphoreSlim(1, 1)` gate. Inside the gate it records billable entries, records links, and back-fills every trace ID in the batch. Store exceptions propagate, and the receiver answers `503` with `Retry-After: 5`, so the exporter retries; inserts are idempotent.
-  - `span_links` stores `start_time_unix_ms` only (no end time). `spans` stores start and end in milliseconds.
-  - `PromptChainRow`'s keys are `MAX(COALESCE(repo_slug, repo_root, '(none)'))` and `MAX(COALESCE(branch_name, '(none)'))` over the trace's `spans` rows, the same keys as the Branch rollup.
-  - `SqliteLedgerStore` opens a new pooled connection per call (WAL, `busy_timeout = 5000`). Every public method except `InitializeAsync` throws `InvalidOperationException` until `InitializeAsync` has run. It stamps `recorded_at_unix_ms` from its `TimeProvider`. `InitializeAsync` reads `PRAGMA user_version` once, before its loop, and runs each pending migration in its own transaction; `BeginTransactionAsync` starts `BEGIN IMMEDIATE`.
-  - `DaemonHost.RunAsync` logs `{UtcNow:O} {message}` lines to `--log-file` or to `context.Out`, polls for `daemon.stop` every `DaemonPollInterval`, and prunes `span_links` older than 7 days every 6 hours.
-  - `ReportCommands` writes JSON with `JsonWriterOptions { Indented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }`, money with `LedgerFormat.WriteMoney` (format `0.############`), and times with `LedgerFormat.WriteTime` (`ToUniversalTime().ToString("O")`, for example `2026-11-21T00:17:17.2600000+00:00`). `LedgerFormat.Credits` rounds to 2 places with `MidpointRounding.AwayFromZero` and formats `N2` (`1,234.50`). `LedgerFormat.LocalTime(value, zone)` formats `yyyy-MM-dd HH:mm` in `zone`, and the reports pass `context.TimeProvider.LocalTimeZone`.
-  - `CliHarness` runs `GhLedgerCli.InvokeAsync` in-process with `FakeCliPlatform`, `UseTestServer()`, `DataDirectory = <root>/data`, `CopilotHome = <root>/copilot-home`, and `WorkingDirectory = <root>`. Its `StartInProcessDaemonAsync` waits for `daemon.json`. `FakeCliPlatform.RunAsync` records every call in `ProcessRuns` and returns exit code 0 unless `RunHandler` is set.
-  - Every `InstallManifest` property is `required`. `install` prints its warnings, the variable or profile line, the alias lines, the `sh.exe` warning, the daemon line, and then the final line.
-  - `GhLedgerCli.Version` is the informational version, `0.2.0`. `DaemonState.Version` and the first line of `status` show it.
-- Sprint 2's public contracts are fixed. Sprint 3 adds types and members, and it changes only these Sprint 2 artifacts, each called out in its task:
-  - Task 1: `OtlpSpan` (`StatusCode`), `GenAiSpanLink` (three properties), `GenAiAttributeNames` (two constants), both trace readers, the normalizer's link construction, `LedgerMigrations` (Migration 3), `SqliteLedgerStore.InitializeAsync` (its migration loop) and `RecordSpanLinksAsync` (three more columns), and the tests SL1 and S1, whose expected `PRAGMA user_version` changes from 2 to 3;
-  - Task 2: `LedgerIngestor` (a second constructor; the existing one is unchanged);
-  - Task 3: `DaemonHost`, `GhLedgerCli` (registration), `FakeCliPlatform.RunAsync` (a lock), `CliHarness` (a TestServer capture, `CreateDaemonClient`, and `DaemonOutput`), and `docs/cli.md`;
-  - Task 4: `CliContext` (two optional streams), `GhLedgerCli`, `CopilotLedger.slnx`, the Cli and test project files, and `docs/cli.md`;
-  - Task 5: `ICliPlatform` and `SystemCliPlatform` (two members), `FakeCliPlatform`, `InstallManifest` (one optional property), `InstallCommands`, the Cli project file, `GhLedgerCli` (version fallback), `.github/workflows/ci.yml`, `docs/cli.md`, and the tests IN1, IN2, IN3, IN9, IN10, DM1, and the `status` text test in `ReportCommandTests`.
-- The test project uses xUnit v2 (`xunit` 2.9.3), and tests use only public APIs, with no `InternalsVisibleTo`.
-- When an acceptance criterion says `src/` contains no `double` or `float`, it means the C# keywords and the `GetDouble` and `TryGetDouble` calls. The enum member `OtlpValueKind.Double` is allowed.
+- Sprint 3 is complete. Tasks 1–5 merged in PRs #26, #27, #28, #29, and #33, with fix #31 (issue #30) and PR #34, which added `LICENSE`, `README.md`, and `docs/guide.md` at the user's request (`main` at `33a2881`). `dotnet test CopilotLedger.slnx` passes 577 tests (0 failed, 0 skipped), and CI is green on `ubuntu-latest` and `windows-latest`. Sprint 3's plan, with its amendments, is archived at `.github/plans/archive/sprint-3.md`.
+- The repository is now `swigerb/gh-ledger`; GitHub redirects the old name. Product URLs added in this sprint use the new name. Existing identifiers that contain `copilot-ledger` (the data directory, the LaunchAgent label, test fixtures' `swigerb/copilot-ledger` slug) don't change.
+- Merged Sprint 3 behavior that this plan depends on (read from the code at `33a2881`):
+  - `ICliPlatform.StartDetached(fileName, arguments, workingDirectory)` returns the new process ID. `SystemCliPlatform` implements it with `Process.Start` (`UseShellExecute = false`, `CreateNoWindow = true`, no redirection). `DaemonCommands.StartAsync` calls it with `[daemon, run, --port, <port>, --log-file, <data>/daemon.log]` and the data directory, then polls `daemon.json` until its `ProcessId` equals the returned ID. Tests replace it with `FakeCliPlatform.StartDetachedHandler`, which `CliHarness` sets to an in-process daemon.
+  - `DaemonHost.RunAsync` loads rates once, before it opens the store: `LoadEmbeddedWithOverlay(<data>/rates.json)` when that file exists, else `LoadEmbedded()`. On `InvalidDataException` it logs `Invalid rates overlay: <message>` and returns 1. It logs `{TimeProvider.GetUtcNow():O} {message}` lines to `--log-file`, or to `context.Out` without one.
+  - `ReportCommands.StatusAsync` loads rates the same way, inline. Its text output is the `gh-ledger <version>` line, then `Daemon:`, `Ledger:`, `Rates:`, and `Copilot:` lines, then a `Warning: <text>` line per OTel warning, a blank line, and the period table. The daemon line says `not running; start it with: gh-ledger daemon start`, and the Copilot line says `OTel export not enabled; run: gh-ledger install` when export is off. `WriteStatusJson` writes `version`, `daemon`, `databasePath`, `ratesVersion`, `ratesError`, `copilotOtelEnabled`, `warnings`, and `periods`.
+  - `RatesCommands` has `rates init [--force]` and `rates validate [--file <path>]`. Without `--file` and without an overlay, `validate` prints `No rates overlay at <path>; using the built-in rates (<version>).`; with a valid overlay it prints `<path> is valid. Rates version: <version>.`; with an invalid one it writes `Invalid rates overlay: <message>` to `Error` and returns 1.
+  - `JsonRateCardCalculator` exposes `LoadEmbedded()`, `LoadEmbeddedWithOverlay(path)`, `Parse(json, overlayJson?)`, and `RatesVersion`. Errors are `InvalidDataException`s: a base document's have no prefix, and an overlay's start with its path (`Parse` uses `overlay`). Invalid JSON reads `line <L>, column <C>: invalid JSON`. A merged version is `<base>+<overlay label or "user">`. The embedded `rates.json` has `"ratesVersion": "2026-11-20"`.
+  - `InstallCommands.InstallAsync` checks that the executable is named `gh-ledger`, prints OTel warnings, sets the Windows user variable or the profile block, runs `gh alias set ledger '<exe>' "$@" --shell --clobber` when `gh` is on `PATH`, prints the `sh.exe` warning on Windows when `FindSh` finds none, registers the sign-in item (`"<exe>" daemon start` on Windows and Linux, `<exe> daemon run --log-file …` in the macOS plist), writes `install.json`, and starts the daemon. `TryReadManifestAsync` and `ManifestPath` are private.
+  - `SqliteLedgerStore.GetRollupAsync(grouping, filter)` groups by `LedgerGrouping` (`Repository`, `Branch`, `Model`, `Agent`) and orders rows by `github_usd_pico + byok_usd_pico DESC, saved_usd_pico DESC`, then the keys ascending. A `LedgerFilter`'s `Repository` and `Branch` match `COALESCE(repo_slug, repo_root, '(none)')` and `COALESCE(branch_name, '(none)')`. `GetTopPromptChainsAsync(filter, limit)` returns prompt chains (one per `trace_id`) ordered the same way. `breaker_trips` has `repository` and `branch` columns that hold the same keys, and `reset_at_unix_ms` is set when a trip is reset.
+  - `LedgerFormat` (internal) has `Credits` (2 places, `MidpointRounding.AwayFromZero`, `N2`), `Usd` (`$` + `Credits`), `Count` (`N0`), `WriteMoney` (`0.############`), `WriteTime` (`O`, UTC), and `WriteTotals` (10 properties: `spans`, `unpricedSpans`, `inputTokens`, `outputTokens`, `cacheReadInputTokens`, `cacheWriteInputTokens`, `aiCredits`, `aiCreditsUsd`, `foundryByokUsd`, `localSavedUsd`).
+  - `branch` resolves the repository key as `RepositorySlug ?? RepositoryRoot` from `new FileSystemGitContextResolver().Resolve(context.WorkingDirectory)`, which reads `.git` and never throws. `GitWorkspaceContext` has `RepositoryRoot`, `BranchName` (null when detached), `HeadCommitSha` (null on an unborn branch), and `RepositorySlug` (null without a GitHub-style `origin` URL).
+  - `CliHarness` runs commands in-process with `FakeCliPlatform`; `RunAsync`, `RunInAsync(workingDirectory, …)`, `StartInProcessDaemonAsync`, `CreateDaemonClient`, `InProcessDaemon`, and `DaemonOutput` exist. `FakeCliPlatform.ProcessPath` defaults to `/opt/gh-ledger/gh-ledger`; `FileExists` answers from `ExistingFiles`. `TempDirectory.Dispose` calls `SqliteConnection.ClearAllPools()` first. `FileRetry.ReadAllTextAsync` retries reads that Windows reports in use. `GitFixture.Create(root)` makes `<root>/repo` on branch `feature/ledger` at `Sha1` with origin `https://github.com/swigerb/copilot-ledger.git`.
+  - `GhLedgerCli.Version` is `0.3.0`. The CI smoke test checks it, starts the daemon, runs `status`, `breaker status`, `budget list`, and one MCP `tools/list`, and stops the daemon.
+- Sprint 3's public contracts are fixed. Sprint 4 adds types and members, and it changes only these existing artifacts, each called out in its task:
+  - Task 1: `SystemCliPlatform.StartDetached`, the `StartDetached` comment in `ICliPlatform`, `.github/workflows/ci.yml`, and `docs/cli.md`;
+  - Task 2: `LedgerGrouping` (one member), `LedgerRollupRow` (one property), `SqliteLedgerStore` (one rollup arm and two methods), `GhLedgerCli` (registration), `FileRetry` (one method), and `docs/cli.md`;
+  - Task 3: `.github/workflows/ci.yml` and `docs/cli.md`;
+  - Task 4: `InstallCommands`, `ReportCommands`, the Cli project file and `GhLedgerCli` (version), `.github/workflows/ci.yml`, `README.md`, `docs/guide.md`, `docs/cli.md`, and the tests DM1 and `ReportCommandTests.StatusText`;
+  - Task 5: `JsonRateCardCalculator` (one method), `CliContext` (one property), `RatesCommands`, `DaemonHost`, `ReportCommands`, `CliHarness` (one method), `README.md`, `docs/cli.md`, and `docs/configuration.md`.
+- The test project uses xUnit v2 (`xunit` 2.9.3), and tests use only public APIs, with no `InternalsVisibleTo`. That's why `WindowsCommandLine` (Task 1) and `ReceiptMarkdown` (Task 2) are public.
+- When an acceptance criterion says `src/` contains no `double` or `float`, it means the C# keywords and the `GetDouble` and `TryGetDouble` calls.
 
 ## Verified facts (retrieved 2026-11-21)
 
-### Live capture: Copilot tool calls
+### Detached daemon start
 
-On 2026-11-21 (UTC) the architect ran the scratch loopback receiver from Sprint 2 and Copilot CLI 1.0.112 on Windows 11 ARM64 (build 28000) with `mai-code-2-flash`, in a scratch Git repository outside this one. Only `COPILOT_OTEL_ENABLED=true` was set, and only for those processes; no user-level Copilot configuration was changed. The scratch repository held `calc.txt` and `test.ps1`, a script that exits 1 on its first five runs and 0 afterward. The four runs below cost 0.644379 AI credits: `--usage-output-file` totals of 372,181,000, 118,518,000, 139,029,000, and 14,651,000 nano-AIU.
+Sources: [.NET 10 `Process.Windows.cs`](https://github.com/dotnet/runtime/blob/release/10.0/src/libraries/System.Diagnostics.Process/src/System/Diagnostics/Process.Windows.cs); [`ProcessStartInfo.cs`](https://github.com/dotnet/runtime/blob/release/10.0/src/libraries/System.Diagnostics.Process/src/System/Diagnostics/ProcessStartInfo.cs); [UpdateProcThreadAttribute](https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute). Probes ran on Windows 11 ARM64 (build 28000), PowerShell 7.6, and the minimal MSYS `sh` (bash 5.3) bundled with the Copilot app's Git.
 
-1. **Run A, a retry loop.** The prompt asked the agent to edit `calc.txt` until `test.ps1` passed, then commit. One trace (`89f2977b97c7d0a8d05fc3580e3e167e`, conversation `982f73ad-18f4-49ef-a1f9-70748fa013fb`) held one root `invoke_agent`, 14 `chat` spans, and 13 `execute_tool` spans, all children of the root. They arrived in 7 export requests (spans shown in time order):
+- On Windows, .NET 10's `Process.Start` calls `CreateProcess` with `bInheritHandles = true` (commented `// handle inheritance flag`) and no handle list, so the child inherits every inheritable handle in the parent. `ProcessStartInfo` has no option to limit that. When a shell captures `gh-ledger daemon start`, gh-ledger's standard output is the capture pipe, the daemon inherits it, and the reader waits for the daemon to exit.
+- `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` gives `CreateProcess` the list of handles to inherit. The handles must be inheritable, and `bInheritHandles` must be `TRUE`.
+- **Reproduced with the merged binary.** A `win-arm64` single-file publish of `main` at `33a2881`, run as `$x = & gh-ledger daemon start --port 54318` in a child `pwsh` with a temporary `COPILOT_LEDGER_HOME`: the capture hadn't returned after 20 seconds, and it returned only after `gh-ledger daemon stop`.
+- **Fixed with Task 1's code.** The same capture with Task 1's `SystemCliPlatform` returned in 6.8 seconds (the time the daemon takes to write `daemon.json` on that machine), and `x=$(gh-ledger daemon start --port 54319)` under MSYS `sh` returned in 1.2 seconds with `gh-ledger daemon started (pid 18228) on http://localhost:54319.`. A standalone probe of the same launcher took 0.2 seconds under a PowerShell capture and 0.3 seconds under `sh`, against 8.4 and 6.4 seconds with `Process.Start`. The child saw redirected standard handles: reading standard input returned end-of-file, and writing to standard output and error didn't throw.
+- `WindowsCommandLine.Build` was checked by starting a child with 16 arguments (spaces, an empty string, quotes, trailing and doubled backslashes, a tab, non-ASCII, and a UNC path) and comparing the child's `args` with them; all 16 matched.
+- The analyzers in this repository report CA1416 when `WindowsDetachedProcess.Start` is called without an `OperatingSystem.IsWindows()` check, and nothing for the `DllImport` declarations (SYSLIB1054 is a suggestion).
+- While the daemon runs on Windows, its executable can't be opened for writing ("being used by another process") or deleted ("Access … is denied"). That affects `gh extension upgrade` and `gh extension remove` (below).
 
-   | Request | Spans |
-   |---|---|
-   | 1 | chat 1, `apply_patch` |
-   | 2 | chat 2, `powershell` (exit 1), chat 3, `apply_patch` |
-   | 3 | chat 4, `powershell` (exit 1), chat 5, `apply_patch` |
-   | 4 | chat 6, `powershell` (exit 1), chat 7, `apply_patch` |
-   | 5 | chat 8, `powershell` (exit 1), chat 9, `apply_patch` |
-   | 6 | chat 10, `powershell` (exit 1), chat 11, `apply_patch` |
-   | 7 | chat 12, `powershell` (exit 0, the test passed), chat 13, `powershell` (exit 0, `git commit`), chat 14, the root |
+### GitHub CLI extensions
 
-   - A shell call's span is named `execute_tool powershell pwsh.exe`. Its attributes are `gen_ai.operation.name` = `execute_tool`, `gen_ai.conversation.id`, `gen_ai.tool.name` = `powershell`, `gen_ai.tool.call.id`, `gen_ai.tool.type` = `function`, `gen_ai.provider.name` = `github`, `process.executable.name` = `pwsh.exe` (the shell, not the command it ran), and `process.exit.code`, an `intValue` (JSON string `"1"`).
-   - The span `status` stayed `{"message": "", "code": 0}` (unset) even when the command exited 1.
-   - The edit tool's span is `execute_tool apply_patch`, with `gen_ai.tool.name` = `apply_patch` and no file path. With content capture off, no tool arguments or results are exported.
-   - Each `chat` span's `github.copilot.nano_aiu` equaled Sprint 1's formula at `mai-code-2-flash`'s promotional price. The 14 sum to 372,181,000 nano-AIU, the usage file's total.
-2. **Run B, an MCP server without approval.** A scratch stdio MCP server, `ledgerprobe`, was configured for that run only, through a scratch MCP configuration file named on the command line. It offered `probe_read` (`readOnlyHint: true`) and `probe_write` (`readOnlyHint: false`). In prompt mode (`-p`), `probe_read` ran without approval and `probe_write` was denied.
-   - An MCP tool's `gen_ai.tool.name` is `<SHA-256 of the server name>/<SHA-256 of the tool name>`, both lowercase hex of the UTF-8 name: `ledgerprobe` gives `c3d1fe831856c77818bb8c1242d32d6efa6c37366eb902e56c5fd0054c1dcbc3`, and `probe_write` gives `918a44e755cc5eee09b08d214831e8339a645158ef1f831a0fa02bd43999700f`.
-   - The denied call's span had status `{"code": 2, "message": "Tool failed"}`, `error.type` = `denied`, and the event `gen_ai.client.operation.exception`. A child `permission` span (no `gen_ai.operation.name`) carried `github.copilot.permission.result` = `denied-no-approval-rule-and-could-not-request-from-user`.
-3. **Run C, an MCP tool error.** With `--allow-tool 'ledgerprobe(probe_write)'`, the tool ran and returned `isError: true`. Its span had status code 2 and `error.type` = `tool_error`. Copilot showed the result's text to the model.
-4. **The MCP client.** Copilot CLI spoke protocol 2026-07-28 (`server/discover`, then `tools/list` and `tools/call`) with `clientInfo` `copilot-cli` `1.0.112`. `tools/call` carried `_meta` `com.github.copilot/toolCallId`, equal to the span's `gen_ai.tool.call.id`. The server process ran in the session's working directory, and its environment held `COPILOT_AGENT_SESSION_ID` (the conversation ID) and `COPILOT_SESSION_CWD`.
-5. **Run D, a `sessionStart` hook.** A repository hook (`.github/hooks/probe.json`, `type: command`, `exec` and `args`) ran with the repository root as its working directory, received `{"sessionId": …, "timestamp": …, "cwd": …, "source": "new", "initialPrompt": …}` on stdin, and had `COPILOT_PROJECT_DIR` and `COPILOT_HOOK_DIR` set. It started a detached child the same way `SystemCliPlatform.StartDetached` does (`UseShellExecute = false`, `CreateNoWindow = true`). The child wrote a heartbeat every second. It stopped about 4 seconds before Copilot CLI exited at the end of the prompt, and its process was gone. **A hook can't start a long-lived daemon on Windows.**
+Sources: GitHub Docs, [Creating GitHub CLI extensions](https://docs.github.com/en/github-cli/github-cli/creating-github-cli-extensions); cli/cli v2.103.3 [`pkg/cmd/extension/manager.go`](https://github.com/cli/cli/blob/v2.103.3/pkg/cmd/extension/manager.go), [`http.go`](https://github.com/cli/cli/blob/trunk/pkg/cmd/extension/http.go), [`pkg/cmd/root/root.go`](https://github.com/cli/cli/blob/v2.103.3/pkg/cmd/root/root.go), [`pkg/cmd/alias/shared/validations.go`](https://github.com/cli/cli/blob/v2.103.3/pkg/cmd/alias/shared/validations.go), and [`pkg/cmd/release/create/create.go`](https://github.com/cli/cli/blob/v2.103.3/pkg/cmd/release/create/create.go); go-gh [`pkg/config/config.go`](https://github.com/cli/go-gh/blob/trunk/pkg/config/config.go); a probe with gh 2.103.3.
 
-### Copilot MCP configuration and hooks
+- An extension repository's name starts with `gh-`, and the rest is the command name, so `swigerb/gh-ledger` provides `gh ledger`.
+- A precompiled extension's release assets end in `<os>-<arch>`, plus `.exe` on Windows; for example `gh-whoami-windows-amd64.exe`. gh picks the first asset of the latest release whose name ends with its own `runtime.GOOS-runtime.GOARCH` and extension. It treats the repository as precompiled when any asset ends with a known platform (`windows-amd64.exe`, `windows-arm64.exe`, `linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64`, among others), so other assets such as `rates.json` are ignored.
+- On an Apple silicon Mac without a `darwin-arm64` asset, gh falls back to `darwin-amd64` only if Rosetta is installed. No other platform falls back. gh ad-hoc signs a `darwin-arm64` asset with `codesign` after downloading it.
+- gh downloads the asset to `<data>/extensions/gh-ledger/gh-ledger` (`gh-ledger.exe` on Windows), with mode 0755, and writes `manifest.yml` next to it (`owner`, `name`, `host`, `tag`, `ispinned`, `path`). It lists a directory with a `manifest.yml` as a binary extension. `<data>` is `$XDG_DATA_HOME/gh` when `XDG_DATA_HOME` is set, else `%LOCALAPPDATA%\GitHub CLI` on Windows, else `~/.local/share/gh`. A probe that installed `github/gh-models` with `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `GH_CONFIG_DIR` pointed at a temporary directory produced exactly `gh\extensions\gh-models\gh-models.exe` and `gh\extensions\gh-models\manifest.yml`.
+- gh runs a binary extension directly on every OS; only script extensions go through `sh.exe` on Windows. It sets `GH_EXTENSION=1` and `GH_PATH` for the child (this plan doesn't rely on them, because the sign-in item runs the binary without gh).
+- gh registers extension commands before aliases, and an alias whose name is already a command isn't registered. `gh alias set ledger …` fails while the `ledger` extension is installed: the probe printed `X Could not create alias models: already a gh command or extension` and exited 1.
+- `gh extension upgrade` rewrites the binary in place (`O_TRUNC`), and `gh extension remove` deletes the directory, so both fail on Windows while the daemon runs from that binary.
+- `gh release create <tag> <files>` creates a draft, uploads the files, then publishes it, and deletes the draft if an upload fails. `--verify-tag` aborts when the tag doesn't exist on the remote.
 
-Sources:
+### Releases and downloads
 
-- GitHub Docs, [Adding MCP servers for GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers);
-- VS Code, [MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration);
-- GitHub Docs, [Using hooks with GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/copilot-cli/use-hooks) and the [hooks reference](https://docs.github.com/copilot/reference/hooks-configuration).
+Sources: GitHub Docs, [Linking to releases](https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases); probes with a `net10.0` `HttpClient` (`SocketsHttpHandler { DefaultProxyCredentials = CredentialCache.DefaultCredentials }`) through this machine's corporate proxy.
 
-Facts:
+- `https://github.com/<owner>/<repo>/releases/latest/download/<asset>` downloads that asset of the latest release. "Latest" is the newest release that isn't a draft or prerelease.
+- `https://github.com/jqlang/jq/releases/latest/download/sha256sum.txt` answered 200 (`application/octet-stream`, 2,302 bytes) after redirecting to `release-assets.githubusercontent.com`. `https://github.com/swigerb/gh-ledger/releases/latest/download/rates.json` answered 404 with a 21-byte JSON body, because the repository has no release yet. `swigerb/gh-ledger` is public.
+- Current major versions of the actions this plan uses: `actions/checkout@v7` (v7.0.1), `actions/setup-dotnet@v6` (v6.1.0), `actions/upload-artifact@v7` (v7.0.2), and `actions/download-artifact@v8` (v8.0.2). Both artifact actions run on `node24`. `upload-artifact` stores a single file under its own name, and `download-artifact` with `merge-multiple: true` puts every artifact's files in one directory.
+- `dotnet msbuild <project> -getProperty:Version` prints only the value (`0.4.0`).
+- `dotnet publish -c Release -r <rid>` of the Cli project writes `gh-ledger` (`gh-ledger.exe` on Windows) plus `.pdb` files; the SQLite native library is inside the single file.
 
-- `copilot mcp add SERVER-NAME -- COMMAND [ARGS...]` adds a local (stdio) server to the user configuration, `~/.copilot/mcp-config.json`, under a top-level `mcpServers` object. The file can also be edited by hand. Project files `.mcp.json` and `.github/mcp.json` take precedence over it.
-- VS Code's Copilot harness reads the same user file, `$COPILOT_HOME/mcp-config.json` (default `~/.copilot/mcp-config.json`), labeled "Copilot Global". VS Code's own `mcp.json` uses a top-level `servers` object instead.
-- Copilot CLI permission rules name an MCP tool as `SERVER(TOOL)`, for example `--allow-tool 'ledger(set_branch_budget)'` (confirmed by run C).
-- User hooks live in `~/.copilot/hooks/*.json` (`$COPILOT_HOME/hooks`). `sessionStart` hooks run when a session starts and are bounded by `timeoutSec`. Hooks can be disabled with `disableAllHooks` or restricted by enterprise managed settings.
+### GitHub REST API and Actions
 
-### MCP protocol and the C# SDK
+Sources: GitHub Docs, [Permissions required for GitHub Apps](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps), [REST API endpoints for issue comments](https://docs.github.com/en/rest/issues/comments), [API versions](https://docs.github.com/en/rest/about-the-rest-api/api-versions) and [breaking changes](https://docs.github.com/en/rest/about-the-rest-api/breaking-changes), [Events that trigger workflows](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows), [Metadata syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/metadata-syntax), [Workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax), [Variables](https://docs.github.com/en/actions/reference/workflows-and-actions/variables); runner-images READMEs for Ubuntu 24.04, macOS 15 Arm64, and Windows Server 2025; read-only API calls against this repository.
 
-Sources: [MCP specification 2026-07-28, key changes](https://modelcontextprotocol.io/specification/2026-07-28/changelog); [Tools](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2025-11-25/server/tools.mdx) (2025-11-25, unchanged in 2026-07-28 for the points used here); NuGet `ModelContextProtocol` 2.4.0, checked by reflection and an in-memory server-and-client probe.
+- Installation tokens, including `GITHUB_TOKEN`, need: **Contents: read** for `GET /repos/{owner}/{repo}/contents/{path}`; **Pull requests: read** for `GET /repos/{owner}/{repo}/pulls/{pull_number}/files`; and **Issues** or **Pull requests** (read to list, write to create or update) for `GET`/`POST /repos/{owner}/{repo}/issues/{issue_number}/comments` and `PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}`.
+- Issue comments list in ascending ID order, with `per_page` up to 100. A comment has `id`, `body`, `html_url`, and `user` (`login`, or null).
+- Requests without `X-GitHub-Api-Version` use `2022-11-28`. The newest version, `2026-03-10`, changed none of the endpoints above except directory listings in "Get repository content", which this plan doesn't use. A version stays supported for at least 24 months after its successor ships.
+- A live call to `GET /repos/swigerb/gh-ledger/pulls/34/files` returned objects with `filename` and `status` (`added`). `GET /repos/swigerb/gh-ledger/contents/docs/guide.md?ref=<head sha>` returned `size` 8271 and `encoding` `base64`, with `content` split into lines; `Convert.FromBase64String` decoded it to 8,271 UTF-8 characters.
+- "The `GITHUB_TOKEN` has read-only permissions in pull requests from forked repositories." A pull request's `head.repo.full_name` equals the repository for a branch in the same repository.
+- A composite action sets `runs.using: composite`; a `run` step needs `shell`; `GITHUB_ACTION_PATH` is the action's directory; and steps can read the `inputs` and `github` contexts. For `shell: pwsh` the runner prepends `$ErrorActionPreference = 'stop'` and appends `if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit $LASTEXITCODE }`. `GITHUB_API_URL` is the API URL, and `GITHUB_OUTPUT` is the step's output file.
+- GitHub-hosted runners include PowerShell 7.6.10 (`pwsh`), GitHub CLI, and jq on `ubuntu-latest`, `macos-latest`, and `windows-latest`.
+- A workflow can use an action from its own repository with `uses: ./path` after `actions/checkout`. (The newer `$/path` reference needs no checkout; this plan uses the familiar form.)
 
-- `ModelContextProtocol` 2.4.0 is on the configured feed. It depends on `ModelContextProtocol.Core` [2.4.0], `Microsoft.Extensions.Caching.Abstractions` 10.0.14, and `Microsoft.Extensions.Hosting.Abstractions` 10.0.14; Core depends on `Microsoft.Extensions.AI.Abstractions` 10.11.0 and `Microsoft.Extensions.Logging.Abstractions` 10.0.14. A `net10.0` project with `TreatWarningsAsErrors` restores it with no `NU190x` warning.
-- The low-level server API (namespace `ModelContextProtocol.Server`, with protocol types in `ModelContextProtocol.Protocol`):
-  - `McpServer.Create(ITransport transport, McpServerOptions options, ILoggerFactory? loggerFactory = null, IServiceProvider? serviceProvider = null)`, then `RunAsync(CancellationToken)`. `McpServer` is `IAsyncDisposable`.
-  - `McpServerOptions { ServerInfo = new Implementation { Name, Version }, ServerInstructions, Handlers = new McpServerHandlers { ListToolsHandler, CallToolHandler } }`. Setting `ListToolsHandler` advertises the `tools` capability.
-  - Handlers are `(RequestContext<TParams> request, CancellationToken cancellationToken) => ValueTask<TResult>`. `request.Params` is `ListToolsRequestParams?` or `CallToolRequestParams?` (`Name`, and `Arguments` as `IDictionary<string, JsonElement>?`).
-  - `Tool { Name, Title, Description, InputSchema (JsonElement), Annotations = new ToolAnnotations { ReadOnlyHint, DestructiveHint, IdempotentHint, OpenWorldHint } }`, `ListToolsResult { Tools }`, `CallToolResult { Content, StructuredContent (JsonElement?), IsError (bool?) }`, and `TextContentBlock { Text }`.
-  - `StreamServerTransport(Stream inputStream, Stream outputStream, string? serverName = null, ILoggerFactory? loggerFactory = null)`.
-  - The client (namespace `ModelContextProtocol.Client`): `McpClient.CreateAsync(new StreamClientTransport(Stream serverInput, Stream serverOutput), McpClientOptions?)`, `ListToolsAsync()` (items expose `ProtocolTool`), and `CallToolAsync(string name, IReadOnlyDictionary<string, object?>? arguments)`. `McpClient.ServerInfo` is `Implementation?`, `ServerInstructions` is `string?`, and `Tool.Annotations` is `ToolAnnotations?`, so tests check them with `Assert.NotNull` before reading their members (see .NET below).
-- Behavior observed in the probe:
-  - The SDK doesn't validate arguments against `inputSchema`; extra arguments reach the handler.
-  - A handler that throws any other exception produces `isError: true` with the text `An error occurred invoking '<name>'.`; the exception's message isn't sent.
-  - `throw new McpProtocolException("Unknown tool: x", McpErrorCode.InvalidParams)` produces JSON-RPC error `-32602` with that message. The client throws `McpProtocolException` whose `ErrorCode` is `McpErrorCode.InvalidParams` and whose `Message` is `Request failed (remote): Unknown tool: x`.
-  - Escaped lone surrogates never reach the handler. The orchestrator's probe found that the SDK client can't send one: `CallToolAsync` throws `JsonException` on the client side. Its raw-call result was reproduced on 2026-11-21: a stateless `tools/call` (with `_meta` protocol version `2026-07-28`) whose argument name or value contains an escaped lone surrogate, such as `"\ud800"`, short or long, gets JSON-RPC error `-32603` `An error occurred.` without calling the handler. The same call with ordinary arguments, or with a valid surrogate pair such as `"\ud83d\ude00"`, reaches the handler.
-  - The SDK's serializer escapes non-ASCII characters, `+`, `<`, and `'` on the wire, and clients unescape them, so `TextContentBlock.Text` arrives unchanged. `StructuredContent.GetRawText()` on the client keeps the escapes, so tests compare structured content as parsed JSON, not raw text.
-  - The server negotiates 2026-07-28 (`server/discover`; results carry `resultType`, and list results carry `ttlMs` and `cacheScope`) and answers a legacy `initialize` with 2025-06-18. A `tools/list` request whose `_meta` declares `io.modelcontextprotocol/protocolVersion` `2026-07-28` and `io.modelcontextprotocol/clientCapabilities` `{}` is answered directly. When standard input closes, `RunAsync` returns.
-- The spec: input validation errors are tool execution errors (`isError: true`), so the model can correct itself, and an unknown tool is protocol error `-32602`. Annotations are hints, and clients treat them as untrusted. 2026-07-28 deprecates Roots (SEP-2577) and suggests passing directories as tool parameters instead. The SDK reports any use of `ClientCapabilities.Roots` as diagnostic `MCP9005`.
+### GitHub Markdown
 
-### Desktop notifications
+Source: GitHub's Markdown API (`POST /markdown`, `mode: gfm`, `context: swigerb/gh-ledger`), which renders as comments do and posts nothing.
 
-- **Windows** (verified 2026-11-21, without administrator rights, from a `net10.0` program): `powershell.exe -NoProfile -NonInteractive -Command <script>`. The script loads `Windows.UI.Notifications.ToastNotificationManager` and `Windows.Data.Xml.Dom.XmlDocument` as WinRT types, reads toast XML from a UTF-8 file, and shows it with Windows PowerShell's application ID, `{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe`. It exited 0 in about 1.5–1.9 seconds, and the toast appeared in the notification history with its tag and group; the check removed it afterward. The exact script is in Task 3.
-- PowerShell treats five characters as single quotes: `'` (U+0027), `‘` (U+2018), `’` (U+2019), `‚` (U+201A), and `‛` (U+201B). Verified 2026-11-21 with the toast XML in a directory named `ledger it's O’Brien ‘a‚b‛`: doubling only `'` in the script's path gives a parse error, and doubling all five shows the toast.
-- `-EncodedCommand`, `-WindowStyle Hidden`, and `-ExecutionPolicy Bypass` are deliberately not used, because endpoint-protection products flag that combination.
-- **macOS** and **Linux** use `/usr/bin/osascript` with `display notification` and `notify-send`. Neither was run live (see Assumptions).
-
-### Start at sign-in
-
-Sources: Microsoft Learn, [Run and RunOnce registry keys](https://learn.microsoft.com/en-us/windows/win32/setupapi/run-and-runonce-registry-keys) and [Console allocation policy](https://learn.microsoft.com/en-us/windows/console/console-allocation-policy); Apple, [Creating Launch Daemons and Agents](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html); freedesktop.org, [Desktop Application Autostart Specification](https://specifications.freedesktop.org/autostart-spec/latest/) and [Desktop Entry Specification](https://specifications.freedesktop.org/desktop-entry-spec/latest/).
-
-- `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run` runs each value's command line at every sign-in of that user. "The data value for a key is a command line no longer than 260 characters." Writing it needs no administrator rights.
-- A console program started outside a terminal gets a console window. The application manifest element `<consoleAllocationPolicy xmlns="http://schemas.microsoft.com/SMI/2024/WindowsSettings">detached</consoleAllocationPolicy>` skips that allocation, while a program started in a terminal still uses the terminal. It needs Windows 11 24H2 (build 26100) or Windows Server 2025; older Windows ignores it.
-- Verified 2026-11-21: with `<ApplicationManifest>app.manifest</ApplicationManifest>` in `CopilotLedger.Cli.csproj`, `dotnet build` and the single-file publishes for `win-arm64` and `linux-x64` (from Windows) succeed with 0 warnings. The manifest is embedded in the single-file `gh-ledger.exe`, and the binary still prints `--version` in a terminal. A test program with the same manifest, published single-file and started from Explorer, ran with no console window.
-- A per-user launchd agent is a property list in `~/Library/LaunchAgents`, loaded at sign-in. `RunAtLoad` starts it when it's loaded, and a launchd job must not daemonize itself.
-- An autostart entry is a `.desktop` file in `$XDG_CONFIG_HOME/autostart` (default `~/.config/autostart`). `$XDG_CONFIG_HOME` must be an absolute path. In `Exec`, a quoted argument escapes `"`, `` ` ``, `$`, and `\` with a backslash, and `%` starts a field code.
+- In plain text, `@octocat` becomes a mention link and `#1` an issue link. Inside a code span, neither does, and `<b>`, backticks, and URLs stay literal: `` `` feat/@octocat-#1-<b>x</b>`tick`-https://example.com `` `` rendered as one `<code>` element.
+- Task 2's whole sample receipt rendered as intended: a level-3 heading, a five-item list, a `<details>` block whose `<summary>` is `Details and data`, a right-aligned table, the footer paragraphs, and a highlighted JSON block.
+- In a table cell, `` `a\|b` `` renders as the code `a|b`.
 
 ### .NET
 
-- `JsonElement.TryGetDecimal` accepts JSON numbers with exponents (`1e2` → 100, `1E-2` → 0.01) and fails for strings. `TryGetInt32` fails for `1e2` and `5.0`. Verified on .NET 10.
-- `value % 0.01m == 0m` is true exactly when a `decimal` has at most two decimal places: `12.50`, `1.500`, `1e2`, and `55.99` pass, and `0.001`, `1.001`, and `12.345` fail. It's exact and doesn't round, so this plan uses it for every "at most 2 decimal places" check, honoring the rule against rounding in Core and Storage. Verified on .NET 10.
-- `JsonWriterOptions.NewLine = "\n"` with `Indented = true` writes `\n` line breaks on every OS. `JavaScriptEncoder.UnsafeRelaxedJsonEscaping` leaves `'`, `+`, and non-ASCII letters unescaped but still escapes `\` and `"`. Verified on .NET 10.
-- `Microsoft.Win32.Registry` is part of the shared framework. Code that uses it compiles without warnings under `TreatWarningsAsErrors` when the call is inside `if (OperatingSystem.IsWindows())` (analyzer CA1416). Verified on .NET 10.
-- An `IHostedService` registered from `CliContext.ConfigureWebHost` can capture the `TestServer` (`IServer`) of the receiver that `OtlpReceiverApp.Build` creates, and `TestServer.CreateClient()` then posts to it with host `localhost`. Verified on .NET 10 with `Microsoft.AspNetCore.TestHost` 10.0.15.
-- SQLite 3.53 (through `Microsoft.Data.Sqlite` 10.0.15) runs Migration 3 on a version-2 database. It supports `INSERT … ON CONFLICT DO NOTHING RETURNING id`, which returns no row when the insert is skipped, `UPDATE … RETURNING`, and `ALTER TABLE … DROP COLUMN` on the new `span_links` columns. Verified 2026-11-21 against the Migration 3 SQL below.
-- `Microsoft.Data.Sqlite` 10.0.15 transactions (verified 2026-11-21):
-  - `BeginTransaction()`, `BeginTransactionAsync()`, and `BeginTransaction(deferred: false)` all start `BEGIN IMMEDIATE`; only `deferred: true` starts a deferred transaction.
-  - While another connection holds the write lock, a second `BEGIN IMMEDIATE` waits: the library retries a busy statement until the connection's `DefaultTimeout` (30 seconds) runs out, whatever `busy_timeout` says. Reads such as `PRAGMA user_version` don't wait in WAL mode.
-  - Its `…Async` methods complete synchronously, so a call that waits for the lock blocks its caller's thread. A test that must keep running while a store waits starts the store's call with `Task.Run`.
-  - With the merged loop, two concurrent `InitializeAsync` calls on a version-2 ledger reproduce the race: the second fails with `SQLite Error 1: 'duplicate column name: tool_name'`. With Task 1's loop, it waits, sees version 3, and completes.
-- xUnit 2.9.3's `Assert.NotNull(object?)` returns nothing, but its `[NotNull]` parameter lets the compiler treat a checked local as non-null afterward. `Assert.NotNull<T>(T?) where T : struct` returns the value. So `Implementation? serverInfo = client.ServerInfo; Assert.NotNull(serverInfo); Assert.Equal("copilot-ledger", serverInfo.Name);` and `JsonElement structured = Assert.NotNull(result.StructuredContent);` compile under `TreatWarningsAsErrors`; reading `client.ServerInfo.Name` directly is error CS8602. Verified on .NET 10.
-- `Path.GetFullPath` throws `ArgumentException` (`Null character in path.`) for a path that contains `\0`. Verified on .NET 10.0.15.
+Sources: [HttpClient.DefaultProxy](https://learn.microsoft.com/dotnet/api/system.net.http.httpclient.defaultproxy), [SocketsHttpHandler.DefaultProxyCredentials](https://learn.microsoft.com/dotnet/api/system.net.http.socketshttphandler.defaultproxycredentials); probes.
+
+- `HttpClient.DefaultProxy` reads `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY`; without them it uses the user's proxy settings on Windows and the system's on macOS, and no proxy on Linux. `SocketsHttpHandler.DefaultProxyCredentials` supplies credentials to that default proxy.
+- `HttpClient` treats a `TaskCanceledException` from its handler, when the caller's token isn't canceled, as a timeout and throws `TaskCanceledException`.
+- In PowerShell 7, `catch [System.Text.Json.JsonException]` and `catch [System.Text.DecoderFallbackException]` catch those exceptions from .NET method calls. A function named like a cmdlet (`Invoke-WebRequest`) that's defined in a calling script takes precedence over the cmdlet in a script that script runs with `&`.
+- `Write-Output` inside a function whose output is assigned to a variable goes into that variable; `Write-Host` doesn't, and `*>&1` captures it.
 
 ### Assumptions (not verified)
 
-- macOS and Linux notifications and sign-in items weren't run live. The commands follow Apple's and freedesktop.org's documentation.
-- The GitHub Copilot app's sessions run the same Copilot runtime as Copilot CLI (Sprint 2 verified their `workspace.yaml` and telemetry), so their tool spans and MCP client are assumed to match runs A–C. VS Code's Copilot harness is documented to read `~/.copilot/mcp-config.json`; the app isn't.
-- `COPILOT_AGENT_SESSION_ID` and `COPILOT_SESSION_CWD` in an MCP server's environment were observed, not documented. CopilotLedger uses them only as hints and works without them.
-- VS Code's Local agent harness may not export `process.exit.code` or tool status. Without them, rule 2 doesn't trip; rule 1 still works.
+- **The comment size limit.** The REST docs don't state a body limit. GitHub's API rejects longer comments with `Body is too long (maximum is 65536 characters)` (reported in [community discussion #27190](https://github.com/orgs/community/discussions/27190)). The action rejects receipts over 65,536 bytes of UTF-8, which is never more characters than that.
+- **macOS binaries.** The release workflow builds `osx-x64` and `osx-arm64` on `macos-latest`, where the .NET SDK signs the app host, and smoke-tests `osx-arm64` there. A manual run of the workflow (Task 4's verification) checks this before the first tag.
+- **Linux arm64 and Windows arm64 binaries** are cross-published and not run in CI.
+- **Locked binaries on Linux and macOS.** Whether `gh extension upgrade` can replace a running binary there wasn't tested; the docs tell everyone to stop the daemon first.
 
 ## Design decisions
 
-### Breaker model
+### Daemon handles (Task 1)
 
-1. **Rules run per prompt chain; trips belong to a (session, branch) pair.** Both rules in the user's plan describe one prompt: rule 1 is "a single prompt/turn chain", and rule 2's retries happen inside the agent's autonomous loop for one prompt. A prompt chain is one trace (Sprint 2 decision 8), so the monitor evaluates each trace that an export request touches. Every trip records its conversation (the session) and its repository and branch keys. The breaker is *open* for a branch, or for a session, while at least one of its trips is open. A user re-prompting five times isn't a runaway loop, because a person is in it, so rule 2 doesn't count failures across traces.
-2. **Rule 1, credit velocity.** It sums billed cost per span: `cost_usd_pico`, which is GitHub AI-credit spend plus BYOK spend. Local and unpriced spans cost 0. The window slides over span **end** times, because cost is incurred when a response completes. For each span with a positive cost, in order of end time then span ID, the window holds the spans that ended in `(end − window, end]`. The rule trips at the first span whose window total **exceeds** the threshold (`>`). It's strict, matching the user's "exceeds": a window at exactly the threshold doesn't trip. The defaults are the user's: 150 AI credits ($1.50) in 5 minutes.
-3. **Rule 2, retry churn, on observable signals.** Run A shows what Copilot exports: a shell call is the `powershell` tool (on Windows), whose span names the shell executable and carries `process.exit.code`; an edit is `apply_patch`, with no path; and MCP and other tool failures set span status ERROR. So:
-   - a **failure** is an `execute_tool` span with an exit code other than 0, or with status code 2;
-   - a **passing command** is an `execute_tool` span with exit code 0 and no ERROR status; it stands in for "a passing build/test span", and it resets the count;
-   - a **new commit** is a change in the `head_commit_sha` recorded on the trace's `chat` spans; it resets the count;
-   - every other tool call (edits, reads, searches) is neutral: it neither counts nor resets.
+- **Windows:** `WindowsDetachedProcess.Start` opens one inheritable handle to the NUL device (`File.OpenHandle(@"\\.\NUL", …, FileShare.ReadWrite | FileShare.Inheritable)`), uses it as the daemon's standard input, output, and error (`STARTF_USESTDHANDLES`), and passes it as the only entry of `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` to `CreateProcessW` with `EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW`. The daemon inherits nothing else, whatever gh-ledger itself inherited. `CREATE_NO_WINDOW` keeps the current behavior: a console without a window, so Windows still sends the daemon shutdown events.
+- **Rejected for Windows:** clearing the inherit flag on gh-ledger's own standard handles (it misses inheritable handles gh-ledger got from its parent but doesn't use as standard handles); redirecting the three streams to pipes (`bInheritHandles` stays `TRUE`, so everything else still leaks); and `UseShellExecute = true` (no handle control, and it can show the "Open File – Security Warning" prompt for a downloaded binary).
+- **Linux and macOS:** start `/bin/sh -c 'exec "$0" "$@" </dev/null >/dev/null 2>&1' <gh-ledger> daemon run …`. The redirections replace the inherited standard descriptors before the daemon runs, and `exec` keeps the process ID, so `daemon start`'s check of `daemon.json` still matches. .NET opens its own descriptors close-on-exec.
+- The command line is built by `WindowsCommandLine.Build`, which quotes like .NET's `ArgumentList` (the C runtime's rules) and is unit-tested on every OS.
 
-   The rule trips at the start of the call that brings the consecutive-failure count to the threshold (default 5). Calls are ordered by start time, then span ID; a commit observation at the same millisecond as a tool call comes first.
-4. **Rule 2's limits, documented in `docs/cli.md`.**
-   - The command isn't exported, so the rule can't tell a test run from any other command. "The same tool or file-edit cycle" becomes "failures with no passing command or commit between them".
-   - Any successful command resets the count, so a loop that alternates a failing test with, say, a successful `ls` never trips.
-   - A loop that only edits, without running anything that fails, is invisible.
-   - `head_commit_sha` is read from `.git` when a batch is ingested, not when the commit happened, and the Git resolver caches it for up to 5 seconds. A commit can therefore reset the count a few seconds late.
-   - VS Code's Local harness may not export exit codes or status (Assumptions); the rule then never trips there.
-5. **A trip is recorded once and stays open until a person resets it.** `breaker_trips` has `UNIQUE (rule, trace_id)`, so a prompt chain trips each rule at most once, even after a reset, and every re-evaluation of a trace after it trips is a no-op. Trips don't expire. A breaker that closes on its own would remove the flag file under a wrapper script that's waiting for a person. `gh-ledger breaker reset` is the only way to close a trip; no MCP tool resets it, so an agent can't close its own breaker. A new prompt is a new trace and is evaluated from scratch.
+### The receipt and how it reaches the pull request (Task 2)
 
-### Concurrency and restarts
+- **The handoff is a committed file.** The ledger lives on the developer's machine, and a CI runner has none, so the receipt must travel with the pull request. `export-pr` writes `.github/copilot-ledger/receipts/<name>-<hash>.md` in the repository; the developer commits it on the branch; the action reads it from the pull request. Each step is observable: the file is in the diff, the action logs what it found, and the comment shows the same Markdown. Rejected: the pull request body (manual and easy to clobber), Git notes (gh-ledger never runs `git`, and checkouts don't fetch notes), workflow artifacts (they need a workflow run on the developer's side), and any upload (no cloud hosting).
+- **Per-branch file names** keep concurrent pull requests from conflicting. The name is the branch with every character outside `[A-Za-z0-9._-]` replaced by `-`, cut to 64 characters, plus the first 8 hex digits of the branch's SHA-256, so `feat/x` and `feat-x`, or `Feat/X` and `feat/x` on a case-insensitive file system, never collide, and Windows device names such as `con` can't occur. The action matches receipts by the branch inside them, not by file name, so it never recomputes the name.
+- **The Markdown file is the comment.** The action posts it unchanged, so it does no formatting or money math. The JSON data travels in a fenced `json` block inside `<details>`. JSON lines can never close the fence: every line starts with `{`, `}`, `]`, or spaces and `"`.
+- **User text is shown in code spans** (branch, repository, models), so GitHub never turns it into mentions, issue links, or HTML. Fixed text needs no escaping.
+- **Exact reconciliation.** The receipt's totals are the branch's row from `GetRollupAsync(LedgerGrouping.Branch, { Repository, Branch })`: the same query, keys, and filter as `gh-ledger branch --since all`. EP4 compares all 10 fields of `export-pr --json` and `branch --since all --json`, decimals by value.
+- **All recorded spend on the branch.** A receipt covers every span on the branch, with no `--since`, and says so through its check command. If a branch name is reused, the receipt includes the earlier spend (deferred: `--since`).
+- **Terms.** A *turn* is one model request: one stored inference span. *Max single-prompt burn* is the costliest prompt chain's billed spend, `(AiCreditsUsd + FoundryByokUsd) / 0.01`, in AI credits: the same measure that orders `top-prompts` and that the breaker's velocity rule counts, with BYOK at $0.01 per credit. *Breaker trips* counts the branch's trips, open or reset.
+- **The repository must have a GitHub `origin`.** Without a slug, the ledger key is a local path, which mustn't be committed or posted, so `export-pr` refuses.
 
-6. **The monitor runs inside the ingestor's gate.** `LedgerIngestor` already serializes batches with `SemaphoreSlim(1, 1)`. After back-fill, inside the gate, it calls `CircuitBreakerMonitor.EvaluateAsync` with the batch's trace IDs. So one writer records trips, rule windows see every span already committed, and evaluating a trace twice can't record two trips. The monitor keeps no windows in memory: it re-reads each touched trace from SQLite, with at most five queries on the `trace_id` indexes. Other processes (`breaker reset`, `breaker config`, `budget`, and the MCP server's `set_branch_budget`) write through SQLite, whose WAL journal and 5-second busy timeout already serialize them. Store exceptions from the monitor propagate like any other store exception, so the receiver answers 503, Copilot retries the batch, and re-ingesting is idempotent.
+### Signed receipts and a pre-push hook (deferred)
 
-   Migrations can race too: at the first sign-in after an upgrade, the sign-in daemon and Copilot's `gh-ledger mcp` can both open a version-2 ledger. Each migration runs in a `BEGIN IMMEDIATE` transaction that re-reads `user_version` inside it, so the second process waits for the first and then skips what's already applied (Task 1). Before this fix, the second process failed with `duplicate column name` and, if it was the daemon, exited.
-7. **Alerts never block ingestion.** The monitor hands each alert to `IBreakerAlertSink.Publish`. The daemon's sink, `AlertDispatcher`, writes it to an unbounded single-reader `Channel`, and its own loop logs it, shows the notification (bounded by a 15-second timeout), and records `notified_at`. A slow or failing notifier delays only the next notification, and an alert that can't be handled is skipped without stopping the ones after it.
-8. **Restarts lose nothing that's been ingested.** Trips, budgets, and settings live in SQLite, and the rules recompute from the ledger, so a restarted daemon evaluates the next batch of a trace exactly as before. At startup, before the receiver starts, the dispatcher re-queues open trips and budget alerts that were recorded in the last hour but never notified. Older ones are stale, but `breaker status` and the MCP tools still show them. Doing this before the receiver starts means a trip can't be both re-queued and published live. Spans that Copilot exports while the daemon is down are lost (Sprint 2), which is why Task 5 starts the daemon at sign-in.
+- **Signing** can't prove the spend is right: the developer controls the ledger that produced it, so a signature would only show who produced the receipt, and the pushed (optionally signed) commit already shows that. A real key scheme would also need key distribution, which needs hosting. Deferred.
+- **A pre-push hook** runs after the commits being pushed are fixed, so a receipt it writes can't be in that push; it would always lag one push behind. A pre-commit hook would rewrite the receipt in every commit and need gh-ledger to edit `.git/hooks` or `core.hooksPath`, which conflicts with hook managers such as Husky. An explicit `export-pr` lets the developer decide when spend is published. Deferred.
 
-### Actions on a trip
+### The action (Task 3)
 
-9. **Notifications use only what the OS already has.** The `net10.0`-only rule rules out WinRT projections, and toast libraries such as `Microsoft.Toolkit.Uwp.Notifications` need a `-windows10.0.x` target framework for them. Windows PowerShell 5.1, which ships with Windows, can call the WinRT toast API, and this was verified without administrator rights. So the daemon runs it through `ICliPlatform.RunAsync`, the same seam as `gh`, and tests assert the exact command line with `FakeCliPlatform`. macOS uses `osascript`, and Linux uses `notify-send` when it's on `PATH`. The fallback on every platform is the `ALERT` line in `daemon.log`, plus `breaker status`, the MCP warnings, and the optional flag file. A terminal bell doesn't apply, because the daemon has no terminal; webhooks are deferred. `breaker config --notifications off` keeps the log line and suppresses the desktop notification.
-10. **The `CIRCUIT_OPEN` flag file is opt-in and always matches the ledger.** With `breaker config --flag-file on`, the daemon writes `<repo root>/.copilot-ledger/CIRCUIT_OPEN` when a trip opens, and `breaker reset` removes it when the last open trip for that root closes.
-    - It holds JSON describing the open trips, and `.copilot-ledger/.gitignore` (`*`) keeps it out of commits.
-    - It's written to a temporary file and moved into place, so a wrapper never reads half a file.
-    - Writers don't patch the file. Each one *syncs* it from the database, then re-reads the database and syncs again if anything changed, for at most three writes. So the daemon recording a trip and a CLI resetting one at the same moment still converge on the database's state.
-    - A trip whose repository has no local root, such as one attributed only from VS Code's Git attributes, gets no flag file.
-    - When the daemon can't write the file, it logs a warning. `gh-ledger breaker config --flag-file on` rewrites every flag file from the ledger, whatever the previous setting.
-    - It's off by default because it writes into the user's working tree.
-11. **Budgets are soft caps per branch.** `budget set` and the MCP tool `set_branch_budget` store a budget in AI credits per (repository, branch) key, the same keys as the Branch rollup. Spend is billed, all-time spend on that key: GitHub AI credits plus BYOK USD at $0.01 per credit, so a BYOK branch can have a budget too. After each batch, the monitor checks the budget of every branch the batch touched and alerts once, when spend exceeds the budget. Like rule 1, it's strict, matching the user's "crosses": spend exactly at the budget doesn't alert. Setting the budget again re-arms the alert. The update that records the alert also checks that the stored budget is still exceeded, so a budget re-set between the monitor's read and its update can't consume the new budget's alert. A budget alert isn't a trip: it opens no breaker and writes no flag file.
+- **Composite action, PowerShell 7, no dependencies.** `action/action.yml` runs `action/receipt.ps1` with `shell: pwsh`. It calls the REST API with `Invoke-WebRequest` and parses responses with `System.Text.Json`, so strings stay exact: no jq number coercion, and no `ConvertFrom-Json` turning a date-like branch name into a `DateTime`. It uses no third-party or `actions/*` action. PowerShell 7.6 is on every GitHub-hosted runner, and the tests run offline by defining a function named `Invoke-WebRequest`.
+- **Permissions: `contents: read` and `pull-requests: write`.** This is a deliberate deviation from "only `pull-requests: write`": reading the receipt file at the pull request's head needs Contents read, by GitHub's permission table. The example workflow requests both in its `permissions` block, so it works whichever default token permissions the repository uses, and the token gets nothing else.
+- **Finding the receipt:** list the pull request's changed files (paged, 100 per page, up to 30 pages), keep those under `receipts-directory` that end in `.md` and weren't removed, fetch each at the head SHA, and pick the one whose `branch` equals the pull request's head branch, compared case-sensitively.
+- **Validating it:** at most 65,536 bytes, valid UTF-8, the marker `<!-- copilot-ledger-receipt -->` as its first line, a `json` block, `"schemaVersion": 1`, and a string `branch`. A file that fails is an error that fails the job and names the file. No receipt is a notice, not a failure.
+- **One comment:** the oldest comment by `comment-author` (default `github-actions[bot]`) whose body starts with the marker is updated; with none, a comment is created; when the body is already identical (ignoring `\r`), nothing is sent. Others' comments are never edited. The example workflow's `concurrency` group per pull request prevents two runs from both creating a comment.
+- **Events:** only `pull_request`. Fork pull requests are skipped with a notice, because their token is read-only. `pull_request_target` fails with an error: it runs with a write token on untrusted input, and posting a fork author's Markdown as the bot isn't worth that risk.
+- **Location:** `action/` in this repository, used as `swigerb/gh-ledger/action@<ref>`, per the user's layout. A separate repository for a Marketplace listing is deferred.
 
-### MCP server
+### The gh extension (Task 4)
 
-12. **The tools are read-only except `set_branch_budget`.** The user's plan calls the server read-only but also asks for `set_branch_budget`, which writes. That tool writes only the `branch_budgets` row for one branch. It can't change or delete spend, reset the breaker, or change settings, and setting the same budget twice has the same effect as once. It's annotated `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true`, and `openWorldHint: false`, and the three read tools are `readOnlyHint: true` and `openWorldHint: false`. Run B showed the effect: Copilot CLI runs read-only tools in prompt mode without approval and denies a write tool unless `--allow-tool 'ledger(set_branch_budget)'` allows it. Interactive sessions ask the user. Resetting the breaker and changing its settings stay CLI-only.
-13. **The server uses the SDK's low-level handlers with constant, closed schemas.** Each tool's `inputSchema` is a constant JSON object with `additionalProperties: false`. The SDK doesn't enforce schemas, so the server validates arguments itself and returns `isError: true` with an exact message, which the spec says lets the model correct itself. An unknown tool is a protocol error (`-32602`). Tools declare no `outputSchema`, which keeps `tools/list` short; every result carries the same object twice, as `structuredContent` and as compact JSON text, after any warning lines. The text uses `UnsafeRelaxedJsonEscaping`. The SDK escapes it again on the wire, and clients undo that.
-14. **The scope is explicit or comes from the session's working directory.** Every tool takes an optional `repository` and `branch` pair. Without them, the server resolves Git from `COPILOT_SESSION_CWD` when it's set to an existing absolute directory, and otherwise from its own working directory, which Copilot sets to the session's (run B). MCP Roots would have given the client's directories, but 2026-07-28 deprecates them in favor of tool parameters. The repository key is the slug, or the root when there's no slug, and the branch is `(none)` for a detached HEAD, both as in the reports.
-15. **Every result warns about an open breaker or an exceeded budget.** A result lists the open trips on its branch and the open trips of the calling session (`COPILOT_AGENT_SESSION_ID`, as observed), and the branch's budget if one is set. It starts with one `WARNING:` line for each such trip and for an exceeded budget, telling the agent to stop and ask the user. That's the "surface the warning in the MCP tool response" action. It reaches the agent only when the agent calls a ledger tool; a `preToolUse` hook that blocks tools while the breaker is open is deferred.
-16. **`get_top_expensive_prompts` ranks by cost by default.** The user's plan asks for "the top 5 most expensive prompt chains … by output tokens and retry loops". The tool returns 5 chains by default (`limit` 1–20). Each chain reports its output tokens and its failed tool calls, the retry-loop measure from rule 2. `orderBy` is `cost` (billed USD, the default, because the tool is about expense), `outputTokens`, or `failedToolCalls`. Candidates are the branch's top 1,000 chains by cost. Failed tool calls come from `span_links`, which the daemon prunes after 7 days, so older chains show 0.
+- **Release assets** follow gh's convention: `gh-ledger-windows-amd64.exe`, `gh-ledger-windows-arm64.exe`, `gh-ledger-linux-amd64`, `gh-ledger-linux-arm64`, `gh-ledger-darwin-amd64`, and `gh-ledger-darwin-arm64`, plus `rates.json` and `gh-ledger-checksums.txt` (SHA-256), which gh ignores. Each OS's binaries are built on that OS's runner; the native one is smoke-tested (`--version` equals the project version). A tag `v*` must equal `v` plus the project version. `workflow_dispatch` runs the build without releasing.
+- **Detecting the extension:** gh-ledger is running as the installed extension when its path is `…/extensions/gh-ledger/gh-ledger` (or `gh-ledger.exe`) and `manifest.yml` exists in that directory, the layout gh creates. It doesn't depend on `GH_EXTENSION`, which the sign-in item doesn't set.
+- **`install` as the extension** skips the alias (gh would refuse it, and the extension already provides `gh ledger`) and the `sh.exe` warning (binary extensions don't use `sh`). The sign-in item already uses the running executable, which is the extension's binary; `gh extension upgrade` replaces it in place, so the item stays valid. An alias set by an earlier standalone install is left recorded, and `uninstall` removes it as before.
+- **`status` as the extension** shows `gh-ledger <version> (GitHub CLI extension)`, names `gh ledger daemon start` and `gh ledger install` in its hints, and reports `"ghExtension": true`. In either mode it warns when `install.json` names a different executable, for example after switching from a downloaded binary to the extension: `CopilotLedger was installed from <path>; run <command> install to use this copy instead.`
+- Other messages that name `gh-ledger` (breaker, MCP, alerts, sign-in warnings) don't change this sprint (deferred).
+- **Upgrading:** Windows locks the running daemon's binary, so the docs say to run `gh ledger daemon stop` before `gh extension upgrade ledger` or `gh extension remove ledger`, and `gh ledger uninstall` before removing the extension.
 
-### Packaging and sign-in
+### `rates update` (Task 5)
 
-17. **The daemon starts at sign-in through the OS, not a Copilot hook.** Run D showed that a `sessionStart` hook's detached child is killed when the Copilot CLI session ends, and hooks can also be disabled by policy or by `disableAllHooks`. So `install` registers a per-user sign-in item:
-    - **Windows:** the `CopilotLedger` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, which runs `"<gh-ledger.exe>" daemon start`. It needs no administrator rights, and the command must be at most 260 characters.
-    - **macOS:** `~/Library/LaunchAgents/io.github.swigerb.copilot-ledger.plist`, which runs `daemon run --log-file …` in the foreground, because launchd jobs must not daemonize.
-    - **Linux:** `$XDG_CONFIG_HOME/autostart/copilot-ledger.desktop`, which runs `daemon start`.
+- **Source:** `https://github.com/swigerb/gh-ledger/releases/latest/download/rates.json`, which Task 4's workflow attaches to every release. A release asset is the `rates.json` that passed CI with that release's code, it changes only when a release is published, and it doesn't depend on where the file sits in the source tree. A raw URL on `main` would serve unreleased rates, possibly in a schema older binaries can't read, and would break if the file moved.
+- **Storage and precedence:** a newer file is saved as `<data>/rates.downloaded.json` (temporary file, then `File.Move`). The base rates are the downloaded file when it's valid and its `ratesVersion` date is later than the built-in one, otherwise the built-in rates; the user's overlay (`<data>/rates.json`) is merged on top as before. So upgrading gh-ledger to newer built-in rates makes an old download inert, and a broken download falls back to the built-in rates with a warning instead of stopping the daemon.
+- **Versions are dates.** A downloaded `ratesVersion` must be `yyyy-MM-dd`; comparison is by date. Equal means up to date, older is reported and ignored, and only newer is saved.
+- **The overlay must still merge.** If the newer rates conflict with the user's overlay (for example, they add a model the overlay also adds), nothing is saved, and the error says why.
+- **HTTP:** `SocketsHttpHandler { DefaultProxyCredentials = CredentialCache.DefaultCredentials }`, so the system proxy, including an authenticating corporate proxy, works. A 30-second timeout, a 1 MiB response cap, and the user agent `gh-ledger/<version>`. The body is read as bytes, so the content type and charset don't matter. No new packages.
+- **The daemon reads rates at start,** so after an update with the daemon running, `rates update` says to restart it.
 
-    `install.json` records the item, and `uninstall` removes it. `daemon start` is idempotent, so starting the daemon again at sign-in is harmless.
-18. **No console window at sign-in.** `gh-ledger` is a console program, and Windows gives a console program started from the Run key its own console window. The application manifest's `consoleAllocationPolicy` `detached` suppresses it on Windows 11 24H2 and later. Older Windows shows the window for about a second, because `daemon start` exits once the detached daemon is up.
-19. **One new package.** `ModelContextProtocol` 2.4.0, the version the user's plan names, is the only new package. Only the Mcp project references it directly; the Cli and test projects get it through their project references. It's the official SDK; the server uses its `ModelContextProtocol.Core` types, and its hosting helpers go unused. Toasts, the Run key, LaunchAgents, and autostart entries need no packages.
-20. **Version 0.3.0.** The CLI gains the `breaker`, `budget`, and `mcp` commands, so Task 5 bumps the version from 0.2.0.
-
-## Task 1 specification: Tool-Call Signals & Breaker Storage
+## Task 1 specification: Detached Daemon Start
 
 ### Files
 
-- `src/CopilotLedger.Otlp/Decoding/OtlpModel.cs`: add `OtlpSpan.StatusCode`.
-- `src/CopilotLedger.Otlp/Decoding/OtlpProtobufTraceReader.cs` and `OtlpJsonTraceReader.cs`: read the span status.
-- `src/CopilotLedger.Core/Telemetry/GenAiSpanLink.cs`: add `ToolName`, `ToolExitCode`, and `StatusCode`.
-- `src/CopilotLedger.Otlp/Normalization/GenAiAttributeNames.cs`: add `ToolName` and `ProcessExitCode`.
-- `src/CopilotLedger.Otlp/Normalization/GenAiSpanNormalizer.cs`: fill the three link properties.
-- `src/CopilotLedger.Core/Breaker/BreakerRule.cs` (with `BreakerRuleNames`), `BreakerSettings.cs`, `BreakerEvents.cs` (`CostEvent`, `ToolCallEvent`, `CommitObservation`), and `TraceActivity.cs`.
-- `src/CopilotLedger.Storage/LedgerMigrations.cs`: Migration 3.
-- `src/CopilotLedger.Storage/BreakerTrip.cs` (`NewBreakerTrip`, `BreakerTrip`), `BreakerTripFilter.cs`, and `BranchBudgetRow.cs`.
-- `src/CopilotLedger.Storage/SqliteLedgerStore.cs`: the migration loop in `InitializeAsync`, three more link columns, and the new methods.
-- Tests: `TestSupport/GitFixture.cs` (new, shared by Tasks 1–4), `Otlp/OtlpProtobufDecodingTests.cs` (PB8), `Otlp/OtlpJsonDecodingTests.cs` (JS10), `Otlp/GenAiSpanNormalizerTests.cs` (NZ12), `Storage/SpanLinkStoreTests.cs` (SL1 changed; SL8–SL10 new), `Storage/SqliteLedgerStoreTests.cs` (S1 changed), and the new `Storage/BreakerStoreTests.cs` (BS1–BS7).
-
-### Contracts
-
-Add to `OtlpSpan`:
-
-```csharp
-public int StatusCode { get; init; }                   // Status.code: 1 ok, 2 error; 0 when unset, missing, or any other value
-```
-
-Add to `GenAiSpanLink`:
-
-```csharp
-public string? ToolName { get; init; }                 // gen_ai.tool.name on an execute_tool span; null otherwise
-public long? ToolExitCode { get; init; }               // process.exit.code (an int attribute) on an execute_tool span; null otherwise
-public int StatusCode { get; init; }                   // OtlpSpan.StatusCode
-```
-
-Add to `GenAiAttributeNames`:
-
-```csharp
-public const string ToolName = "gen_ai.tool.name";
-public const string ProcessExitCode = "process.exit.code";
-```
-
-`src/CopilotLedger.Core/Breaker/` (namespace `CopilotLedger.Core.Breaker`):
-
-```csharp
-public enum BreakerRule
-{
-    CreditVelocity,                                    // rule 1
-    RetryChurn,                                        // rule 2
-}
-
-public static class BreakerRuleNames
-{
-    public const string CreditVelocity = "credit_velocity";
-    public const string RetryChurn = "retry_churn";
-
-    // Throws ArgumentOutOfRangeException for an undefined value.
-    public static string ToName(BreakerRule rule);
-
-    // Ordinal. Returns false for any other text, including null.
-    public static bool TryParse(string? name, out BreakerRule rule);
-}
-
-public sealed record BreakerSettings
-{
-    public const decimal MinVelocityCredits = 1m;
-    public const decimal MaxVelocityCredits = 1_000_000m;
-    public const int MinVelocityWindowMinutes = 1;
-    public const int MaxVelocityWindowMinutes = 1440;
-    public const int MinChurnFailures = 2;
-    public const int MaxChurnFailures = 100;
-
-    public static BreakerSettings Default { get; } = new();
-
-    public decimal VelocityCredits { get; init; } = 150m;          // rule 1 threshold in AI credits
-    public int VelocityWindowMinutes { get; init; } = 5;           // rule 1 window
-    public int ChurnFailures { get; init; } = 5;                   // rule 2 threshold
-    public bool FlagFile { get; init; }                            // keep <repo root>/.copilot-ledger/CIRCUIT_OPEN while a trip is open
-    public bool Notifications { get; init; } = true;               // show desktop notifications; alerts are always logged
-
-    public decimal VelocityThresholdUsd => VelocityCredits * AiCreditMath.UsdPerAiCredit;
-    public TimeSpan VelocityWindow => TimeSpan.FromMinutes(VelocityWindowMinutes);
-
-    // Limits are inclusive. "At most two decimal places" is value % 0.01m == 0m throughout this plan; it doesn't round.
-    public bool IsValid =>
-        VelocityCredits >= MinVelocityCredits
-        && VelocityCredits <= MaxVelocityCredits
-        && VelocityCredits % 0.01m == 0m
-        && VelocityWindowMinutes is >= MinVelocityWindowMinutes and <= MaxVelocityWindowMinutes
-        && ChurnFailures is >= MinChurnFailures and <= MaxChurnFailures;
-}
-
-public sealed record CostEvent(
-    string SpanId,                                     // spans.span_id
-    DateTimeOffset EndTime,                            // spans.end_time_unix_ms
-    decimal CostUsd);                                  // PicoUsd.ToUsd(spans.cost_usd_pico): GitHub AI credits or BYOK
-
-public sealed record ToolCallEvent(
-    string SpanId,                                     // span_links.span_id of an execute_tool span
-    DateTimeOffset StartTime,                          // span_links.start_time_unix_ms
-    string? ToolName,                                  // span_links.tool_name
-    long? ExitCode,                                    // span_links.tool_exit_code
-    int StatusCode)                                    // span_links.status_code
-{
-    public bool IsFailure => (ExitCode is long code && code != 0) || StatusCode == 2;
-    public bool IsSuccessfulCommand => ExitCode == 0 && StatusCode != 2;
-}
-
-public sealed record CommitObservation(
-    string SpanId,                                     // spans.span_id
-    DateTimeOffset StartTime,                          // spans.start_time_unix_ms
-    string CommitSha);                                 // spans.head_commit_sha
-
-public sealed record TraceActivity
-{
-    public required string TraceId { get; init; }
-    public string? ConversationId { get; init; }                         // MAX over the trace's spans rows; when that's null, MAX over its span_links rows
-    public required string Repository { get; init; }                     // MAX(COALESCE(repo_slug, repo_root, '(none)')); "(none)" with no spans rows
-    public required string Branch { get; init; }                         // MAX(COALESCE(branch_name, '(none)')); "(none)" with no spans rows
-    public string? RepositoryRoot { get; init; }                         // MAX(repo_root)
-    public required long SpanCount { get; init; }                        // the trace's spans rows
-    public required IReadOnlyList<CostEvent> Costs { get; init; }        // spans rows with cost_usd_pico > 0, by end time, then span ID
-    public required IReadOnlyList<ToolCallEvent> ToolCalls { get; init; } // execute_tool links, by start time, then span ID
-    public required IReadOnlyList<CommitObservation> Commits { get; init; } // spans rows with a head_commit_sha, by start time, then span ID
-}
-```
-
-`BreakerSettings.IsValid` is a computed property, so it isn't part of the record's equality.
-
-`src/CopilotLedger.Storage/` (namespace `CopilotLedger.Storage`):
-
-```csharp
-public sealed record NewBreakerTrip
-{
-    public required BreakerRule Rule { get; init; }
-    public required string TraceId { get; init; }
-    public string? ConversationId { get; init; }
-    public required string Repository { get; init; }                     // TraceActivity.Repository
-    public required string Branch { get; init; }                         // TraceActivity.Branch
-    public string? RepositoryRoot { get; init; }                         // TraceActivity.RepositoryRoot
-    public required DateTimeOffset TrippedAt { get; init; }
-    public required string Detail { get; init; }                         // "180.00 AI credits in 5 minutes" or "5 failed tool calls in a row"
-    public decimal? WindowCostUsd { get; init; }                         // CreditVelocity only
-    public int? WindowMinutes { get; init; }                             // CreditVelocity only
-    public int? FailureCount { get; init; }                              // RetryChurn only
-}
-
-public sealed record BreakerTrip
-{
-    public required long Id { get; init; }
-    public required BreakerRule Rule { get; init; }
-    public required string TraceId { get; init; }
-    public string? ConversationId { get; init; }
-    public required string Repository { get; init; }
-    public required string Branch { get; init; }
-    public string? RepositoryRoot { get; init; }
-    public required DateTimeOffset TrippedAt { get; init; }
-    public required string Detail { get; init; }
-    public decimal? WindowCostUsd { get; init; }
-    public int? WindowMinutes { get; init; }
-    public int? FailureCount { get; init; }
-    public required DateTimeOffset RecordedAt { get; init; }
-    public DateTimeOffset? NotifiedAt { get; init; }
-    public DateTimeOffset? ResetAt { get; init; }
-}
-
-public sealed record BreakerTripFilter
-{
-    public static BreakerTripFilter All { get; } = new();
-    public long? Id { get; init; }
-    public string? Repository { get; init; }
-    public string? Branch { get; init; }
-    public string? RepositoryRoot { get; init; }                         // ordinal match on repo_root
-}
-
-public sealed record BranchBudgetRow
-{
-    public required string Repository { get; init; }
-    public required string Branch { get; init; }
-    public required decimal BudgetAiCredits { get; init; }
-    public required decimal SpentAiCredits { get; init; }                // all-time billed spend on the key: GitHub AI credits plus BYOK USD / 0.01
-    public required DateTimeOffset SetAt { get; init; }
-    public DateTimeOffset? AlertedAt { get; init; }                      // when the monitor first saw spend exceed the budget
-    public DateTimeOffset? NotifiedAt { get; init; }                     // when the daemon finished that alert
-    public bool Exceeded => SpentAiCredits > BudgetAiCredits;            // strict: spend exactly at the budget isn't exceeded
-}
-```
-
-New `SqliteLedgerStore` methods. Each one throws `InvalidOperationException` before `InitializeAsync`, opens one connection, and uses the store's `TimeProvider` for every `@now` (`GetUtcNow().ToUnixTimeMilliseconds()`):
-
-```csharp
-// One trace's breaker inputs, from the five queries below on one connection. Throws ArgumentException for a blank traceId.
-public Task<TraceActivity> GetTraceActivityAsync(string traceId, CancellationToken cancellationToken = default);
-
-// Inserts the trip unless (Rule, TraceId) already has one, and returns the new id, or null when it was skipped.
-// Throws ArgumentException for a blank TraceId, Repository, Branch, or Detail; ArgumentOutOfRangeException for a negative WindowCostUsd.
-public Task<long?> RecordBreakerTripAsync(NewBreakerTrip trip, CancellationToken cancellationToken = default);
-
-// Open trips (reset_at_unix_ms IS NULL) that match every non-null filter property, newest first.
-public Task<IReadOnlyList<BreakerTrip>> GetOpenBreakerTripsAsync(BreakerTripFilter filter, CancellationToken cancellationToken = default);
-
-// Resets the open trips that match the filter and returns them, with ResetAt set, in ascending Id order.
-public Task<IReadOnlyList<BreakerTrip>> ResetBreakerTripsAsync(BreakerTripFilter filter, CancellationToken cancellationToken = default);
-
-// Sets notified_at_unix_ms when it's NULL. Returns true when a row changed.
-public Task<bool> MarkBreakerTripNotifiedAsync(long id, CancellationToken cancellationToken = default);
-
-// Open, never-notified trips recorded at or after recordedSince, oldest first.
-public Task<IReadOnlyList<BreakerTrip>> GetUnnotifiedBreakerTripsAsync(DateTimeOffset recordedSince, CancellationToken cancellationToken = default);
-
-// The settings row; BreakerSettings.Default if the row is missing.
-public Task<BreakerSettings> GetBreakerSettingsAsync(CancellationToken cancellationToken = default);
-
-// Throws ArgumentNullException for null; ArgumentOutOfRangeException when !settings.IsValid, without writing.
-public Task UpdateBreakerSettingsAsync(BreakerSettings settings, CancellationToken cancellationToken = default);
-
-// Inserts or replaces the budget and clears alerted_at and notified_at. Throws ArgumentException for a blank key, and
-// ArgumentOutOfRangeException unless 0 < aiCredits <= 1,000,000 and aiCredits % 0.01m == 0m.
-public Task SetBranchBudgetAsync(string repository, string branch, decimal aiCredits, CancellationToken cancellationToken = default);
-
-// Returns true when a budget was deleted.
-public Task<bool> ClearBranchBudgetAsync(string repository, string branch, CancellationToken cancellationToken = default);
-
-// Budgets with their spend, ordered by repository, then branch (SQLite BINARY collation). A null argument matches every value.
-public Task<IReadOnlyList<BranchBudgetRow>> GetBranchBudgetsAsync(string? repository = null, string? branch = null, CancellationToken cancellationToken = default);
-
-// Sets alerted_at_unix_ms when it's NULL and the key's spend, summed in the same statement, exceeds the stored budget.
-// Returns true when a row changed. Checking in the UPDATE means a budget re-set after the caller's read is never marked.
-public Task<bool> MarkBranchBudgetAlertedAsync(string repository, string branch, CancellationToken cancellationToken = default);
-
-// Sets notified_at_unix_ms when alerted_at_unix_ms is set and notified_at_unix_ms is NULL. Returns true when a row changed.
-public Task<bool> MarkBranchBudgetNotifiedAsync(string repository, string branch, CancellationToken cancellationToken = default);
-
-// Budgets alerted at or after alertedSince and never notified, ordered by alerted_at, then repository, then branch.
-public Task<IReadOnlyList<BranchBudgetRow>> GetUnnotifiedBudgetAlertsAsync(DateTimeOffset alertedSince, CancellationToken cancellationToken = default);
-
-// For each given trace with at least one failed execute_tool link (an exit code other than 0, or status 2), that count.
-// Traces without failures are absent. An empty input returns an empty dictionary without a query.
-public Task<IReadOnlyDictionary<string, long>> GetFailedToolCallCountsAsync(IEnumerable<string> traceIds, CancellationToken cancellationToken = default);
-```
-
-Money conversions use `PicoUsd`: a budget or threshold of `c` AI credits is stored as `PicoUsd.FromUsd(c * AiCreditMath.UsdPerAiCredit)` and read back as `PicoUsd.ToUsd(pico) / AiCreditMath.UsdPerAiCredit`. Rules are stored with `BreakerRuleNames`, and an unknown stored rule throws `InvalidDataException("Unknown breaker rule '<value>'.")`.
-
-### Decoding the span status
-
-`Span` field 15 is `status` (LEN, a `Status` message), and `Status` field 3 is `code` (VARINT, enum `STATUS_CODE_UNSET` 0, `STATUS_CODE_OK` 1, `STATUS_CODE_ERROR` 2). Field 2, `message`, isn't kept.
-
-- **Protobuf.** In `ReadSpan`, handle field 15 with wire type 2 in the same branch as fields 1, 2, 4, 5, and 9. Decode the bytes with a `ProtoReader`: for each field 3 with wire type 0, read the varint and keep `1` or `2`, or `0` for any other value (the last one wins); skip every other field with `Skip`. Field 15 with another wire type, like every unknown field, is skipped by the existing `else` branch.
-- **JSON.** `StatusCode` is 1 or 2 when `TryFindProperty(span, "status", out status)`, `status.ValueKind == JsonValueKind.Object`, `TryFindProperty(status, "code", out code)`, `code.ValueKind == JsonValueKind.Number`, and `code.TryGetInt32(out value)` succeed with `value` 1 or 2. Anything else gives 0: OTLP/JSON encodes enums as integers, so a string such as `"STATUS_CODE_ERROR"` or `"2"` isn't accepted. Use only `TryFindProperty` and `NameIs`, never `TryGetProperty`, so an unreadable name can't throw (amendment 4 of Sprint 2).
-
-### Normalizing tool calls
-
-In `TryNormalize`, where it builds the `GenAiSpanLink`:
-
-- `StatusCode = span.StatusCode` for every link;
-- when `operation` equals `GenAiOperationNames.ExecuteTool` (ordinal): `ToolName = Text(attributes, GenAiAttributeNames.ToolName)`, and `ToolExitCode` is the `IntValue` of the first `process.exit.code` attribute when its kind is `OtlpValueKind.Int` (any value, including negative ones), otherwise null;
-- for every other operation, `ToolName` and `ToolExitCode` are null.
-
-Nothing else changes: these attributes never reject a span, and `NormalizedGenAiSpan` doesn't change.
-
-### Migration 3 (copy exactly)
-
-Append `(3, """…""")` to `LedgerMigrations.Migrations` with this SQL:
-
-```sql
-ALTER TABLE span_links ADD COLUMN tool_name TEXT;
-ALTER TABLE span_links ADD COLUMN tool_exit_code INTEGER;
-ALTER TABLE span_links ADD COLUMN status_code INTEGER NOT NULL DEFAULT 0;
-
-CREATE TABLE breaker_trips (
-    id                   INTEGER PRIMARY KEY,
-    rule                 TEXT    NOT NULL CHECK (rule IN ('credit_velocity', 'retry_churn')),
-    trace_id             TEXT    NOT NULL,
-    conversation_id      TEXT,
-    repository           TEXT    NOT NULL,
-    branch               TEXT    NOT NULL,
-    repo_root            TEXT,
-    tripped_at_unix_ms   INTEGER NOT NULL,
-    detail               TEXT    NOT NULL,
-    window_cost_usd_pico INTEGER CHECK (window_cost_usd_pico >= 0),
-    window_minutes       INTEGER,
-    failure_count        INTEGER,
-    recorded_at_unix_ms  INTEGER NOT NULL,
-    notified_at_unix_ms  INTEGER,
-    reset_at_unix_ms     INTEGER,
-    UNIQUE (rule, trace_id)
-) STRICT;
-
-CREATE INDEX ix_breaker_trips_open ON breaker_trips (reset_at_unix_ms, repository, branch);
-
-CREATE TABLE branch_budgets (
-    repository          TEXT    NOT NULL,
-    branch              TEXT    NOT NULL,
-    budget_usd_pico     INTEGER NOT NULL CHECK (budget_usd_pico > 0),
-    set_at_unix_ms      INTEGER NOT NULL,
-    alerted_at_unix_ms  INTEGER,
-    notified_at_unix_ms INTEGER,
-    PRIMARY KEY (repository, branch)
-) STRICT, WITHOUT ROWID;
-
-CREATE TABLE breaker_settings (
-    id                          INTEGER PRIMARY KEY CHECK (id = 1),
-    velocity_threshold_usd_pico INTEGER NOT NULL CHECK (velocity_threshold_usd_pico > 0),
-    velocity_window_minutes     INTEGER NOT NULL CHECK (velocity_window_minutes BETWEEN 1 AND 1440),
-    churn_failures              INTEGER NOT NULL CHECK (churn_failures BETWEEN 2 AND 100),
-    flag_file                   INTEGER NOT NULL CHECK (flag_file IN (0, 1)),
-    notifications               INTEGER NOT NULL CHECK (notifications IN (0, 1)),
-    updated_at_unix_ms          INTEGER NOT NULL
-) STRICT;
-
-INSERT INTO breaker_settings (id, velocity_threshold_usd_pico, velocity_window_minutes, churn_failures, flag_file, notifications, updated_at_unix_ms)
-VALUES (1, 1500000000000, 5, 5, 0, 1, 0);
-```
-
-`RecordSpanLinksAsync` adds `tool_name`, `tool_exit_code`, and `status_code` to its column list and parameters (`OrDbNull(link.ToolName)`, `OrDbNull(link.ToolExitCode)`, and `link.StatusCode`). Rows that already exist stay unchanged.
-
-### Applying migrations (copy exactly)
-
-`InitializeAsync` reads `user_version` once, before its loop, so two processes that open a version-2 ledger at the same time both try Migration 3, and the second fails with `duplicate column name: tool_name`. That happens at the first sign-in after an upgrade, when the sign-in daemon and Copilot's `gh-ledger mcp` start together. Replace the `foreach` loop in `InitializeAsync` with this one. The WAL check, the first `GetUserVersionAsync` call, the "newer than the supported version" check, and `_initialized = true;` stay as they are.
-
-```csharp
-foreach ((int version, string sql) in LedgerMigrations.Migrations)
-{
-    if (version <= userVersion)
-    {
-        continue;
-    }
-
-    // BEGIN IMMEDIATE takes the write lock before the version is read again, so a second process waits here
-    // and then skips the migrations the first one committed. Disposing an uncommitted transaction rolls it back.
-    await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
-    await using (SqliteCommand versionQuery = connection.CreateCommand())
-    {
-        versionQuery.Transaction = transaction;
-        versionQuery.CommandText = "PRAGMA user_version;";
-        userVersion = Convert.ToInt32(
-            await versionQuery.ExecuteScalarAsync(cancellationToken),
-            System.Globalization.CultureInfo.InvariantCulture);
-    }
-
-    if (version <= userVersion)
-    {
-        continue;
-    }
-
-    await using (SqliteCommand migrationCommand = connection.CreateCommand())
-    {
-        migrationCommand.Transaction = transaction;
-        migrationCommand.CommandText = sql;
-        await migrationCommand.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    await using (SqliteCommand versionCommand = connection.CreateCommand())
-    {
-        versionCommand.Transaction = transaction;
-        versionCommand.CommandText = $"PRAGMA user_version = {version};";
-        await versionCommand.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    await transaction.CommitAsync(cancellationToken);
-    userVersion = version;
-}
-```
-
-While another connection holds the write lock, `BeginTransaction` waits: Microsoft.Data.Sqlite retries a busy statement for the connection's `DefaultTimeout` (30 seconds), whatever `busy_timeout` says.
-
-### Store SQL (copy exactly)
-
-`<trip columns>` stands for `id, rule, trace_id, conversation_id, repository, branch, repo_root, tripped_at_unix_ms, detail, window_cost_usd_pico, window_minutes, failure_count, recorded_at_unix_ms, notified_at_unix_ms, reset_at_unix_ms`, read in that order into `BreakerTrip`. Times convert with `DateTimeOffset.FromUnixTimeMilliseconds`, and `window_cost_usd_pico` with `PicoUsd.ToUsd`. `<budget select>` stands for:
-
-```sql
-SELECT b.repository, b.branch, b.budget_usd_pico, b.set_at_unix_ms, b.alerted_at_unix_ms, b.notified_at_unix_ms,
-       (SELECT COALESCE(SUM(s.cost_usd_pico), 0) FROM spans AS s
-         WHERE COALESCE(s.repo_slug, s.repo_root, '(none)') = b.repository
-           AND COALESCE(s.branch_name, '(none)') = b.branch) AS spent_usd_pico
-FROM branch_budgets AS b
-```
-
-| Method | SQL |
+| File | Change |
 |---|---|
-| `GetTraceActivityAsync` | (1) `SELECT MAX(conversation_id), MAX(COALESCE(repo_slug, repo_root, '(none)')), MAX(COALESCE(branch_name, '(none)')), MAX(repo_root), COUNT(*) FROM spans WHERE trace_id = @trace;` (2) only when (1)'s conversation is NULL: `SELECT MAX(conversation_id) FROM span_links WHERE trace_id = @trace;` (3) `SELECT span_id, end_time_unix_ms, cost_usd_pico FROM spans WHERE trace_id = @trace AND cost_usd_pico > 0 ORDER BY end_time_unix_ms, span_id;` (4) `SELECT span_id, start_time_unix_ms, tool_name, tool_exit_code, status_code FROM span_links WHERE trace_id = @trace AND operation_name = 'execute_tool' ORDER BY start_time_unix_ms, span_id;` (5) `SELECT span_id, start_time_unix_ms, head_commit_sha FROM spans WHERE trace_id = @trace AND head_commit_sha IS NOT NULL ORDER BY start_time_unix_ms, span_id;` With `COUNT(*)` 0, the repository and branch are `(none)` and the root is null. |
-| `RecordBreakerTripAsync` | `INSERT INTO breaker_trips (rule, trace_id, conversation_id, repository, branch, repo_root, tripped_at_unix_ms, detail, window_cost_usd_pico, window_minutes, failure_count, recorded_at_unix_ms) VALUES (@rule, @trace_id, @conversation_id, @repository, @branch, @repo_root, @tripped_at_unix_ms, @detail, @window_cost_usd_pico, @window_minutes, @failure_count, @now) ON CONFLICT (rule, trace_id) DO NOTHING RETURNING id;` with `ExecuteScalarAsync`: a `long`, or null when nothing was inserted. |
-| `GetOpenBreakerTripsAsync` | `SELECT <trip columns> FROM breaker_trips WHERE reset_at_unix_ms IS NULL AND (@id IS NULL OR id = @id) AND (@repository IS NULL OR repository = @repository) AND (@branch IS NULL OR branch = @branch) AND (@repo_root IS NULL OR repo_root = @repo_root) ORDER BY tripped_at_unix_ms DESC, id DESC;` |
-| `ResetBreakerTripsAsync` | `UPDATE breaker_trips SET reset_at_unix_ms = @now WHERE reset_at_unix_ms IS NULL AND (@id IS NULL OR id = @id) AND (@repository IS NULL OR repository = @repository) AND (@branch IS NULL OR branch = @branch) AND (@repo_root IS NULL OR repo_root = @repo_root) RETURNING <trip columns>;` then sort by `Id` ascending (`RETURNING` order isn't defined). |
-| `MarkBreakerTripNotifiedAsync` | `UPDATE breaker_trips SET notified_at_unix_ms = @now WHERE id = @id AND notified_at_unix_ms IS NULL;` |
-| `GetUnnotifiedBreakerTripsAsync` | `SELECT <trip columns> FROM breaker_trips WHERE reset_at_unix_ms IS NULL AND notified_at_unix_ms IS NULL AND recorded_at_unix_ms >= @since ORDER BY recorded_at_unix_ms, id;` |
-| `GetBreakerSettingsAsync` | `SELECT velocity_threshold_usd_pico, velocity_window_minutes, churn_failures, flag_file, notifications FROM breaker_settings WHERE id = 1;` |
-| `UpdateBreakerSettingsAsync` | `INSERT INTO breaker_settings (id, velocity_threshold_usd_pico, velocity_window_minutes, churn_failures, flag_file, notifications, updated_at_unix_ms) VALUES (1, @threshold, @minutes, @failures, @flag_file, @notifications, @now) ON CONFLICT (id) DO UPDATE SET velocity_threshold_usd_pico = excluded.velocity_threshold_usd_pico, velocity_window_minutes = excluded.velocity_window_minutes, churn_failures = excluded.churn_failures, flag_file = excluded.flag_file, notifications = excluded.notifications, updated_at_unix_ms = excluded.updated_at_unix_ms;` (booleans as 0 or 1) |
-| `SetBranchBudgetAsync` | `INSERT INTO branch_budgets (repository, branch, budget_usd_pico, set_at_unix_ms, alerted_at_unix_ms, notified_at_unix_ms) VALUES (@repository, @branch, @budget_usd_pico, @now, NULL, NULL) ON CONFLICT (repository, branch) DO UPDATE SET budget_usd_pico = excluded.budget_usd_pico, set_at_unix_ms = excluded.set_at_unix_ms, alerted_at_unix_ms = NULL, notified_at_unix_ms = NULL;` |
-| `ClearBranchBudgetAsync` | `DELETE FROM branch_budgets WHERE repository = @repository AND branch = @branch;` |
-| `GetBranchBudgetsAsync` | `<budget select> WHERE (@repository IS NULL OR b.repository = @repository) AND (@branch IS NULL OR b.branch = @branch) ORDER BY b.repository, b.branch;` |
-| `MarkBranchBudgetAlertedAsync` | `UPDATE branch_budgets SET alerted_at_unix_ms = @now WHERE repository = @repository AND branch = @branch AND alerted_at_unix_ms IS NULL AND budget_usd_pico < (SELECT COALESCE(SUM(cost_usd_pico), 0) FROM spans WHERE COALESCE(repo_slug, repo_root, '(none)') = @repository AND COALESCE(branch_name, '(none)') = @branch);` |
-| `MarkBranchBudgetNotifiedAsync` | `UPDATE branch_budgets SET notified_at_unix_ms = @now WHERE repository = @repository AND branch = @branch AND alerted_at_unix_ms IS NOT NULL AND notified_at_unix_ms IS NULL;` |
-| `GetUnnotifiedBudgetAlertsAsync` | `<budget select> WHERE b.alerted_at_unix_ms IS NOT NULL AND b.alerted_at_unix_ms >= @since AND b.notified_at_unix_ms IS NULL ORDER BY b.alerted_at_unix_ms, b.repository, b.branch;` |
-| `GetFailedToolCallCountsAsync` | `SELECT trace_id, COUNT(*) FROM span_links WHERE trace_id IN (@t0, @t1, …) AND operation_name = 'execute_tool' AND ((tool_exit_code IS NOT NULL AND tool_exit_code <> 0) OR status_code = 2) GROUP BY trace_id;` with one parameter per distinct trace ID. Return a `Dictionary<string, long>` with `StringComparer.Ordinal`. |
+| `src/CopilotLedger.Cli/WindowsCommandLine.cs` | New, copy exactly |
+| `src/CopilotLedger.Cli/WindowsDetachedProcess.cs` | New, copy exactly |
+| `src/CopilotLedger.Cli/SystemCliPlatform.cs` | Replace `StartDetached` |
+| `src/CopilotLedger.Cli/ICliPlatform.cs` | Replace the comment on `StartDetached` |
+| `.github/workflows/ci.yml` | Capture `daemon start` in the smoke test; add a PowerShell step |
+| `docs/cli.md` | One sentence in "The daemon" |
+| `tests/CopilotLedger.Tests/Cli/WindowsCommandLineTests.cs` | New (Task 1 tests) |
 
-`cost_usd_pico` is 0 for local, unpriced, and unknown-model spans, so `SUM(cost_usd_pico)` is GitHub plus BYOK spend. Every statement that writes runs as one statement, so no explicit transaction is needed.
+No project file changes: `DllImport` needs neither `AllowUnsafeBlocks` nor a package.
 
-### Acceptance criteria
-
-- PB8, JS10, NZ12, SL8–SL10, and BS1–BS7 pass, along with SL1 and S1 as changed. Every other Sprint 1 and Sprint 2 test passes unchanged.
-- A version-2 ledger upgrades to version 3 and keeps its rows; a fresh ledger is created at version 3 with the default settings row. Two processes that upgrade the same ledger at once both succeed (SL10).
-- `src/` contains no `double` or `float`. Money and thresholds are stored only as `INTEGER` pico-USD.
-- No new package.
-
-### Verify
-
-```shell
-dotnet build CopilotLedger.slnx
-dotnet test CopilotLedger.slnx
-```
-
-Report the passed, failed, and skipped counts.
-
-## Task 2 specification: Circuit Breaker Engine & Flag File
-
-### Files
-
-- `src/CopilotLedger.Core/Breaker/BreakerRules.cs`: `BreakerRules`, `VelocityTrip`, and `ChurnTrip`.
-- `src/CopilotLedger.Otlp/Breaker/BreakerAlert.cs` (`BreakerAlertKind`, `BreakerAlert`, `IBreakerAlertSink`), `BreakerMessages.cs`, `CircuitFlagFile.cs`, and `CircuitBreakerMonitor.cs` (namespace `CopilotLedger.Otlp.Breaker`).
-- `src/CopilotLedger.Otlp/Ingestion/LedgerIngestor.cs`: a second constructor and the monitor call.
-- Tests: `TestSupport/BreakerTraces.cs` and `TestSupport/RecordingAlertSink.cs` (new), `Breaker/BreakerRulesTests.cs` (BR1–BR4, new), and `Otlp/CircuitBreakerMonitorTests.cs` (BM1–BM11, new).
-
-### Contracts
+### `WindowsCommandLine.cs` (copy exactly)
 
 ```csharp
-namespace CopilotLedger.Core.Breaker;
+using System.Text;
 
-public sealed record VelocityTrip(
-    DateTimeOffset TrippedAt,                          // end of the span whose window first exceeded the threshold
-    decimal WindowCostUsd);                            // the window's total at that span
+namespace CopilotLedger.Cli;
 
-public sealed record ChurnTrip(
-    DateTimeOffset TrippedAt,                          // start of the failing call that reached the threshold
-    int FailureCount);                                 // always the threshold
-
-public static class BreakerRules
+// Builds a CreateProcess command line that the C runtime and CommandLineToArgvW split back into fileName and arguments.
+// fileName is always quoted (Windows paths can't contain '"'). Each argument is written as is when it is non-empty and has
+// no space, tab, newline, vertical tab, or '"'; otherwise it is quoted, a '"' becomes \", and backslashes are doubled
+// when they come right before a '"' or the closing quote.
+public static class WindowsCommandLine
 {
-    // Rule 1. Throws ArgumentNullException for null costs; ArgumentOutOfRangeException unless thresholdUsd > 0 and window > TimeSpan.Zero.
-    public static VelocityTrip? FindVelocityTrip(IReadOnlyList<CostEvent> costs, decimal thresholdUsd, TimeSpan window);
-
-    // Rule 2. Throws ArgumentNullException for a null list; ArgumentOutOfRangeException unless failures >= 2.
-    public static ChurnTrip? FindChurnTrip(IReadOnlyList<ToolCallEvent> toolCalls, IReadOnlyList<CommitObservation> commits, int failures);
-}
-```
-
-```csharp
-namespace CopilotLedger.Otlp.Breaker;
-
-public enum BreakerAlertKind
-{
-    Trip,
-    Budget,
-}
-
-public sealed record BreakerAlert
-{
-    public required BreakerAlertKind Kind { get; init; }
-    public long? TripId { get; init; }                 // Trip alerts only
-    public required string Repository { get; init; }
-    public required string Branch { get; init; }
-    public required string Title { get; init; }
-    public required string Body { get; init; }
-    public required bool ShowNotification { get; init; } // BreakerSettings.Notifications when the alert was raised
-}
-
-public interface IBreakerAlertSink
-{
-    void Publish(BreakerAlert alert);                  // must return quickly and not throw
-    void Warn(string message);                         // a problem the monitor handled, such as a flag file it couldn't write; must not throw
-}
-
-public static class BreakerMessages
-{
-    public const string TripTitle = "CopilotLedger circuit breaker tripped";
-    public const string BudgetTitle = "CopilotLedger branch budget exceeded";
-
-    public static string Credits(decimal aiCredits);                          // decimal.Round(aiCredits, 2, MidpointRounding.AwayFromZero).ToString("N2", CultureInfo.InvariantCulture)
-    public static string Minutes(int minutes);                                // "1 minute", otherwise "<n> minutes" (invariant culture)
-    public static string VelocityDetail(decimal windowCostUsd, int windowMinutes); // "<Credits(windowCostUsd / 0.01)> AI credits in <Minutes(windowMinutes)>"
-    public static string ChurnDetail(int failureCount);                       // "<n> failed tool calls in a row"
-    public static string RulesSummary(BreakerSettings settings);              // "more than <Credits(VelocityCredits)> AI credits in <Minutes(VelocityWindowMinutes)> on one prompt; <ChurnFailures> failed tool calls in a row on one prompt"
-    public static BreakerAlert ForTrip(long tripId, string repository, string branch, string detail, bool showNotification);
-    public static BreakerAlert ForBudget(BranchBudgetRow budget, bool showNotification);
-}
-
-public static class CircuitFlagFile
-{
-    public const string DirectoryName = ".copilot-ledger";
-    public const string FileName = "CIRCUIT_OPEN";
-
-    public static string GetPath(string repositoryRoot);                     // Path.Combine(repositoryRoot, DirectoryName, FileName)
-    public static string Render(string repositoryRoot, IReadOnlyList<BreakerTrip> openTrips);   // the file's text; openTrips is non-empty
-
-    // Makes the flag file match the ledger. Throws IOException or UnauthorizedAccessException from the file system, and
-    // whatever the store throws. Does nothing when repositoryRoot isn't an existing directory.
-    public static Task SyncAsync(SqliteLedgerStore store, string repositoryRoot, CancellationToken cancellationToken = default);
-}
-
-public sealed class CircuitBreakerMonitor
-{
-    // Throws ArgumentNullException for null arguments. The caller initializes the store.
-    public CircuitBreakerMonitor(SqliteLedgerStore store, IBreakerAlertSink sink);
-
-    // Evaluates both rules for each trace and the budgets of the branches those traces touched. Store exceptions propagate.
-    // Flag-file IOException and UnauthorizedAccessException are reported to sink.Warn and not rethrown.
-    public Task EvaluateAsync(IEnumerable<string> traceIds, CancellationToken cancellationToken = default);
-}
-```
-
-Add to `LedgerIngestor`:
-
-```csharp
-// monitor null means no circuit breaker. Throws ArgumentNullException for the other null arguments.
-public LedgerIngestor(
-    SqliteLedgerStore store,
-    ICreditCalculator calculator,
-    IGitContextResolver gitResolver,
-    CopilotSessionWorkspaceLocator sessionLocator,
-    CircuitBreakerMonitor? monitor)
-```
-
-The existing four-argument constructor becomes `: this(store, calculator, gitResolver, sessionLocator, null)`. In `IngestAsync`, inside the gate, immediately after `BackfillFromAgentSpansAsync(traceIds, …)` and inside the same `if (traceIds.Length > 0)`, add `if (_monitor is not null) { await _monitor.EvaluateAsync(traceIds, cancellationToken); }`. `IngestResult` doesn't change.
-
-### Rule 1 algorithm (`FindVelocityTrip`)
-
-1. Let `events` be the costs with `CostUsd > 0`, sorted by `EndTime`, then by `SpanId` (ordinal).
-2. Keep a running `sum` and the index `first` of the oldest event in the window, both starting at 0.
-3. For each index `i`: add `events[i].CostUsd` to `sum`. Then, while `events[first].EndTime <= events[i].EndTime - window`, subtract `events[first].CostUsd` and increment `first`. If `sum > thresholdUsd` (strict; a window exactly at the threshold doesn't trip), return `new VelocityTrip(events[i].EndTime, sum)`.
-4. Return null.
-
-### Rule 2 algorithm (`FindChurnTrip`)
-
-1. Merge the commits (kind 0) and the tool calls (kind 1) into one sequence, sorted by start time, then kind, then `SpanId` (ordinal).
-2. `lastSha` starts null and `streak` at 0. For each item:
-   - a commit: if `lastSha` isn't null and differs from `CommitSha` (ordinal), set `streak` to 0. Then set `lastSha` to `CommitSha`;
-   - a tool call with `IsFailure`: increment `streak`; when `streak == failures`, return `new ChurnTrip(call.StartTime, failures)`;
-   - a tool call with `IsSuccessfulCommand`: set `streak` to 0;
-   - any other tool call: no change.
-3. Return null.
-
-### Messages
-
-| Text | Value |
-|---|---|
-| Trip alert title | `CopilotLedger circuit breaker tripped` |
-| Trip alert body | `<Repository> @ <Branch>: <Detail> on one prompt. Run: gh-ledger breaker status` |
-| Budget alert title | `CopilotLedger branch budget exceeded` |
-| Budget alert body | `<Repository> @ <Branch>: <Credits(SpentAiCredits)> of <Credits(BudgetAiCredits)> AI credits spent. Run: gh-ledger budget list` |
-
-`ForTrip` sets `Kind = Trip`, `TripId = tripId`, and the given repository and branch, and builds the body from `detail`. `ForBudget` sets `Kind = Budget` and `TripId = null`.
-
-### Monitor algorithm (`EvaluateAsync`)
-
-1. Take the distinct trace IDs in ordinal order. If there are none, return.
-2. `settings = await store.GetBreakerSettingsAsync()`. Keep an ordinal-sorted set of budget keys (repository, then branch).
-3. For each trace:
-   1. `activity = await store.GetTraceActivityAsync(trace)`. If `activity.SpanCount > 0`, add `(activity.Repository, activity.Branch)` to the budget keys.
-   2. If `FindVelocityTrip(activity.Costs, settings.VelocityThresholdUsd, settings.VelocityWindow)` returns a trip, record a `NewBreakerTrip` with `Rule = CreditVelocity`, the activity's trace ID, conversation, repository, branch, and root, `TrippedAt`, `Detail = VelocityDetail(trip.WindowCostUsd, settings.VelocityWindowMinutes)`, `WindowCostUsd = trip.WindowCostUsd`, and `WindowMinutes = settings.VelocityWindowMinutes`.
-   3. If `FindChurnTrip(activity.ToolCalls, activity.Commits, settings.ChurnFailures)` returns a trip, record a `NewBreakerTrip` with `Rule = RetryChurn`, the same keys, `TrippedAt`, `Detail = ChurnDetail(trip.FailureCount)`, and `FailureCount = trip.FailureCount`.
-   4. To record a trip: `id = await store.RecordBreakerTripAsync(newTrip)`. If `id` is null (this rule already tripped on this trace), stop. Otherwise, without reading the trip back, call `sink.Publish(BreakerMessages.ForTrip(id.Value, newTrip.Repository, newTrip.Branch, newTrip.Detail, settings.Notifications))`. Publishing before any other store call means a store exception after the insert can't lose the alert: the retried batch finds the trip already recorded. Then, if `settings.FlagFile` and `newTrip.RepositoryRoot` isn't null, call `CircuitFlagFile.SyncAsync(store, root)`, catching only `IOException` and `UnauthorizedAccessException` and calling `sink.Warn($"could not update {CircuitFlagFile.GetPath(root)}: {ex.Message}")`.
-4. For each budget key, in order: read `GetBranchBudgetsAsync(repository, branch)`. If it has one row, that row is `Exceeded`, and its `AlertedAt` is null, call `MarkBranchBudgetAlertedAsync`, whose update re-checks the budget against the spend. If that returns true, read the row again. Skip the alert when the row is gone, isn't `Exceeded`, or has a null `AlertedAt` (the budget was cleared or set again in between; a new budget alerts on a later batch). Otherwise `sink.Publish(BreakerMessages.ForBudget(row, settings.Notifications))`.
-
-The monitor catches nothing else.
-
-### Flag file
-
-`Render(root, trips)` writes this JSON with `Utf8JsonWriter` and `new JsonWriterOptions { Indented = true, NewLine = "\n", Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }`, then appends `"\n"`. Trips keep the order given (the store's newest-first order). `trippedAt` is `TrippedAt.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)`, `rule` is `BreakerRuleNames.ToName(rule)`, and a null `conversationId` is written as `null`.
-
-```json
-{
-  "schemaVersion": 1,
-  "repositoryRoot": "/home/dev/repo",
-  "openTrips": [
+    public static string Build(string fileName, IReadOnlyList<string> arguments)
     {
-      "id": 1,
-      "rule": "retry_churn",
-      "repository": "swigerb/copilot-ledger",
-      "branch": "feature/ledger",
-      "conversationId": "982f73ad-18f4-49ef-a1f9-70748fa013fb",
-      "traceId": "0a000000000000000000000000000001",
-      "trippedAt": "2026-11-21T00:17:17.2600000+00:00",
-      "detail": "5 failed tool calls in a row",
-      "resetCommand": "gh-ledger breaker reset --id 1"
+        StringBuilder builder = new();
+        builder.Append('"').Append(fileName).Append('"');
+        foreach (string argument in arguments)
+        {
+            builder.Append(' ');
+            if (argument.Length > 0 && argument.IndexOfAny([' ', '\t', '\n', '\v', '"']) < 0)
+            {
+                builder.Append(argument);
+                continue;
+            }
+
+            builder.Append('"');
+            int backslashes = 0;
+            foreach (char character in argument)
+            {
+                if (character == '\\')
+                {
+                    backslashes++;
+                    continue;
+                }
+
+                if (character == '"')
+                {
+                    builder.Append('\\', (backslashes * 2) + 1);
+                }
+                else
+                {
+                    builder.Append('\\', backslashes);
+                }
+
+                backslashes = 0;
+                builder.Append(character);
+            }
+
+            builder.Append('\\', backslashes * 2);
+            builder.Append('"');
+        }
+
+        return builder.ToString();
     }
-  ]
 }
 ```
 
-`SyncAsync(store, root)`:
+### `WindowsDetachedProcess.cs` (copy exactly)
 
-1. If `!Directory.Exists(root)`, return.
-2. Let `path = GetPath(root)` and `applied` be unset. Repeat at most three times:
-   1. Read `settings = GetBreakerSettingsAsync()`. `trips` is `GetOpenBreakerTripsAsync(new BreakerTripFilter { RepositoryRoot = root })` when `settings.FlagFile`, and empty otherwise. `desired` is null when `trips` is empty, otherwise `Render(root, trips)`.
-   2. If `applied` is set and `desired` equals it (ordinal; two nulls are equal), return.
-   3. Apply `desired`. For null: if `File.Exists(path)`, `File.Delete(path)`. Otherwise:
-      - `Directory.CreateDirectory(Path.Combine(root, DirectoryName))`;
-      - if `<root>/.copilot-ledger/.gitignore` doesn't exist, write `*\n`;
-      - write `desired` to `temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp"`;
-      - `File.Move(temp, path, overwrite: true)`.
+```csharp
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
+using Microsoft.Win32.SafeHandles;
 
-      If writing `temp` or the move throws `IOException` or `UnauthorizedAccessException`, delete `temp` (ignoring `IOException` and `UnauthorizedAccessException` from that delete) and rethrow. No other catches.
+namespace CopilotLedger.Cli;
 
-      All files are UTF-8 without a BOM (`new UTF8Encoding(false)`).
-   4. Set `applied = desired`.
-
-The `.gitignore` is never deleted.
-
-### Acceptance criteria
-
-- BR1–BR4 and BM1–BM11 pass, and every earlier test passes unchanged, including all `LedgerIngestorTests`, which use the four-argument constructor.
-- Replaying live run A trips rule 2 once, at the fifth failing `powershell` call (2026-11-21T00:17:17.260Z), when the sixth export request arrives, and not before.
-- The rules are pure: `BreakerRules` reads no clock and does no I/O.
-- `src/` contains no `double` or `float`. No new package.
-
-### Verify
-
-```shell
-dotnet build CopilotLedger.slnx
-dotnet test CopilotLedger.slnx
-```
-
-Report the passed, failed, and skipped counts.
-
-## Task 3 specification: Breaker Alerts and the Breaker & Budget Commands
-
-### Files
-
-- `src/CopilotLedger.Cli/Breaker/BreakerCommands.cs` (new, `internal static`): `Create(CliContext context)` yields the `breaker` and `budget` commands.
-- `src/CopilotLedger.Cli/Alerts/AlertDispatcher.cs` and `Alerts/DesktopNotifier.cs` (new, `internal`).
-- `src/CopilotLedger.Cli/Daemon/DaemonHost.cs`: create the dispatcher and monitor, and pass the monitor to the ingestor.
-- `src/CopilotLedger.Cli/GhLedgerCli.cs`: add `foreach (Command command in BreakerCommands.Create(context)) { root.Add(command); }` after the install commands.
-- `docs/cli.md`: the "Circuit breaker" and "Budgets" sections below.
-- Tests: `TestSupport/CliHarness.cs` and `TestSupport/FakeCliPlatform.cs` (changes below), `TestSupport/BreakerTraces.cs` (adds `TraceVJson`), `Cli/BreakerCommandTests.cs` (BC1–BC6, new), and `Cli/AlertDaemonTests.cs` (AD1–AD3, new).
-
-### Commands in this task
-
-| Command | Options |
-|---|---|
-| `breaker status` | `--json` |
-| `breaker reset` | `--id <id>`, `--all`, `--repo <key>`, `--branch <name>` |
-| `breaker config` | `--velocity-credits <credits>`, `--velocity-minutes <minutes>`, `--churn-failures <count>`, `--flag-file <on\|off>`, `--notifications <on\|off>` |
-| `budget set <credits>` | `--repo <key>`, `--branch <name>` |
-| `budget clear` | `--repo <key>`, `--branch <name>` |
-| `budget list` | `--json` |
-
-Descriptions: `breaker` "Show and control the runaway-loop circuit breaker.", `breaker status` "Show the breaker's state, rules, and open trips.", `breaker reset` "Close open trips.", `breaker config` "Show or change the breaker's rules.", `budget` "Set soft AI-credit budgets for branches.", `budget set` "Set the current branch's budget.", `budget clear` "Remove the current branch's budget.", and `budget list` "List branch budgets and their spend." Every command opens `new SqliteLedgerStore(context.DatabasePath, context.TimeProvider)` and calls `InitializeAsync`, like the report commands.
-
-Every option value is a `string` parsed by the command, except `--id` (`Option<long?>`), `--all` and `--json` (`Option<bool>`), and the integer options (`Option<int?>`). Validation errors are added with `result.AddError(message)` in a validator, so the exit code is 1 and the message is on `Error`:
-
-| Check | Message |
-|---|---|
-| `--velocity-credits`: `decimal.TryParse(value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out d)`, `1 <= d <= 1000000`, `d % 0.01m == 0m` | `--velocity-credits must be a number from 1 to 1000000 with at most 2 decimal places.` |
-| `--velocity-minutes` from 1 to 1440 | `--velocity-minutes must be from 1 to 1440.` |
-| `--churn-failures` from 2 to 100 | `--churn-failures must be from 2 to 100.` |
-| `--flag-file` is `on` or `off` (ordinal) | `--flag-file must be on or off.` |
-| `--notifications` is `on` or `off` (ordinal) | `--notifications must be on or off.` |
-| `budget set <credits>`: the same parse, `0 < d <= 1000000`, `d % 0.01m == 0m` | `Credits must be a number greater than 0 and at most 1000000 with at most 2 decimal places.` |
-| `breaker reset`: more than one of `--id`, `--all`, and (`--repo` or `--branch`) | `Use only one of --id, --all, or --repo with --branch.` |
-| `breaker reset`, `budget set`, `budget clear`: exactly one of `--repo` and `--branch` | `--repo and --branch must be used together.` |
-
-**Scope.** `breaker reset` with no option, `budget set`, and `budget clear` without `--repo` and `--branch` use the current branch: `new FileSystemGitContextResolver().Resolve(context.WorkingDirectory)`, with the repository `RepositorySlug ?? RepositoryRoot` and the branch `BranchName ?? "(none)"`. `Resolve` returns null outside a repository and catches errors from reading files, but not from the path APIs it calls: `Path.GetFullPath` throws `ArgumentException` for a `gitdir:` line with a null character (verified on .NET 10.0.15). So the commands catch only `IOException`, `UnauthorizedAccessException`, and `ArgumentException` from `Resolve`, the three that `LedgerIngestor` catches, and treat them as outside a repository. Outside a Git repository they write one line to `Error` and return 1: `Not in a Git repository. Pass --repo and --branch, --id, or --all.` for `breaker reset`, and `Not in a Git repository. Pass --repo and --branch.` for the budget commands.
-
-### breaker status
-
-Text output, with `<rules>` = `BreakerMessages.RulesSummary(settings)` and `<on|off>` from the settings:
-
-```text
-Circuit breaker: closed
-Rules: <rules>
-Flag file: <on|off>. Notifications: <on|off>.
-```
-
-When `GetOpenBreakerTripsAsync(BreakerTripFilter.All)` returns `n` trips, the first line is `Circuit breaker: open (<n> trip)` for 1 and `Circuit breaker: open (<n> trips)` otherwise. Then come the rules and flag lines, an empty line, two lines per trip in the store's order, and a final line:
-
-```text
-Trip <id> at <LedgerFormat.LocalTime(TrippedAt, context.TimeProvider.LocalTimeZone)>: <repository> @ <branch>: <detail> on one prompt
-  rule <rule name>, trace <trace id>, session <conversation id or (none)>
-Reset a trip with: gh-ledger breaker reset --id <id>
-```
-
-The last line is literal: it shows `<id>`, not a number.
-
-`--json` writes this object with `ReportCommands`' writer options (`Indented = true`, `UnsafeRelaxedJsonEscaping`; declare an identical `JsonOptions` field in `BreakerCommands`), `LedgerFormat.WriteMoney`, and `LedgerFormat.WriteTime`:
-
-```json
+// Starts a process that inherits exactly one handle: an inheritable handle to the NUL device, used as its standard
+// input, output, and error. Process.Start passes bInheritHandles = TRUE without a handle list, so the child would
+// inherit every inheritable handle in this process, including the caller's output pipe, and a caller that reads that
+// pipe to the end (x=$(gh-ledger daemon start)) would wait until the daemon exits.
+[SupportedOSPlatform("windows")]
+internal static class WindowsDetachedProcess
 {
-  "state": "open",
-  "settings": {
-    "velocityCredits": 150,
-    "velocityWindowMinutes": 5,
-    "churnFailures": 5,
-    "flagFile": false,
-    "notifications": true
-  },
-  "openTrips": [
+    private const int StartfUseStdHandles = 0x00000100;
+    private const uint CreateNoWindow = 0x08000000;
+    private const uint ExtendedStartupInfoPresent = 0x00080000;
+    private const int ErrorInsufficientBuffer = 122;
+    private static readonly IntPtr ProcThreadAttributeHandleList = 0x00020002;
+
+    public static int Start(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        string workingDirectory)
     {
-      "id": 1,
-      "rule": "credit_velocity",
-      "repository": "swigerb/copilot-ledger",
-      "branch": "feature/ledger",
-      "repositoryRoot": null,
-      "conversationId": null,
-      "traceId": "11111111111111111111111111111111",
-      "trippedAt": "2026-11-21T10:03:00.0000000+00:00",
-      "detail": "180.00 AI credits in 5 minutes",
-      "windowAiCredits": 180,
-      "windowMinutes": 5,
-      "failureCount": null,
-      "recordedAt": "2026-11-21T12:00:00.0000000+00:00",
-      "notifiedAt": null
+        using SafeFileHandle nul = File.OpenHandle(
+            @"\\.\NUL",
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.ReadWrite | FileShare.Inheritable);
+        IntPtr size = IntPtr.Zero;
+        if (InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size)
+            || Marshal.GetLastPInvokeError() != ErrorInsufficientBuffer)
+        {
+            throw new Win32Exception();
+        }
+
+        IntPtr attributeList = Marshal.AllocHGlobal(size);
+        IntPtr handleList = Marshal.AllocHGlobal(IntPtr.Size);
+        IntPtr commandLine = Marshal.StringToHGlobalUni(
+            WindowsCommandLine.Build(fileName, arguments));
+        bool initialized = false;
+        try
+        {
+            if (!InitializeProcThreadAttributeList(attributeList, 1, 0, ref size))
+            {
+                throw new Win32Exception();
+            }
+
+            initialized = true;
+            Marshal.WriteIntPtr(handleList, nul.DangerousGetHandle());
+            if (!UpdateProcThreadAttribute(
+                    attributeList,
+                    0,
+                    ProcThreadAttributeHandleList,
+                    handleList,
+                    IntPtr.Size,
+                    IntPtr.Zero,
+                    IntPtr.Zero))
+            {
+                throw new Win32Exception();
+            }
+
+            StartupInfoEx startupInfo = new()
+            {
+                StartupInfo = new StartupInfo
+                {
+                    Size = Marshal.SizeOf<StartupInfoEx>(),
+                    Flags = StartfUseStdHandles,
+                    StandardInput = nul.DangerousGetHandle(),
+                    StandardOutput = nul.DangerousGetHandle(),
+                    StandardError = nul.DangerousGetHandle(),
+                },
+                AttributeList = attributeList,
+            };
+            if (!CreateProcess(
+                    null,
+                    commandLine,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    true,
+                    CreateNoWindow | ExtendedStartupInfoPresent,
+                    IntPtr.Zero,
+                    workingDirectory,
+                    ref startupInfo,
+                    out ProcessInformation process))
+            {
+                throw new Win32Exception();
+            }
+
+            CloseHandle(process.Thread);
+            CloseHandle(process.Process);
+            return process.ProcessId;
+        }
+        finally
+        {
+            if (initialized)
+            {
+                DeleteProcThreadAttributeList(attributeList);
+            }
+
+            Marshal.FreeHGlobal(commandLine);
+            Marshal.FreeHGlobal(handleList);
+            Marshal.FreeHGlobal(attributeList);
+        }
     }
-  ]
-}
-```
 
-`state` is `closed` with an empty `openTrips`. `velocityCredits` and `windowAiCredits` (`WindowCostUsd / 0.01`, or `null`) use `WriteMoney`; the other numbers are integers or `null`.
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool InitializeProcThreadAttributeList(
+        IntPtr attributeList,
+        int attributeCount,
+        int flags,
+        ref IntPtr size);
 
-### breaker reset
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UpdateProcThreadAttribute(
+        IntPtr attributeList,
+        uint flags,
+        IntPtr attribute,
+        IntPtr value,
+        IntPtr size,
+        IntPtr previousValue,
+        IntPtr returnSize);
 
-The filter is `{ Id = id }` for `--id`, `BreakerTripFilter.All` for `--all`, and `{ Repository, Branch }` otherwise. Call `ResetBreakerTripsAsync`, then write `Reset 1 trip.`, `Reset <n> trips.`, or `No open trips to reset.` and return 0. Then, for each distinct non-null `RepositoryRoot` of the reset trips (ordinal order), call `CircuitFlagFile.SyncAsync(store, root)`. Catch only `IOException` and `UnauthorizedAccessException`, write `Warning: could not update <path>: <message>` to `Error`, and still return 0.
+    [DllImport("kernel32.dll")]
+    private static extern void DeleteProcThreadAttributeList(IntPtr attributeList);
 
-### breaker config
+    [DllImport("kernel32.dll", EntryPoint = "CreateProcessW", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateProcess(
+        string? applicationName,
+        IntPtr commandLine,
+        IntPtr processAttributes,
+        IntPtr threadAttributes,
+        [MarshalAs(UnmanagedType.Bool)] bool inheritHandles,
+        uint creationFlags,
+        IntPtr environment,
+        string? currentDirectory,
+        ref StartupInfoEx startupInfo,
+        out ProcessInformation processInformation);
 
-With no option, write the `Rules:` and `Flag file:` lines exactly as in `breaker status`. With options, apply them to the current settings (`settings with { … }`), call `UpdateBreakerSettingsAsync`, and write `Updated the circuit breaker settings.` followed by the two lines with the new values. Whenever `--flag-file` is given, even with the value it already had, sync the flag file (as `breaker reset` does, with the same warning handling) for each distinct non-null `RepositoryRoot` of `GetOpenBreakerTripsAsync(BreakerTripFilter.All)`. So `--flag-file on` also repairs a flag file the daemon couldn't write.
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
 
-### budget set, clear, and list
-
-- `budget set <credits>`: `SetBranchBudgetAsync(repository, branch, credits)`, then read the row back and write `Budget for <repository> @ <branch>: <Credits(budget)> AI credits. Spent so far: <Credits(spent)>.` When the row is `Exceeded`, add the line `This branch is already over its budget.`
-- `budget clear`: `Cleared the budget for <repository> @ <branch>.` when `ClearBranchBudgetAsync` returns true; otherwise `No budget is set for <repository> @ <branch>.`
-- `budget list`: `No branch budgets are set.` when there are none; otherwise one line per row, `<repository> @ <branch>: <Credits(spent)> of <Credits(budget)> AI credits`, followed by ` (over budget)` when it's `Exceeded`.
-- `budget list --json`, with the same writer options:
-
-```json
-{
-  "budgets": [
+    [StructLayout(LayoutKind.Sequential)]
+    private struct StartupInfo
     {
-      "repository": "contoso/api",
-      "branch": "main",
-      "budgetAiCredits": 40.5,
-      "spentAiCredits": 31.5,
-      "exceeded": false,
-      "setAt": "2026-11-21T12:00:00.0000000+00:00",
-      "alertedAt": null
+        public int Size;
+        public IntPtr Reserved;
+        public IntPtr Desktop;
+        public IntPtr Title;
+        public int X;
+        public int Y;
+        public int XSize;
+        public int YSize;
+        public int XCountChars;
+        public int YCountChars;
+        public int FillAttribute;
+        public int Flags;
+        public short ShowWindow;
+        public short Reserved2Size;
+        public IntPtr Reserved2;
+        public IntPtr StandardInput;
+        public IntPtr StandardOutput;
+        public IntPtr StandardError;
     }
-  ]
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct StartupInfoEx
+    {
+        public StartupInfo StartupInfo;
+        public IntPtr AttributeList;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessInformation
+    {
+        public IntPtr Process;
+        public IntPtr Thread;
+        public int ProcessId;
+        public int ThreadId;
+    }
 }
 ```
 
-`Credits` here is `BreakerMessages.Credits`.
+### `SystemCliPlatform.StartDetached` (copy exactly)
 
-### Alert dispatcher
+Replace the whole method with:
 
 ```csharp
-namespace CopilotLedger.Cli.Alerts;
+    public int StartDetached(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        string workingDirectory)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return WindowsDetachedProcess.Start(fileName, arguments, workingDirectory);
+        }
 
-internal sealed class AlertDispatcher : IBreakerAlertSink
-{
-    // log writes one daemon log line. Throws ArgumentNullException for null arguments.
-    public AlertDispatcher(CliContext context, SqliteLedgerStore store, Action<string> log);
+        // exec keeps the process id, and the redirections replace the inherited standard handles before the daemon runs.
+        using Process process = new();
+        process.StartInfo.FileName = "/bin/sh";
+        process.StartInfo.UseShellExecute = false;
+        process.StartInfo.WorkingDirectory = workingDirectory;
+        process.StartInfo.ArgumentList.Add("-c");
+        process.StartInfo.ArgumentList.Add("exec \"$0\" \"$@\" </dev/null >/dev/null 2>&1");
+        process.StartInfo.ArgumentList.Add(fileName);
+        foreach (string argument in arguments)
+        {
+            process.StartInfo.ArgumentList.Add(argument);
+        }
 
-    public void Publish(BreakerAlert alert);           // Channel.CreateUnbounded<BreakerAlert>(new UnboundedChannelOptions { SingleReader = true }); TryWrite
-    public void Warn(string message);                  // log("Warning: " + message), catching only IOException (the line is dropped), so it never throws into the monitor
-
-    // Publishes, oldest first, ForTrip(trip.Id, trip.Repository, trip.Branch, trip.Detail, notifications) for each trip from
-    // GetUnnotifiedBreakerTripsAsync(now - 1 hour), then ForBudget(row, notifications) for each row from GetUnnotifiedBudgetAlertsAsync(now - 1 hour),
-    // where now is context.TimeProvider.GetUtcNow() and notifications is GetBreakerSettingsAsync().Notifications.
-    public Task EnqueuePendingAsync(CancellationToken cancellationToken);
-
-    // Handles alerts until Complete() has been called and the channel is empty. Cancellation stops it (OperationCanceledException).
-    public Task RunAsync(CancellationToken cancellationToken);
-
-    public void Complete();                            // Writer.TryComplete()
-}
+        process.Start();
+        return process.Id;
+    }
 ```
 
-For each alert, `RunAsync`:
+The `if (OperatingSystem.IsWindows())` check is what satisfies CA1416 for the Windows-only class; keep it in that form.
 
-1. calls `log($"ALERT {alert.Title}: {alert.Body}")`;
-2. if `alert.ShowNotification`, awaits `DesktopNotifier.ShowAsync(context, alert.Title, alert.Body, log, cancellationToken)`;
-3. records the notification: `MarkBreakerTripNotifiedAsync(alert.TripId!.Value)` for a trip, or `MarkBranchBudgetNotifiedAsync(alert.Repository, alert.Branch)` for a budget. It catches only `SqliteException` here, logging `Warning: could not record the notification: <message>`.
+### `ICliPlatform` (copy exactly)
 
-Step 3 runs even when the notification failed or was skipped, so a restart doesn't repeat it.
-
-Each alert is handled inside its own `try`, which catches only `IOException`: `log` throws it when `daemon.log` can't be written, for example on a full disk. The failing alert's remaining steps are skipped, so it stays unnotified and is re-sent at the next start if it's less than an hour old, and the next alert is handled normally. Any other exception ends `RunAsync` and faults its task, which `DaemonHost` logs without rethrowing (see Daemon changes).
-
-### Desktop notifier
-
-`internal static class DesktopNotifier` has `Task ShowAsync(CliContext context, string title, string body, Action<string> log, CancellationToken cancellationToken)`. It chooses one command from `context.Platform`:
-
-| Platform | File name | Arguments |
-|---|---|---|
-| `IsWindows` | `<SystemRoot>\System32\WindowsPowerShell\v1.0\powershell.exe` | `-NoProfile`, `-NonInteractive`, `-Command`, `<script>` |
-| `IsMacOS` | `/usr/bin/osascript` | `-e`, `on run argv`, `-e`, `display notification (item 2 of argv) with title (item 1 of argv)`, `-e`, `end run`, `<title>`, `<body>` |
-| otherwise | `FindOnPath("notify-send")` | `--app-name=CopilotLedger`, `<title>`, `<body>` |
-
-- `<SystemRoot>` is `context.Platform.GetEnvironmentVariable("SystemRoot")` with trailing `\` removed, or `C:\Windows` when that's null or empty. Never read it with `Environment.GetEnvironmentVariable`: tests set it through `FakeCliPlatform`. Join it with string concatenation, not `Path.Combine`, so the expected value is the same when tests run on Linux.
-- On Windows, first write `Path.Combine(context.DataDirectory, "alert-toast.xml")`, UTF-8 without a BOM:
-
-  ```xml
-  <toast><visual><binding template="ToastGeneric"><text>TITLE</text><text>BODY</text></binding></visual></toast>
-  ```
-
-  `TITLE` and `BODY` are `SecurityElement.Escape(title)` and `SecurityElement.Escape(body)`, and the file has no line break. `<script>` is this single line, with `XMLPATH` replaced by the XML file's path in which each PowerShell single-quote character is doubled. PowerShell treats five characters as single quotes: `'` (U+0027), `‘` (U+2018), `’` (U+2019), `‚` (U+201A), and `‛` (U+201B). Write the last four as `\u2018`, `\u2019`, `\u201A`, and `\u201B` in C#.
-
-  ```text
-  $ErrorActionPreference='Stop'; [void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]; [void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom,ContentType=WindowsRuntime]; $x=New-Object Windows.Data.Xml.Dom.XmlDocument; $x.LoadXml([IO.File]::ReadAllText('XMLPATH')); $t=[Windows.UI.Notifications.ToastNotification]::new($x); $t.Tag='copilot-ledger'; $t.Group='alerts'; [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe').Show($t)
-  ```
-
-  Keep it as a C# raw string literal on one line (`"""…"""`), not an interpolated one, and use `Replace("XMLPATH", …, StringComparison.Ordinal)`. The tag and group make a new alert replace the previous one in the notification center.
-- On Linux, when `FindOnPath` returns null, log `Notification skipped: notify-send was not found.` and return.
-
-Run the command with `context.Platform.RunAsync(fileName, arguments, timeout.Token)`, where `using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);` and `timeout.CancelAfter(TimeSpan.FromSeconds(15));`. `CancelAfter` runs on the wall clock, not `context.TimeProvider`, so a test's `ManualTimeProvider` doesn't affect it. Then:
-
-- an exit code other than 0 logs `Notification failed: <file name> exited with code <n>: <trimmed standard error>`, or `Notification failed: <file name> exited with code <n>.` when standard error is blank;
-- `OperationCanceledException` when `cancellationToken` isn't cancelled logs `Notification timed out after 15 seconds.`;
-- `Win32Exception`, `IOException`, `UnauthorizedAccessException`, and `InvalidOperationException`, including from writing the XML file, log `Notification failed: <exception message>`.
-
-No other catches; an `OperationCanceledException` from `cancellationToken` propagates.
-
-### Daemon changes
-
-In `DaemonHost.RunAsync`:
-
-1. Wrap the log writer: `TextWriter writer = TextWriter.Synchronized(CreateLogWriter(context, logFile, out bool ownsWriter));`, because the dispatcher writes from another thread. Disposal is unchanged.
-2. Before the `try`, next to `WebApplication? app = null;`, declare `AlertDispatcher? dispatcher = null;`, `Task? dispatching = null;`, and `CancellationTokenSource dispatchStop = new();`, because `finally` uses them.
-3. After pruning `span_links`, set `dispatcher = new AlertDispatcher(context, store, message => WriteLog(writer, context, message));`, create `CircuitBreakerMonitor monitor = new(store, dispatcher);`, and pass `monitor` to the five-argument `LedgerIngestor` constructor.
-4. Before `app.StartAsync`, `await dispatcher.EnqueuePendingAsync(cancellationToken);`, then `dispatching = dispatcher.RunAsync(dispatchStop.Token);`. Enqueuing before the receiver starts means a trip can't be both re-sent and published live.
-5. In `finally`, right after the `app.StopAsync` block, when `dispatching` isn't null:
-   1. call `dispatcher!.Complete()`;
-   2. if `await Task.WhenAny(dispatching, Task.Delay(TimeSpan.FromSeconds(5)))` isn't `dispatching`, call `dispatchStop.Cancel()` and then `await Task.WhenAny(dispatching, Task.Delay(TimeSpan.FromSeconds(1)));`;
-   3. if `dispatching.IsFaulted`, log `Warning: the alert dispatcher stopped: <dispatching.Exception!.GetBaseException().Message>`.
-
-   `Task.WhenAny` never throws, so `finally` doesn't rethrow anything from the dispatcher. Both delays run on the wall clock, not `context.TimeProvider`, and together stay well inside `daemon stop`'s 15-second timeout. Then, whether or not `dispatching` was started, dispose `dispatchStop`. Alerts still queued stay unnotified and are re-sent at the next start if they're less than an hour old.
-
-### docs/cli.md changes
-
-Add these two sections after "Reports":
-
-```markdown
-## Circuit breaker
-
-The daemon watches every prompt for two kinds of runaway loop and trips a circuit breaker when it sees one:
-
-- **Credit velocity.** One prompt's billed spend (GitHub AI credits plus BYOK) exceeds 150 AI credits ($1.50) within 5 minutes.
-- **Retry churn.** One prompt makes 5 failed tool calls in a row, with no successful command and no new commit between them. A failed call is a shell command that exits with a non-zero code, or a tool call that Copilot reports as an error.
-
-Copilot exports neither the command a shell call ran nor the file an edit changed, so retry churn counts any failing command, and any successful command resets the count. Edits that never run a failing command don't count. VS Code's Local agent harness may not report exit codes, so retry churn may never trip there.
-
-When the breaker trips, the daemon writes an `ALERT` line to `daemon.log` and shows a desktop notification: a toast on Windows, a notification on macOS, or `notify-send` on Linux when it's installed. The trip stays open until you reset it. Each prompt trips each rule at most once.
-
-- `gh-ledger breaker status [--json]` shows the rules and the open trips.
-- `gh-ledger breaker reset` closes the open trips on the current branch. Use `--id <id>` for one trip, `--repo <key> --branch <name>` for another branch, or `--all`.
-- `gh-ledger breaker config` shows the rules. Change them with `--velocity-credits <credits>` (1 to 1000000), `--velocity-minutes <minutes>` (1 to 1440), and `--churn-failures <count>` (2 to 100). `--notifications off` keeps the log line but stops desktop notifications.
-- `gh-ledger breaker config --flag-file on` also writes `.copilot-ledger/CIRCUIT_OPEN` in the repository root while a trip is open, so a wrapper script can stop an agent. The file holds JSON describing the open trips. A `.copilot-ledger/.gitignore` keeps it out of commits, and `breaker reset` removes it. Trips without a local repository root get no file. If the daemon logs that it couldn't update the file, run `gh-ledger breaker config --flag-file on` again to rewrite it.
-
-## Budgets
-
-A budget is a soft cap in AI credits for one branch. When the branch's billed spend exceeds it, the daemon alerts once; nothing is blocked. BYOK spend counts at $0.01 per AI credit.
-
-- `gh-ledger budget set <credits>` sets the current branch's budget. Setting it again re-arms the alert.
-- `gh-ledger budget clear` removes it, and `gh-ledger budget list [--json]` lists every budget with its spend.
-- `budget set` and `budget clear` accept `--repo <key> --branch <name>` for another branch.
-```
-
-### Test support changes
-
-- `FakeCliPlatform.RunAsync`: wrap the `ProcessRuns.Add` in `lock (ProcessRuns)`, because the daemon's dispatcher calls it from another thread. Tests read `ProcessRuns` only after the daemon has stopped.
-- `CliHarness`:
-  - Its `ConfigureWebHost` becomes `builder => { builder.UseTestServer(); builder.ConfigureServices(services => services.AddHostedService(provider => new TestServerCapture(provider.GetRequiredService<IServer>(), server => _daemonServer = server))); }`, where `TestServerCapture` is a private nested `sealed class` implementing `IHostedService`. Its `StartAsync` passes `(TestServer)server` to the callback and returns `Task.CompletedTask`, and its `StopAsync` returns `Task.CompletedTask`.
-  - `public HttpClient CreateDaemonClient()` returns `_daemonServer.CreateClient()`, or throws `InvalidOperationException("No in-process daemon is running.")` when it's null.
-  - `public string DaemonOutput => InProcessDaemon is { IsCompletedSuccessfully: true } run ? run.Result.Out : throw new InvalidOperationException("The in-process daemon hasn't finished.");`. The daemon's log is its `CliRun.Out`: `InvokeAsync` replaces the `Out` that `StartInProcessDaemonAsync` and `StartDetachedHandler` set with its own writer, so `_daemonOut` stays empty. Tests read `DaemonOutput` only after awaiting `InProcessDaemon`, and only for a daemon started with `StartInProcessDaemonAsync()`, whose log goes to `Out` because it has no `--log-file`.
-
-### Acceptance criteria
-
-- BC1–BC6 and AD1–AD3 pass, and every earlier test passes unchanged.
-- No test shows a real notification, starts a process, or opens a socket: notifications go through `FakeCliPlatform.RunAsync`, and the daemon uses `TestServer`.
-- `src/` contains no `double` or `float`. No new package.
-
-### Verify
-
-```shell
-dotnet build CopilotLedger.slnx
-dotnet test CopilotLedger.slnx
-```
-
-Report the passed, failed, and skipped counts.
-
-## Task 4 specification: MCP Server
-
-### Files
-
-- `src/CopilotLedger.Mcp/CopilotLedger.Mcp.csproj` (new): references `ModelContextProtocol` 2.4.0 and the Core and Storage projects:
-
-  ```xml
-  <Project Sdk="Microsoft.NET.Sdk">
-    <ItemGroup>
-      <PackageReference Include="ModelContextProtocol" Version="2.4.0" />
-    </ItemGroup>
-
-    <ItemGroup>
-      <ProjectReference Include="..\CopilotLedger.Core\CopilotLedger.Core.csproj" />
-      <ProjectReference Include="..\CopilotLedger.Storage\CopilotLedger.Storage.csproj" />
-    </ItemGroup>
-  </Project>
-  ```
-
-- `src/CopilotLedger.Mcp/LedgerMcpContext.cs` and `LedgerMcpServer.cs` (public), and `LedgerMcpTools.cs` (internal: the schemas, argument checks, and results).
-- `CopilotLedger.slnx`: add `<Project Path="src/CopilotLedger.Mcp/CopilotLedger.Mcp.csproj" />` to `/src/`, between Core and Otlp.
-- `src/CopilotLedger.Cli/CopilotLedger.Cli.csproj` and `tests/CopilotLedger.Tests/CopilotLedger.Tests.csproj`: add a `ProjectReference` to the Mcp project.
-- `src/CopilotLedger.Cli/CliContext.cs`: two optional streams. `src/CopilotLedger.Cli/Mcp/McpCommand.cs` (new, `internal static`) and `GhLedgerCli.cs`: the `mcp` command.
-- `docs/cli.md`: the "MCP server" section below.
-- Tests: `TestSupport/McpTestHarness.cs` (new) and `Mcp/LedgerMcpServerTests.cs` (MC1–MC12, new).
-
-### Contracts
+Replace the `StartDetached` line with:
 
 ```csharp
-namespace CopilotLedger.Mcp;
-
-public sealed record LedgerMcpContext
-{
-    public required string DatabasePath { get; init; }
-    public required string WorkingDirectory { get; init; }                 // the server process's working directory
-    public required Func<string, string?> GetEnvironmentVariable { get; init; }
-    public required IGitContextResolver GitResolver { get; init; }
-    public required TimeProvider TimeProvider { get; init; }               // the store's clock
-    public required string Version { get; init; }                          // serverInfo.version
-}
-
-public static class LedgerMcpServer
-{
-    public const string ServerName = "copilot-ledger";
-    public const string Instructions =
-        "CopilotLedger reports the AI spend that Copilot recorded on this machine, by Git branch. " +
-        "Tools use the current repository and branch unless you pass repository and branch. " +
-        "When a result starts with WARNING, stop and tell the user before doing more work.";
-
-    // ServerInfo = { Name = ServerName, Version = context.Version }, ServerInstructions = Instructions, and the two handlers.
-    public static McpServerOptions CreateOptions(LedgerMcpContext context);
-
-    // await using McpServer server = McpServer.Create(new StreamServerTransport(input, output, ServerName), CreateOptions(context));
-    // then await server.RunAsync(cancellationToken). McpServer is IAsyncDisposable.
-    // Returns when input ends or cancellationToken is cancelled. Writes nothing else to output.
-    public static Task RunAsync(LedgerMcpContext context, Stream input, Stream output, CancellationToken cancellationToken = default);
-}
+    int StartDetached(string fileName, IReadOnlyList<string> arguments, string workingDirectory);   // returns the new process id; its standard input, output, and error are the null device; on Windows it inherits no other handle
 ```
-
-Add to `CliContext`:
-
-```csharp
-public Stream? StandardInput { get; init; }            // mcp: null uses Console.OpenStandardInput()
-public Stream? StandardOutput { get; init; }           // mcp: null uses Console.OpenStandardOutput()
-```
-
-`gh-ledger mcp` ("Run the CopilotLedger MCP server on standard input and output.") has no options. It runs `LedgerMcpServer.RunAsync` with `DatabasePath = context.DatabasePath`, `WorkingDirectory = context.WorkingDirectory`, `GetEnvironmentVariable = context.Platform.GetEnvironmentVariable`, `GitResolver = new FileSystemGitContextResolver()`, `TimeProvider = context.TimeProvider`, and `Version = GhLedgerCli.Version`, then returns 0. It never writes to `context.Out`, because standard output carries the protocol.
-
-### Tools
-
-`tools/list` returns these four tools in this order. Every `inputSchema` is parsed once from a constant string and cloned (`JsonDocument.Parse(…).RootElement.Clone()`).
-
-| Name | Title | Annotations |
-|---|---|---|
-| `get_branch_ledger` | `Branch ledger` | `ReadOnlyHint = true`, `OpenWorldHint = false` |
-| `get_top_expensive_prompts` | `Top expensive prompts` | `ReadOnlyHint = true`, `OpenWorldHint = false` |
-| `get_agent_breakdown` | `Agent breakdown` | `ReadOnlyHint = true`, `OpenWorldHint = false` |
-| `set_branch_budget` | `Set branch budget` | `ReadOnlyHint = false`, `DestructiveHint = false`, `IdempotentHint = true`, `OpenWorldHint = false` |
-
-Descriptions:
-
-- `get_branch_ledger`: `Spend on one Git branch: AI credits, USD, BYOK USD, local savings, top model, budget, and circuit-breaker status. Uses the current repository and branch unless you pass both.`
-- `get_top_expensive_prompts`: `The most expensive prompt chains on one Git branch, with their output tokens and failed tool calls (retry loops). Uses the current repository and branch unless you pass both. Returns 5 by default, ordered by cost.`
-- `get_agent_breakdown`: `Spend on one Git branch split by agent (gen_ai.agent.name). Uses the current repository and branch unless you pass both.`
-- `set_branch_budget`: `Sets a soft AI-credit budget for one Git branch. CopilotLedger alerts once when the branch's billed spend exceeds it; nothing is blocked. Uses the current repository and branch unless you pass both.`
-
-`get_branch_ledger` and `get_agent_breakdown` share this schema:
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "repository": { "type": "string", "minLength": 1, "description": "Repository key: owner/repo, a repository root, or (none). Pass with branch." },
-    "branch": { "type": "string", "minLength": 1, "description": "Branch name, or (none). Pass with repository." }
-  },
-  "additionalProperties": false
-}
-```
-
-`get_top_expensive_prompts`:
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "repository": { "type": "string", "minLength": 1, "description": "Repository key: owner/repo, a repository root, or (none). Pass with branch." },
-    "branch": { "type": "string", "minLength": 1, "description": "Branch name, or (none). Pass with repository." },
-    "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 5, "description": "Number of prompt chains." },
-    "orderBy": { "type": "string", "enum": ["cost", "outputTokens", "failedToolCalls"], "default": "cost", "description": "Sort key, highest first." }
-  },
-  "additionalProperties": false
-}
-```
-
-`set_branch_budget`:
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "repository": { "type": "string", "minLength": 1, "description": "Repository key: owner/repo, a repository root, or (none). Pass with branch." },
-    "branch": { "type": "string", "minLength": 1, "description": "Branch name, or (none). Pass with repository." },
-    "aiCredits": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000000, "description": "Budget in AI credits (1 AI credit = $0.01), with at most 2 decimal places." }
-  },
-  "required": ["aiCredits"],
-  "additionalProperties": false
-}
-```
-
-### Handling a call
-
-1. An unknown tool name throws `new McpProtocolException($"Unknown tool: {name}", McpErrorCode.InvalidParams)`.
-2. Check the arguments (null means none), stopping at the first failure. The SDK answers a request whose argument names or values contain an escaped lone surrogate with JSON-RPC error `-32603` before the handler runs (Verified facts), so these checks needn't handle unreadable strings. A failure returns `isError: true` with one `TextContentBlock` holding the message, and no `structuredContent`:
-
-   | Check | Message |
-   |---|---|
-   | Every argument name is one of the tool's properties; report the ordinal-first unknown name | `Unknown argument: <name>.` |
-   | `repository`, when present, is a JSON string that isn't blank | `repository must be a non-empty string.` |
-   | `branch`, when present, is a JSON string that isn't blank | `branch must be a non-empty string.` |
-   | Both or neither of `repository` and `branch` | `Pass repository and branch together, or neither.` |
-   | `limit`, when present, is a number with `TryGetInt32` from 1 to 20 | `limit must be an integer from 1 to 20.` |
-   | `orderBy`, when present, is the string `cost`, `outputTokens`, or `failedToolCalls` (ordinal) | `orderBy must be cost, outputTokens, or failedToolCalls.` |
-   | `aiCredits` is present | `aiCredits is required.` |
-   | `aiCredits` is a number with `TryGetDecimal`, `0 < d <= 1000000`, `d % 0.01m == 0m` | `aiCredits must be a number greater than 0 and at most 1000000, with at most 2 decimal places.` |
-
-3. Resolve the scope. Without `repository` and `branch`: the directory is `context.GetEnvironmentVariable("COPILOT_SESSION_CWD")` when it isn't blank, `Path.IsPathFullyQualified`, and `Directory.Exists`; otherwise `context.WorkingDirectory`. `GitResolver.Resolve(directory)` gives the repository `RepositorySlug ?? RepositoryRoot` and the branch `BranchName ?? "(none)"`. Catch only `IOException`, `UnauthorizedAccessException`, and `ArgumentException` from `Resolve` (as `LedgerIngestor` does) and treat them like a null result. A null result returns `isError` with `No Git repository at <directory>. Pass repository and branch.`
-4. Open the store: `new SqliteLedgerStore(context.DatabasePath, context.TimeProvider)` and `InitializeAsync`, once per server, guarded by a `SemaphoreSlim(1, 1)`; a failed open is retried on the next call. Steps 4 and 5 catch only `SqliteException`, `IOException`, `UnauthorizedAccessException`, and `InvalidOperationException`, returning `isError` with `The ledger at <DatabasePath> is unavailable: <exception message>`.
-5. Build the result object below. Return `StructuredContent` = the object, and one `TextContentBlock` whose text is each warning followed by `\n`, then the object as compact JSON (`new JsonWriterOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }`, not indented). `IsError` stays null.
-
-### Results
-
-Every result ends with `circuitBreaker` and `warnings`:
-
-- **Trips.** `GetOpenBreakerTripsAsync(BreakerTripFilter.All)`, keeping, in that order, the trips whose `Repository` and `Branch` equal the scope's, or whose `ConversationId` equals the session ID. The session ID is `context.GetEnvironmentVariable("COPILOT_AGENT_SESSION_ID")` when it isn't blank; otherwise there's none, and no trip matches by conversation.
-- **Budget.** `GetBranchBudgetsAsync(repository, branch)`: zero or one row.
-- **`circuitBreaker`** is `{ "state": "open" | "closed", "openTrips": [ … ] }`, where each trip is `{ "id", "rule", "repository", "branch", "traceId", "conversationId", "currentSession", "trippedAt", "detail", "resetCommand" }`. `currentSession` is true when the trip's conversation equals the session ID, and `resetCommand` is `gh-ledger breaker reset --id <id>`.
-- **`warnings`** holds one line per kept trip, `WARNING: CopilotLedger circuit breaker is open for <repository> @ <branch>: <detail> on one prompt (trip <id>). Stop and ask the user before continuing. The user can reset it with: gh-ledger breaker reset --id <id>`, then, when the budget is exceeded, `WARNING: <repository> @ <branch> has spent <Credits(spent)> of its <Credits(budget)> AI credit budget.` `Credits` rounds to 2 places with `MidpointRounding.AwayFromZero` and formats `N2` with the invariant culture.
-- **`budget`** is `null` or `{ "aiCredits", "spentAiCredits", "exceeded" }`.
-
-Money is written raw with `value.ToString("0.############", CultureInfo.InvariantCulture)`, as `LedgerFormat.WriteMoney` does; times as `ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)`. `billedAiCredits` is `AiCredits + FoundryByokUsd / 0.01`.
-
-| Tool | Object (properties in this order) |
-|---|---|
-| `get_branch_ledger` | `repository`, `branch`, `spans`, `unpricedSpans`, `inputTokens`, `outputTokens`, `cacheReadInputTokens`, `cacheWriteInputTokens`, `aiCredits`, `aiCreditsUsd`, `foundryByokUsd`, `localSavedUsd`, `billedAiCredits`, `topModel`, `budget`, `circuitBreaker`, `warnings`. The totals are the single row of `GetRollupAsync(LedgerGrouping.Branch, new LedgerFilter { Repository, Branch })`, or all zeros when there's no row. `topModel` is the first row's `Model` from the Model rollup with the same filter, or `null`. |
-| `get_top_expensive_prompts` | `repository`, `branch`, `orderBy`, `limit`, `prompts`, `circuitBreaker`, `warnings`. Each prompt is `rank`, `traceId`, `conversationId`, `startTime`, `endTime`, `agents`, `models`, `spans`, `unpricedSpans`, `inputTokens`, `outputTokens`, `cacheReadInputTokens`, `cacheWriteInputTokens`, `aiCredits`, `aiCreditsUsd`, `foundryByokUsd`, `localSavedUsd`, `billedAiCredits`, `failedToolCalls`. |
-| `get_agent_breakdown` | `repository`, `branch`, `agents`, `circuitBreaker`, `warnings`. Each agent row of `GetRollupAsync(LedgerGrouping.Agent, filter)`, in its order, is `agent`, `spans`, `unpricedSpans`, `inputTokens`, `outputTokens`, `cacheReadInputTokens`, `cacheWriteInputTokens`, `aiCredits`, `aiCreditsUsd`, `foundryByokUsd`, `localSavedUsd`, `billedAiCredits`. |
-| `set_branch_budget` | `repository`, `branch`, `budget`, `circuitBreaker`, `warnings`, after `SetBranchBudgetAsync(repository, branch, aiCredits)`. |
-
-`get_top_expensive_prompts` takes the candidates from `GetTopPromptChainsAsync(new LedgerFilter { Repository, Branch }, 1000)` and their counts from `GetFailedToolCallCountsAsync` (0 when absent). It sorts them by the `orderBy` key, highest first: billed USD (`AiCreditsUsd + FoundryByokUsd`) for `cost`, `OutputTokens`, or the failed count. Ties go to billed USD (descending), then `StartTime` (descending), then `TraceId` (ordinal, ascending). It takes `limit` (default 5) and ranks them from 1. `orderBy` defaults to `cost`, and the result echoes both values.
-
-### docs/cli.md changes
-
-Add this section after "Budgets":
-
-````markdown
-## MCP server
-
-`gh-ledger mcp` runs an MCP server on standard input and output, so Copilot can read the ledger and see the circuit breaker. Register it once with Copilot CLI:
-
-```shell
-copilot mcp add ledger -- /path/to/gh-ledger mcp
-```
-
-That adds `ledger` to `~/.copilot/mcp-config.json`. VS Code's Copilot agent harness reads the same file. The GitHub Copilot app runs the same agent runtime; if it doesn't list the server, add it in the app's MCP settings with the same command. For VS Code's Local agent harness, add the server to `mcp.json` under `servers`, with `"command": "/path/to/gh-ledger"` and `"args": ["mcp"]`.
-
-The server offers four tools. Each uses the current repository and branch unless you pass `repository` and `branch`:
-
-- `get_branch_ledger`: the branch's spend, top model, budget, and circuit-breaker status.
-- `get_top_expensive_prompts`: the branch's most expensive prompt chains, with output tokens and failed tool calls; `limit` (1 to 20, default 5) and `orderBy` (`cost`, `outputTokens`, or `failedToolCalls`).
-- `get_agent_breakdown`: the branch's spend by agent.
-- `set_branch_budget`: sets the branch's budget in AI credits (`aiCredits`).
-
-The first three are read-only. `set_branch_budget` changes only the budget, so Copilot asks before running it; in prompt mode, allow it with `--allow-tool 'ledger(set_branch_budget)'`. No tool can reset the circuit breaker. While the breaker is open for the branch or the session, or the branch is over its budget, every result starts with a `WARNING:` line.
-````
-
-### Acceptance criteria
-
-- MC1–MC12 pass, and every earlier test passes unchanged.
-- `tools/list` returns exactly the four tools above, and each `inputSchema` has `"additionalProperties": false`.
-- No tool writes anything but `branch_budgets`, and nothing but the MCP protocol is written to standard output.
-- `src/` contains no `double` or `float`; `aiCredits` is read with `TryGetDecimal`. The only new package is `ModelContextProtocol` 2.4.0, and the restore has no `NU190x` warning.
-
-### Verify
-
-```shell
-dotnet build CopilotLedger.slnx
-dotnet test CopilotLedger.slnx
-```
-
-Report the passed, failed, and skipped counts.
-
-## Task 5 specification: Start at Sign-in, Version 0.3.0 & CI
-
-### Files
-
-- `src/CopilotLedger.Cli/ICliPlatform.cs`, `SystemCliPlatform.cs`: `GetStartupCommand` and `SetStartupCommand`.
-- `src/CopilotLedger.Cli/Install/StartupItem.cs` (new, `internal static`), `InstallCommands.cs`, and `InstallManifest.cs`.
-- `src/CopilotLedger.Cli/app.manifest` (new) and `CopilotLedger.Cli.csproj` (`ApplicationManifest`, version 0.3.0).
-- `src/CopilotLedger.Cli/GhLedgerCli.cs`: the fallback version and its comment become `0.3.0`.
-- `.github/workflows/ci.yml` and `docs/cli.md`.
-- Tests: `TestSupport/FakeCliPlatform.cs`; `Cli/InstallCommandTests.cs` (IN1, IN2, IN3, IN9, and IN10 changed; IN11–IN16 new); `Cli/DaemonCommandTests.cs` (DM1's version); and `Cli/ReportCommandTests.cs` (the `status` text's version line).
-
-### Contracts
-
-Add to `ICliPlatform`:
-
-```csharp
-string? GetStartupCommand(string name);                // Windows: the HKCU\Software\Microsoft\Windows\CurrentVersion\Run value; null when absent and on other platforms
-void SetStartupCommand(string name, string? command);  // Windows: sets that value (REG_SZ), or deletes it when command is null; other platforms throw PlatformNotSupportedException
-```
-
-`SystemCliPlatform` implements them with `Microsoft.Win32.Registry.CurrentUser`: `OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", writable: false)` and `GetValue(name) as string` to read; `CreateSubKey(…, writable: true)`, then `SetValue(name, command, RegistryValueKind.String)` or `DeleteValue(name, throwOnMissingValue: false)` to write. Every registry call is inside `if (OperatingSystem.IsWindows())`.
-
-Add to `InstallManifest`, not `required`, so 0.2.0 manifests still load:
-
-```csharp
-public string? StartupItem { get; init; }              // the registered sign-in item: the Run value's full name on Windows, the file path elsewhere; null when none
-```
-
-`FakeCliPlatform` gains `public Dictionary<string, string> StartupCommands { get; } = new(StringComparer.Ordinal);`, `public List<(string Name, string? Command)> StartupCommandWrites { get; } = [];`, and `public Exception? StartupCommandException { get; set; }`. `GetStartupCommand` reads `StartupCommands`. `SetStartupCommand` throws `StartupCommandException` when it isn't null, without recording anything; otherwise it appends to `StartupCommandWrites`, then sets or removes the entry.
-
-### Sign-in items
-
-`StartupItem.Plan(CliContext context, string executable)` returns the item for this platform: its identifier, its expected content, and a skip warning when it can't be registered. `<exe>` is `context.Platform.ProcessPath`, and `<home>` is `context.Platform.HomeDirectory`.
-
-| Platform | Identifier (`InstallManifest.StartupItem`) | Content | Skipped when |
-|---|---|---|---|
-| `IsWindows` | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CopilotLedger` | Run value `CopilotLedger` = `"<exe>" daemon start` | the command is longer than 260 characters |
-| `IsMacOS` | `Path.Combine(<home>, "Library", "LaunchAgents", "io.github.swigerb.copilot-ledger.plist")` | the property list below | never |
-| otherwise | `Path.Combine(<config>, "autostart", "copilot-ledger.desktop")` | the desktop entry below | `<exe>` contains a double quote, a backtick, `$`, `\`, `%`, `\n`, or `\r` |
-
-`<config>` is `context.Platform.GetEnvironmentVariable("XDG_CONFIG_HOME")` when it isn't blank and `Path.IsPathFullyQualified`; otherwise `Path.Combine(<home>, ".config")`. Read every variable through `context.Platform`, never `Environment.GetEnvironmentVariable`: GitHub's Ubuntu runners set `XDG_CONFIG_HOME`, so a direct read would make tests write the runner's real autostart folder.
-
-The property list, where `EXE` is `SecurityElement.Escape(<exe>)` and `LOG` is `SecurityElement.Escape(Path.Combine(context.DataDirectory, "daemon.log"))`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>io.github.swigerb.copilot-ledger</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>EXE</string>
-    <string>daemon</string>
-    <string>run</string>
-    <string>--log-file</string>
-    <string>LOG</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-</dict>
-</plist>
-```
-
-The desktop entry, where `EXE` is `<exe>`:
-
-```ini
-[Desktop Entry]
-Type=Application
-Name=CopilotLedger
-Comment=Starts the CopilotLedger daemon
-Exec="EXE" daemon start
-Terminal=false
-```
-
-Both files use `\n` line breaks, end with `\n`, and are UTF-8 without a BOM. Build them from raw string literals with `.ReplaceLineEndings("\n")`, because the repository's checkouts use `core.autocrlf=true`.
-
-### install
-
-Insert this step after the `sh.exe` warning and before the manifest is written. (`InstallAsync` writes `install.json` before it calls `DaemonCommands.StartAsync`, so the step must come before the manifest, not just before the daemon.) The step computes `startupItem`, which starts as the previous manifest's `StartupItem` (null without one); the `InstallManifest` initializer sets `StartupItem = startupItem`. A dry run writes no manifest.
-
-1. If `context.Platform.GetEnvironmentVariable("COPILOT_LEDGER_HOME")` isn't blank, write `Warning: COPILOT_LEDGER_HOME is set. The daemon that starts when you sign in uses it only if your sign-in environment sets it too.`
-2. If the item is skipped, write its warning, leave `startupItem` unchanged, and skip steps 3–5:
-   - Windows: `Warning: the gh-ledger path is too long for a sign-in command, so gh-ledger won't start when you sign in. Run gh-ledger daemon start after you sign in.`
-   - Linux: `Warning: the gh-ledger path has characters that a desktop autostart entry can't run, so gh-ledger won't start when you sign in. Run gh-ledger daemon start after you sign in.`
-3. If the item already has exactly the expected content (the Run value equals the command, ordinal; or the file's text equals the content, ordinal), write `gh-ledger already starts when you sign in.`
-4. Otherwise, in a dry run, write `Would start gh-ledger when you sign in.` Otherwise register it: `SetStartupCommand("CopilotLedger", command)` on Windows, or `Directory.CreateDirectory` for the file's folder and `File.WriteAllTextAsync` with `new UTF8Encoding(false)` elsewhere. Then write `gh-ledger will start when you sign in.`
-5. When the item was registered or already present (and this isn't a dry run), set `startupItem` to its identifier.
-
-Steps 3–5 run inside one `try` that catches only `IOException`, `UnauthorizedAccessException`, and `System.Security.SecurityException` (the registry throws the last). On one of those, write `Warning: could not register the sign-in item: <exception message>`, leave `startupItem` unchanged, and continue the install. No other catches.
-
-### uninstall
-
-Insert this step right after the daemon is stopped. When `manifest.StartupItem` isn't null and the item exists (`GetStartupCommand("CopilotLedger")` isn't null on Windows, or `File.Exists(StartupItem)` elsewhere): in a dry run write `Would stop starting gh-ledger when you sign in.`; otherwise delete it (`SetStartupCommand("CopilotLedger", null)` or `File.Delete`) and write `gh-ledger will no longer start when you sign in.` When it doesn't exist, write nothing. The check and the delete run inside one `try` that catches only `IOException`, `UnauthorizedAccessException`, and `System.Security.SecurityException`. On one of those, write `Warning: could not remove the sign-in item: <exception message>` and continue the uninstall. No other catches.
-
-### Application manifest
-
-`src/CopilotLedger.Cli/app.manifest`:
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="1.0.0.0" name="gh-ledger.app"/>
-  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
-    <application>
-      <!-- Windows 10 and Windows 11 -->
-      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
-    </application>
-  </compatibility>
-  <application xmlns="urn:schemas-microsoft-com:asm.v3">
-    <windowsSettings>
-      <!-- Windows 11 24H2 and later: no console window when started outside a terminal -->
-      <consoleAllocationPolicy xmlns="http://schemas.microsoft.com/SMI/2024/WindowsSettings">detached</consoleAllocationPolicy>
-    </windowsSettings>
-  </application>
-</assembly>
-```
-
-In `CopilotLedger.Cli.csproj`, add `<ApplicationManifest>app.manifest</ApplicationManifest>` to the first `PropertyGroup` and change `<Version>0.2.0</Version>` to `<Version>0.3.0</Version>`.
 
 ### CI
 
-In `.github/workflows/ci.yml`, the smoke-test step becomes:
+In `.github/workflows/ci.yml`, step "Smoke-test the published binary":
+
+1. Add `timeout-minutes: 5` after `shell: bash`.
+2. Replace the line `./artifacts/gh-ledger/gh-ledger daemon start` with these three lines, at the same indentation:
+
+   ```shell
+   started=$(./artifacts/gh-ledger/gh-ledger daemon start | tr -d '\r')
+   echo "$started"
+   grep -Eq '^gh-ledger daemon started \(pid [0-9]+\) on http://localhost:4318\.$' <<< "$started"
+   ```
+
+Then add this step after it, at the end of the job:
 
 ```yaml
-      - name: Smoke-test the published binary
-        shell: bash
+      - name: Smoke-test daemon start under PowerShell capture
+        shell: pwsh
+        timeout-minutes: 5
         env:
-          COPILOT_LEDGER_HOME: ${{ runner.temp }}/copilot-ledger
+          COPILOT_LEDGER_HOME: ${{ runner.temp }}/copilot-ledger-pwsh
         run: |
-          test "$(./artifacts/gh-ledger/gh-ledger --version | tr -d '\r')" = "0.3.0"
-          ./artifacts/gh-ledger/gh-ledger rates validate
-          ./artifacts/gh-ledger/gh-ledger daemon start
-          ./artifacts/gh-ledger/gh-ledger status
-          ./artifacts/gh-ledger/gh-ledger breaker status
-          ./artifacts/gh-ledger/gh-ledger budget list
-          request='{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
-          response=$( { echo "$request"; sleep 10; } | ./artifacts/gh-ledger/gh-ledger mcp )
-          echo "$response"
-          grep -q '"get_branch_ledger"' <<< "$response"
-          ./artifacts/gh-ledger/gh-ledger daemon stop
+          $started = & ./artifacts/gh-ledger/gh-ledger daemon start --port 4319
+          $started
+          if ($started -cnotmatch '^gh-ledger daemon started \(pid \d+\) on http://localhost:4319\.$') { exit 1 }
+          & ./artifacts/gh-ledger/gh-ledger daemon stop
 ```
 
-On Windows, `--version` ends its line with `\r\n`, and Git Bash's `$(…)` keeps the `\r`, so `tr -d '\r'` removes it before the comparison. The server answers the request, and when `sleep` ends, standard input closes and the server exits 0. Ten seconds covers a cold start of the single-file binary on a CI runner; closing standard input before the server has answered can lose the response. The here-string avoids a pipe into `grep -q`, which would fail under `pipefail` when `grep` exits early. Nothing else in the workflow changes.
+Before this task, both captures wait for the daemon to exit, so they run into the 5-minute limit; with it, they return in seconds. The PowerShell step uses its own data directory and port, so it can't collide with the bash step.
 
-### docs/cli.md changes
+### `docs/cli.md`
 
-- **Install:** after "sets the `gh ledger` alias,", add "registers the daemon to start when you sign in,". After the paragraph, add: "The sign-in item is the `CopilotLedger` value under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run` on Windows, `~/Library/LaunchAgents/io.github.swigerb.copilot-ledger.plist` on macOS, and `copilot-ledger.desktop` in `$XDG_CONFIG_HOME/autostart` (default `~/.config/autostart`) on Linux."
-- **The daemon:** replace "The daemon does not start at login yet. Run `gh-ledger daemon start` after you sign in. Copilot drops telemetry while the daemon is not running." with "After `install`, the daemon starts when you sign in. Copilot drops telemetry while the daemon is not running."
-- **Uninstall:** replace the paragraph's first sentence, "`gh-ledger uninstall` reverses the environment variable, profile block, and `gh` alias changes recorded by `install`, restoring the previous environment value when applicable, and stops the daemon if it is running.", with "`gh-ledger uninstall` stops the daemon if it is running, removes the sign-in item, and reverses the environment variable, profile block, and `gh` alias changes recorded by `install`, restoring the previous environment value when applicable."
-- **Troubleshooting:** add two items:
-  - "**A console window flashes at sign-in.** Windows 11 24H2 and later start `gh-ledger` without a window. Earlier versions of Windows show its window for about a second."
-  - "**The daemon started at sign-in uses the default data directory.** If you set `COPILOT_LEDGER_HOME`, set it where your sign-in session sees it, such as a Windows user environment variable."
+In "## The daemon", append this sentence to the first paragraph:
+
+```markdown
+`daemon start` gives the daemon the null device as its standard input, output, and error, so a script can capture its output, for example `started=$(gh-ledger daemon start)`, and go on while the daemon runs.
+```
 
 ### Acceptance criteria
 
-- IN1–IN16, DM1, and the `status` text test pass with the changes below, and every other test passes unchanged.
-- `gh-ledger --version` prints `0.3.0`, and the CI smoke test passes on `ubuntu-latest` and `windows-latest`, including the MCP `tools/list` check.
-- No test touches the real registry, `~/Library`, `~/.config`, or any file outside its `TempDirectory`.
-- `src/` contains no `double` or `float`. No new package.
+- `StartDetached` calls `WindowsDetachedProcess.Start` on Windows and starts `/bin/sh` with exactly the arguments above elsewhere. Nothing else in `SystemCliPlatform` changes.
+- `WindowsCommandLine` is public; `WindowsDetachedProcess` is internal and marked `[SupportedOSPlatform("windows")]`.
+- `dotnet build` reports no warnings, and `dotnet test` passes 591 tests (577 + 14).
+- CI passes on `ubuntu-latest` and `windows-latest`, including both capture checks.
 
 ### Verify
 
@@ -1479,748 +541,3885 @@ dotnet test CopilotLedger.slnx
 dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release -r <rid> -o artifacts/gh-ledger
 ```
 
-Use your machine's runtime identifier. Then run the CI smoke commands against `artifacts/gh-ledger` with `COPILOT_LEDGER_HOME` set to a temporary directory, and report the passed, failed, and skipped counts. Don't run `install` on your machine.
+Then, with `COPILOT_LEDGER_HOME` set to a new temporary directory, run `$x = & ./artifacts/gh-ledger/gh-ledger daemon start --port 54318` in PowerShell (or `x=$(./artifacts/gh-ledger/gh-ledger daemon start --port 54318)` in bash). It must return within 15 seconds, and `$x` must be the `gh-ledger daemon started …` line. Then run `./artifacts/gh-ledger/gh-ledger daemon stop`. Report the passed, failed, and skipped counts.
+
+## Task 2 specification: PR Receipts: `export-pr`
+
+### Files
+
+| File | Change |
+|---|---|
+| `src/CopilotLedger.Storage/LedgerGrouping.cs` | Add `ChannelModel` |
+| `src/CopilotLedger.Storage/LedgerRollupRow.cs` | Add `Channel` |
+| `src/CopilotLedger.Storage/SqliteLedgerStore.cs` | Channel-and-model rollup, `GetPromptCountAsync`, `CountBreakerTripsAsync` |
+| `src/CopilotLedger.Cli/Receipts/PullRequestReceipt.cs` | New, copy exactly |
+| `src/CopilotLedger.Cli/Receipts/ReceiptMarkdown.cs` | New, copy exactly |
+| `src/CopilotLedger.Cli/Receipts/ReceiptCommands.cs` | New, copy exactly |
+| `src/CopilotLedger.Cli/GhLedgerCli.cs` | Register `export-pr` |
+| `docs/cli.md` | New section "Pull request receipts" |
+| `tests/CopilotLedger.Tests/TestSupport/ReceiptSeeds.cs` | New (Task 2 tests) |
+| `tests/CopilotLedger.Tests/TestSupport/FileRetry.cs` | Add `ReadAllBytesAsync` (Task 2 tests) |
+| `tests/CopilotLedger.Tests/Storage/ReceiptQueryTests.cs` | New (Task 2 tests) |
+| `tests/CopilotLedger.Tests/Cli/ReceiptCommandTests.cs` | New (Task 2 tests) |
+
+### Storage contracts (copy exactly)
+
+`LedgerGrouping` gets a fifth member, after `Agent`:
+
+```csharp
+    ChannelModel,
+```
+
+`LedgerRollupRow` gets `using CopilotLedger.Core.Pricing;` at the top (before `namespace`, followed by a blank line) and this property directly after `Agent`:
+
+```csharp
+    public BillingChannel? Channel { get; init; }
+```
+
+`Channel` is set only for `ChannelModel` rows; `Model` is set for `Model` and `ChannelModel` rows.
+
+### Store changes (copy exactly)
+
+1. In `GetRollupSql`, add this arm directly after the `LedgerGrouping.Agent` arm:
+
+   ```csharp
+               LedgerGrouping.ChannelModel =>
+                   ("""
+                    billing_channel AS channel,
+                             COALESCE(model_id, '(none)') AS model
+                    """,
+                    "channel, model"),
+   ```
+
+   The rest of the SQL doesn't change, so rows are ordered by billed spend descending, then savings descending, then `channel` and `model` ascending (by their stored strings: `foundry_byok`, `github_ai_credits`, `local`, `unpriced`).
+2. In `GetRollupAsync`, replace the `Model = …` and `Agent = …` initializers with:
+
+   ```csharp
+                   Model = grouping is LedgerGrouping.Model or LedgerGrouping.ChannelModel
+                       ? reader.GetString(reader.GetOrdinal("model"))
+                       : null,
+                   Agent = grouping == LedgerGrouping.Agent
+                       ? reader.GetString(reader.GetOrdinal("agent"))
+                       : null,
+                   Channel = grouping == LedgerGrouping.ChannelModel
+                       ? ToBillingChannel(reader.GetString(reader.GetOrdinal("channel")))
+                       : null,
+   ```
+3. Add this method directly before `private static string ToDatabaseString(PricingStatus status)`:
+
+   ```csharp
+       private static BillingChannel ToBillingChannel(string value) => value switch
+       {
+           "github_ai_credits" => BillingChannel.GitHubAiCredits,
+           "foundry_byok" => BillingChannel.FoundryByok,
+           "local" => BillingChannel.Local,
+           "unpriced" => BillingChannel.Unpriced,
+           _ => throw new InvalidDataException($"Unknown billing channel '{value}'."),
+       };
+   ```
+
+   An unknown stored value is a damaged ledger, so it throws `InvalidDataException`, as `ReadTripsAsync` does for an unknown rule.
+4. Add this method directly after `GetTopPromptChainsAsync` (before `OpenConnectionAsync`):
+
+   ```csharp
+       // Distinct trace_id values (prompts) among the spans that match the filter.
+       public async Task<long> GetPromptCountAsync(
+           LedgerFilter filter,
+           CancellationToken cancellationToken = default)
+       {
+           EnsureInitialized();
+           await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+           await using SqliteCommand command = connection.CreateCommand();
+           command.CommandText = """
+               SELECT COUNT(DISTINCT trace_id)
+               FROM spans
+               WHERE (@from IS NULL OR start_time_unix_ms >= @from)
+                 AND (@to IS NULL OR start_time_unix_ms < @to)
+                 AND (@repository IS NULL OR COALESCE(repo_slug, repo_root, '(none)') = @repository)
+                 AND (@branch IS NULL OR COALESCE(branch_name, '(none)') = @branch);
+               """;
+           command.Parameters.AddWithValue("@from", OrDbNull(filter.From?.ToUnixTimeMilliseconds()));
+           command.Parameters.AddWithValue("@to", OrDbNull(filter.To?.ToUnixTimeMilliseconds()));
+           command.Parameters.AddWithValue("@repository", OrDbNull(filter.Repository));
+           command.Parameters.AddWithValue("@branch", OrDbNull(filter.Branch));
+           return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
+       }
+   ```
+5. Add this method directly after `GetUnnotifiedBreakerTripsAsync`:
+
+   ```csharp
+       // Trips, open or reset, whose repository and branch keys equal the arguments (ordinal).
+       public async Task<long> CountBreakerTripsAsync(
+           string repository,
+           string branch,
+           CancellationToken cancellationToken = default)
+       {
+           EnsureInitialized();
+           await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+           await using SqliteCommand command = connection.CreateCommand();
+           command.CommandText = """
+               SELECT COUNT(*) FROM breaker_trips WHERE repository = @repository AND branch = @branch;
+               """;
+           command.Parameters.AddWithValue("@repository", repository);
+           command.Parameters.AddWithValue("@branch", branch);
+           return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
+       }
+   ```
+
+### The receipt
+
+`export-pr` resolves Git with `new FileSystemGitContextResolver().Resolve(context.WorkingDirectory)`, as `branch` does, and fails without writing anything, exit code 1 and nothing on `Out`, in this order:
+
+| Condition | `Error` |
+|---|---|
+| No repository | `<working directory> isn't in a Git repository.` |
+| `BranchName` is null | `HEAD is detached. Check out the pull request's branch, then run export-pr again.` |
+| `HeadCommitSha` is null | `<branch> has no commits yet.` |
+| `RepositorySlug` is null | `export-pr needs a GitHub remote named origin, and <repository root> has none.` |
+
+The receipt's data, with the filter `{ Repository = slug, Branch = branch }`:
+
+| Field | Source |
+|---|---|
+| `Totals` | The single row of `GetRollupAsync(LedgerGrouping.Branch, filter)`, or all zeros without one |
+| `Models` | `GetRollupAsync(LedgerGrouping.ChannelModel, filter)`, in its order |
+| `Prompts` | `GetPromptCountAsync(filter)` |
+| `MaxPromptCredits` | `(AiCreditsUsd + FoundryByokUsd) / AiCreditMath.UsdPerAiCredit` of `GetTopPromptChainsAsync(filter, 1)`'s row, or 0 |
+| `BreakerTrips` | `CountBreakerTripsAsync(slug, branch)` |
+| `GeneratedAt` | `context.TimeProvider.GetUtcNow()` |
+
+The Markdown, built by `ReceiptMarkdown.ToMarkdown` with `\n` line breaks on every OS:
+
+1. The marker line `<!-- copilot-ledger-receipt -->`, then `### CopilotLedger receipt for <branch>` and a blank line. Every branch, repository, model, and commit is shown with `ReceiptMarkdown.Code`.
+2. A list:
+   - `**GitHub AI Credits:**` the branch's credits and USD, `across <n> turn(s)` (`, <m> unpriced` when some of those turns are unpriced), and each GitHub model's credits; or `none` without GitHub rows.
+   - `**Foundry BYOK:**` the BYOK USD the same way, or `none`.
+   - `**Local offload:**` input plus output tokens, the turns, `($0.00 billed • <saved> cloud spend avoided)`, and each local model's tokens; or `none`.
+   - `**Not priced:**` the turns and models of the `unpriced` channel, only when it has rows.
+   - `**Circuit breaker:**` `<n> trip(s) • max single-prompt burn: <credits> credits`.
+3. `<details>` with `<summary>Details and data</summary>`: a table (Billing, Model, Turns, Unpriced, Input tokens, Output tokens, Cost, Cloud spend avoided) with one row per `Models` row, or `No spans are recorded for this branch.`; a footer with the repository, prompts, the first 12 characters of the commit, and `generated <yyyy-MM-dd HH:mm> UTC by gh-ledger <version>`; the check command; and the JSON from `ToJson` in a fenced `json` block.
+
+Money and counts use `LedgerFormat` (`Credits`, `Usd`, `Count`), so they round half away from zero to cents, exactly like the CLI tables. EP1 shows a whole receipt.
+
+### `PullRequestReceipt.cs` (copy exactly)
+
+```csharp
+using CopilotLedger.Storage;
+
+namespace CopilotLedger.Cli.Receipts;
+
+internal sealed record PullRequestReceipt
+{
+    public required string Repository { get; init; }                       // GitWorkspaceContext.RepositorySlug
+    public required string Branch { get; init; }                           // GitWorkspaceContext.BranchName
+    public required string Commit { get; init; }                           // GitWorkspaceContext.HeadCommitSha
+    public required DateTimeOffset GeneratedAt { get; init; }              // context.TimeProvider.GetUtcNow()
+    public required LedgerRollupRow Totals { get; init; }                  // the branch's Branch rollup row; all zero without spans
+    public required IReadOnlyList<LedgerRollupRow> Models { get; init; }   // ChannelModel rollup rows, in GetRollupAsync order
+    public required long Prompts { get; init; }                            // GetPromptCountAsync
+    public required decimal MaxPromptCredits { get; init; }                // costliest prompt chain: (AiCreditsUsd + FoundryByokUsd) / 0.01m; 0 without spans
+    public required long BreakerTrips { get; init; }                       // CountBreakerTripsAsync
+}
+```
+
+### `ReceiptMarkdown.cs` (copy exactly)
+
+````csharp
+using System.Diagnostics;
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using CopilotLedger.Cli.Reporting;
+using CopilotLedger.Core.Pricing;
+using CopilotLedger.Storage;
+
+namespace CopilotLedger.Cli.Receipts;
+
+// Renders a receipt as the Markdown file that export-pr writes and the action posts. Every line ends with "\n" on every OS.
+public static class ReceiptMarkdown
+{
+    public const string Marker = "<!-- copilot-ledger-receipt -->";
+    public const string ReceiptsDirectory = ".github/copilot-ledger/receipts";
+
+    internal static string ToJson(PullRequestReceipt receipt)
+    {
+        using MemoryStream stream = new();
+        using (Utf8JsonWriter writer = new(
+            stream,
+            new JsonWriterOptions
+            {
+                Indented = true,
+                NewLine = "\n",
+                Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+            }))
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("schemaVersion", 1);
+            writer.WriteString("repository", receipt.Repository);
+            writer.WriteString("branch", receipt.Branch);
+            writer.WriteString("commit", receipt.Commit);
+            LedgerFormat.WriteTime(writer, "generatedAt", receipt.GeneratedAt);
+            writer.WriteString("generator", $"gh-ledger {GhLedgerCli.Version}");
+            writer.WritePropertyName("totals");
+            writer.WriteStartObject();
+            LedgerFormat.WriteTotals(writer, receipt.Totals);
+            writer.WriteEndObject();
+            writer.WriteNumber("prompts", receipt.Prompts);
+            LedgerFormat.WriteMoney(writer, "maxPromptCredits", receipt.MaxPromptCredits);
+            writer.WriteNumber("breakerTrips", receipt.BreakerTrips);
+            writer.WriteStartArray("models");
+            foreach (LedgerRollupRow row in receipt.Models)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("channel", ChannelId(row.Channel!.Value));
+                writer.WriteString("model", row.Model);
+                LedgerFormat.WriteTotals(writer, row);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    internal static string ToMarkdown(PullRequestReceipt receipt)
+    {
+        LedgerRollupRow totals = receipt.Totals;
+        LedgerRollupRow[] github = Rows(receipt, BillingChannel.GitHubAiCredits);
+        LedgerRollupRow[] byok = Rows(receipt, BillingChannel.FoundryByok);
+        LedgerRollupRow[] local = Rows(receipt, BillingChannel.Local);
+        LedgerRollupRow[] unpriced = Rows(receipt, BillingChannel.Unpriced);
+        StringBuilder text = new();
+        text.Append(Marker).Append('\n');
+        text.Append("### CopilotLedger receipt for ").Append(Code(receipt.Branch)).Append("\n\n");
+
+        text.Append("- **GitHub AI Credits:** ");
+        if (github.Length == 0)
+        {
+            text.Append("none\n");
+        }
+        else
+        {
+            text.Append(LedgerFormat.Credits(totals.AiCredits)).Append(" credits (")
+                .Append(LedgerFormat.Usd(totals.AiCreditsUsd)).Append(") across ")
+                .Append(Turns(github)).Append(": ")
+                .Append(string.Join(", ", github.Select(row => $"{Code(row.Model!)} {LedgerFormat.Credits(row.AiCredits)}")))
+                .Append('\n');
+        }
+
+        text.Append("- **Foundry BYOK:** ");
+        if (byok.Length == 0)
+        {
+            text.Append("none\n");
+        }
+        else
+        {
+            text.Append(LedgerFormat.Usd(totals.FoundryByokUsd)).Append(" across ")
+                .Append(Turns(byok)).Append(": ")
+                .Append(string.Join(", ", byok.Select(row => $"{Code(row.Model!)} {LedgerFormat.Usd(row.FoundryByokUsd)}")))
+                .Append('\n');
+        }
+
+        text.Append("- **Local offload:** ");
+        if (local.Length == 0)
+        {
+            text.Append("none\n");
+        }
+        else
+        {
+            text.Append(LedgerFormat.Count(local.Sum(row => row.InputTokens + row.OutputTokens))).Append(" tokens across ")
+                .Append(Turns(local)).Append(" ($0.00 billed • ")
+                .Append(LedgerFormat.Usd(totals.LocalSavedUsd)).Append(" cloud spend avoided): ")
+                .Append(string.Join(", ", local.Select(row => $"{Code(row.Model!)} {LedgerFormat.Count(row.InputTokens + row.OutputTokens)}")))
+                .Append('\n');
+        }
+
+        if (unpriced.Length > 0)
+        {
+            text.Append("- **Not priced:** ").Append(Plural(unpriced.Sum(row => row.SpanCount), "turn", "turns")).Append(": ")
+                .Append(string.Join(", ", unpriced.Select(row => Code(row.Model!))))
+                .Append('\n');
+        }
+
+        text.Append("- **Circuit breaker:** ").Append(Plural(receipt.BreakerTrips, "trip", "trips"))
+            .Append(" • max single-prompt burn: ").Append(LedgerFormat.Credits(receipt.MaxPromptCredits))
+            .Append(" credits\n\n");
+
+        text.Append("<details>\n<summary>Details and data</summary>\n\n");
+        if (receipt.Models.Count == 0)
+        {
+            text.Append("No spans are recorded for this branch.\n\n");
+        }
+        else
+        {
+            text.Append("| Billing | Model | Turns | Unpriced | Input tokens | Output tokens | Cost | Cloud spend avoided |\n");
+            text.Append("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+            foreach (LedgerRollupRow row in receipt.Models)
+            {
+                text.Append("| ").Append(ChannelLabel(row.Channel!.Value))
+                    .Append(" | ").Append(Code(row.Model!).Replace("|", "\\|", StringComparison.Ordinal))
+                    .Append(" | ").Append(LedgerFormat.Count(row.SpanCount))
+                    .Append(" | ").Append(LedgerFormat.Count(row.UnpricedSpanCount))
+                    .Append(" | ").Append(LedgerFormat.Count(row.InputTokens))
+                    .Append(" | ").Append(LedgerFormat.Count(row.OutputTokens))
+                    .Append(" | ").Append(Cost(row))
+                    .Append(" | ").Append(LedgerFormat.Usd(row.LocalSavedUsd))
+                    .Append(" |\n");
+            }
+
+            text.Append('\n');
+        }
+
+        text.Append("Repository ").Append(Code(receipt.Repository))
+            .Append(" • ").Append(Plural(receipt.Prompts, "prompt", "prompts"))
+            .Append(" • commit ").Append(Code(receipt.Commit[..Math.Min(12, receipt.Commit.Length)]))
+            .Append(" • generated ")
+            .Append(receipt.GeneratedAt.ToUniversalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture))
+            .Append(" UTC by gh-ledger ").Append(GhLedgerCli.Version).Append("\n\n");
+        text.Append("To check these totals, run ").Append(Code("gh ledger branch --since all --json"))
+            .Append(" in the repository and compare the ").Append(Code(receipt.Branch)).Append(" row.\n\n");
+        text.Append("```json\n").Append(ToJson(receipt)).Append("\n```\n\n</details>\n");
+        return text.ToString();
+    }
+
+    // <name>-<hash>.md. name is branch with every character other than A-Z, a-z, 0-9, '.', '_', and '-' replaced by '-',
+    // cut to its first 64 characters. hash is the first 8 lowercase hex digits of the SHA-256 of branch's UTF-8 bytes,
+    // so branches that differ only in replaced characters or letter case still get different files.
+    public static string FileName(string branch)
+    {
+        StringBuilder name = new(branch.Length);
+        foreach (char character in branch)
+        {
+            name.Append(char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-'
+                ? character
+                : '-');
+        }
+
+        if (name.Length > 64)
+        {
+            name.Length = 64;
+        }
+
+        string hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(branch)))[..8];
+        return $"{name}-{hash}.md";
+    }
+
+    // A CommonMark code span that shows value literally. Control characters, U+2028, and U+2029 become U+FFFD; the fence is
+    // one backtick longer than the longest run of backticks in value; and a space pads both ends when value starts or ends
+    // with a backtick or a space. GitHub doesn't turn @mentions, #references, or URLs inside a code span into links.
+    // value is never empty.
+    public static string Code(string value)
+    {
+        StringBuilder content = new(value.Length);
+        int run = 0;
+        int longestRun = 0;
+        foreach (char character in value)
+        {
+            char shown = char.IsControl(character) || character is '\u2028' or '\u2029'
+                ? '\uFFFD'
+                : character;
+            run = shown == '`' ? run + 1 : 0;
+            longestRun = Math.Max(longestRun, run);
+            content.Append(shown);
+        }
+
+        string fence = new('`', longestRun + 1);
+        bool pad = content[0] is '`' or ' ' || content[content.Length - 1] is '`' or ' ';
+        return pad ? $"{fence} {content} {fence}" : $"{fence}{content}{fence}";
+    }
+
+    private static string ChannelId(BillingChannel channel) => channel switch
+    {
+        BillingChannel.GitHubAiCredits => "github_ai_credits",
+        BillingChannel.FoundryByok => "foundry_byok",
+        BillingChannel.Local => "local",
+        BillingChannel.Unpriced => "unpriced",
+        _ => throw new UnreachableException(),
+    };
+
+    private static string ChannelLabel(BillingChannel channel) => channel switch
+    {
+        BillingChannel.GitHubAiCredits => "GitHub AI Credits",
+        BillingChannel.FoundryByok => "Foundry BYOK",
+        BillingChannel.Local => "Local",
+        BillingChannel.Unpriced => "Not priced",
+        _ => throw new UnreachableException(),
+    };
+
+    private static string Cost(LedgerRollupRow row) => row.Channel switch
+    {
+        BillingChannel.GitHubAiCredits =>
+            $"{LedgerFormat.Credits(row.AiCredits)} credits ({LedgerFormat.Usd(row.AiCreditsUsd)})",
+        BillingChannel.FoundryByok => LedgerFormat.Usd(row.FoundryByokUsd),
+        BillingChannel.Local or BillingChannel.Unpriced => "$0.00",
+        _ => throw new UnreachableException(),
+    };
+
+    private static LedgerRollupRow[] Rows(PullRequestReceipt receipt, BillingChannel channel) =>
+        receipt.Models.Where(row => row.Channel == channel).ToArray();
+
+    private static string Turns(IReadOnlyList<LedgerRollupRow> rows)
+    {
+        long unpriced = rows.Sum(row => row.UnpricedSpanCount);
+        string turns = Plural(rows.Sum(row => row.SpanCount), "turn", "turns");
+        return unpriced == 0 ? turns : $"{turns}, {LedgerFormat.Count(unpriced)} unpriced";
+    }
+
+    private static string Plural(long count, string singular, string plural) =>
+        $"{LedgerFormat.Count(count)} {(count == 1 ? singular : plural)}";
+}
+````
+
+### `ReceiptCommands.cs` (copy exactly)
+
+```csharp
+using System.CommandLine;
+using System.CommandLine.Parsing;
+using System.Text;
+using CopilotLedger.Core.Git;
+using CopilotLedger.Core.Pricing;
+using CopilotLedger.Storage;
+
+namespace CopilotLedger.Cli.Receipts;
+
+internal static class ReceiptCommands
+{
+    private static readonly LedgerRollupRow NoSpend = new()
+    {
+        SpanCount = 0,
+        UnpricedSpanCount = 0,
+        InputTokens = 0,
+        OutputTokens = 0,
+        CacheReadInputTokens = 0,
+        CacheWriteInputTokens = 0,
+        AiCredits = 0m,
+        AiCreditsUsd = 0m,
+        FoundryByokUsd = 0m,
+        LocalSavedUsd = 0m,
+    };
+
+    public static Command Create(CliContext context)
+    {
+        Command command = new("export-pr", "Write the current branch's AI spend receipt for its pull request.");
+        Option<bool> stdout = new("--stdout")
+        {
+            Description = "Write the Markdown receipt to standard output instead of the receipt file.",
+        };
+        Option<bool> json = new("--json")
+        {
+            Description = "Write the receipt's JSON data to standard output instead of the receipt file.",
+        };
+        command.Add(stdout);
+        command.Add(json);
+        command.Validators.Add(result =>
+        {
+            if (result.GetValue(stdout) && result.GetValue(json))
+            {
+                result.AddError("Use either --stdout or --json, not both.");
+            }
+        });
+        command.SetAction(
+            (ParseResult result, CancellationToken cancellationToken) =>
+                ExportAsync(
+                    context,
+                    result.GetValue(stdout),
+                    result.GetValue(json),
+                    cancellationToken));
+        return command;
+    }
+
+    private static async Task<int> ExportAsync(
+        CliContext context,
+        bool stdout,
+        bool json,
+        CancellationToken cancellationToken)
+    {
+        GitWorkspaceContext? git =
+            new FileSystemGitContextResolver().Resolve(context.WorkingDirectory);
+        if (git is null)
+        {
+            context.Error.WriteLine($"{context.WorkingDirectory} isn't in a Git repository.");
+            return 1;
+        }
+
+        if (git.BranchName is null)
+        {
+            context.Error.WriteLine(
+                "HEAD is detached. Check out the pull request's branch, then run export-pr again.");
+            return 1;
+        }
+
+        if (git.HeadCommitSha is null)
+        {
+            context.Error.WriteLine($"{git.BranchName} has no commits yet.");
+            return 1;
+        }
+
+        if (git.RepositorySlug is null)
+        {
+            context.Error.WriteLine(
+                $"export-pr needs a GitHub remote named origin, and {git.RepositoryRoot} has none.");
+            return 1;
+        }
+
+        SqliteLedgerStore store = new(context.DatabasePath, context.TimeProvider);
+        await store.InitializeAsync(cancellationToken);
+        LedgerFilter filter = new()
+        {
+            Repository = git.RepositorySlug,
+            Branch = git.BranchName,
+        };
+        IReadOnlyList<LedgerRollupRow> branchRows = await store.GetRollupAsync(
+            LedgerGrouping.Branch,
+            filter,
+            cancellationToken);
+        IReadOnlyList<PromptChainRow> costliest = await store.GetTopPromptChainsAsync(
+            filter,
+            1,
+            cancellationToken);
+        PullRequestReceipt receipt = new()
+        {
+            Repository = git.RepositorySlug,
+            Branch = git.BranchName,
+            Commit = git.HeadCommitSha,
+            GeneratedAt = context.TimeProvider.GetUtcNow(),
+            Totals = branchRows.Count == 0 ? NoSpend : branchRows[0],
+            Models = await store.GetRollupAsync(
+                LedgerGrouping.ChannelModel,
+                filter,
+                cancellationToken),
+            Prompts = await store.GetPromptCountAsync(filter, cancellationToken),
+            MaxPromptCredits = costliest.Count == 0
+                ? 0m
+                : (costliest[0].AiCreditsUsd + costliest[0].FoundryByokUsd) / AiCreditMath.UsdPerAiCredit,
+            BreakerTrips = await store.CountBreakerTripsAsync(
+                git.RepositorySlug,
+                git.BranchName,
+                cancellationToken),
+        };
+
+        if (json)
+        {
+            context.Out.Write(ReceiptMarkdown.ToJson(receipt) + "\n");
+            return 0;
+        }
+
+        string markdown = ReceiptMarkdown.ToMarkdown(receipt);
+        if (stdout)
+        {
+            context.Out.Write(markdown);
+            return 0;
+        }
+
+        string fileName = ReceiptMarkdown.FileName(git.BranchName);
+        string path = Path.Combine(
+            git.RepositoryRoot,
+            ".github",
+            "copilot-ledger",
+            "receipts",
+            fileName);
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllTextAsync(
+                path,
+                markdown,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            context.Error.WriteLine($"Could not write {path}: {ex.Message}");
+            return 1;
+        }
+
+        context.Out.WriteLine($"Wrote {ReceiptMarkdown.ReceiptsDirectory}/{fileName} for {git.BranchName}.");
+        context.Out.WriteLine(
+            "Commit it on the branch and push; the CopilotLedger action posts it on the pull request.");
+        return 0;
+    }
+}
+```
+
+### `GhLedgerCli`
+
+Add `using CopilotLedger.Cli.Receipts;` after `using CopilotLedger.Cli.Rates;`, and add this line directly before `root.Add(McpCommand.Create(context));`:
+
+```csharp
+        root.Add(ReceiptCommands.Create(context));
+```
+
+### `docs/cli.md`
+
+Add this section after "## Budgets":
+
+```markdown
+## Pull request receipts
+
+`gh-ledger export-pr` writes the current branch's receipt for its pull request to `.github/copilot-ledger/receipts/<branch>-<hash>.md` in the repository root, where `<branch>` is the branch name with characters other than letters, digits, `.`, `_`, and `-` replaced by `-`. Commit that file on the branch and push it.
+
+The receipt covers all spend recorded on the branch. It lists GitHub AI Credits by model, Foundry BYOK spend, local-model tokens and the cloud spend they avoided, requests that couldn't be priced, the number of circuit-breaker trips, and the most expensive prompt in AI credits. A collapsible section holds a table by billing channel and model, and the receipt's data as JSON. Its totals equal the branch's row in `gh-ledger branch --since all --json`.
+
+- `--stdout` writes the Markdown to standard output instead of the file.
+- `--json` writes the JSON data to standard output instead of the file.
+
+`export-pr` needs a branch with at least one commit and a GitHub remote named `origin`. A turn is one model request. Branch and model names appear in code spans, so they never become mentions or links.
+```
+
+### Acceptance criteria
+
+- `GetRollupAsync` returns the same rows as before for the four existing groupings, with `Channel` null.
+- `export-pr` writes only the receipt file, with UTF-8 without a byte order mark and `\n` line breaks, and creates its directories. `--stdout` and `--json` write no file.
+- No `double` or `float` in `src/`. Money flows only through `decimal` and `LedgerFormat`.
+- `dotnet build` reports no warnings, and `dotnet test` passes 619 tests (591 + 28).
+
+### Verify
+
+```shell
+dotnet build CopilotLedger.slnx
+dotnet test CopilotLedger.slnx
+```
+
+Report the passed, failed, and skipped counts.
+
+## Task 3 specification: The Receipt Action
+
+### Files
+
+| File | Change |
+|---|---|
+| `action/action.yml` | New, copy exactly |
+| `action/receipt.ps1` | New, copy exactly |
+| `action/tests/receipt.Tests.ps1` | New, copy exactly (Task 3 tests) |
+| `.github/workflows/receipt.yml` | New, copy exactly: this repository uses the action |
+| `.github/workflows/ci.yml` | Run the action's tests |
+| `docs/action.md` | New, copy exactly |
+| `docs/cli.md` | One sentence in "Pull request receipts" |
+
+Write the three `action/` files and the workflow with `\n` line breaks. `receipt.ps1` is run by `pwsh` explicitly, so it needs no executable bit.
+
+### `action/action.yml` (copy exactly)
+
+```yaml
+name: CopilotLedger PR receipt
+description: Posts the CopilotLedger AI spend receipt committed in a pull request as one comment, and updates it on later pushes.
+author: swigerb
+
+inputs:
+  github-token:
+    description: Token that reads the pull request and writes the comment. Needs contents read and pull-requests write.
+    default: ${{ github.token }}
+  receipts-directory:
+    description: Repository directory that gh ledger export-pr writes receipts to.
+    default: .github/copilot-ledger/receipts
+  comment-author:
+    description: Login that owns the receipt comment. Change it only when github-token belongs to another account.
+    default: 'github-actions[bot]'
+
+outputs:
+  result:
+    description: created, updated, unchanged, no-receipt, or skipped.
+    value: ${{ steps.receipt.outputs.result }}
+  comment-url:
+    description: URL of the receipt comment; empty for no-receipt and skipped.
+    value: ${{ steps.receipt.outputs.comment-url }}
+
+runs:
+  using: composite
+  steps:
+    - id: receipt
+      shell: pwsh
+      env:
+        RECEIPT_TOKEN: ${{ inputs.github-token }}
+        RECEIPTS_DIRECTORY: ${{ inputs.receipts-directory }}
+        COMMENT_AUTHOR: ${{ inputs.comment-author }}
+        EVENT_NAME: ${{ github.event_name }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+      run: '& (Join-Path $env:GITHUB_ACTION_PATH receipt.ps1)'
+```
+
+Every value from the event reaches the script through `env`, never by `${{ }}` inside `run`, so a branch name can't inject script.
+
+### `action/receipt.ps1` (copy exactly)
+
+````powershell
+#Requires -Version 7.4
+# Posts the CopilotLedger receipt that a pull request commits as one comment, and updates that comment on later runs.
+# action.yml passes the inputs and pull request fields as environment variables. See docs/action.md.
+
+Set-StrictMode -Version 3.0
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+
+$Marker = '<!-- copilot-ledger-receipt -->'
+$MaximumBytes = 65536
+$PageSize = 100
+$MaximumPages = 30
+
+function ConvertTo-CommandValue([string] $Value) {
+    return $Value.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+}
+
+function Write-Notice([string] $Message) {
+    Write-Host "::notice::$(ConvertTo-CommandValue $Message)"
+}
+
+function Stop-WithError([string] $Message) {
+    Write-Host "::error::$(ConvertTo-CommandValue $Message)"
+    exit 1
+}
+
+function Set-ActionOutput([string] $Name, [string] $Value) {
+    [System.IO.File]::AppendAllText(
+        $env:GITHUB_OUTPUT,
+        "$Name=$Value`n",
+        [System.Text.UTF8Encoding]::new($false))
+}
+
+function Invoke-GitHubApi([string] $Method, [string] $Path, [string] $Body = '') {
+    $parameters = @{
+        Uri = "$($env:GITHUB_API_URL.TrimEnd('/'))/$Path"
+        Method = $Method
+        Headers = @{
+            Authorization = "Bearer $($env:RECEIPT_TOKEN)"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2026-03-10'
+        }
+    }
+    if ($Body.Length -gt 0) {
+        $parameters.Body = [System.Text.Encoding]::UTF8.GetBytes($Body)
+        $parameters.ContentType = 'application/json'
+    }
+
+    $response = Invoke-WebRequest @parameters
+    return [System.Text.Json.JsonDocument]::Parse([string] $response.Content).RootElement.Clone()
+}
+
+function Get-StringProperty([System.Text.Json.JsonElement] $Element, [string] $Name) {
+    $value = [System.Text.Json.JsonElement]::new()
+    if ($Element.ValueKind -eq [System.Text.Json.JsonValueKind]::Object -and
+        $Element.TryGetProperty($Name, [ref] $value) -and
+        $value.ValueKind -eq [System.Text.Json.JsonValueKind]::String) {
+        return $value.GetString()
+    }
+
+    return $null
+}
+
+function Get-Pages([string] $Path) {
+    $items = [System.Collections.Generic.List[System.Text.Json.JsonElement]]::new()
+    for ($page = 1; $page -le $MaximumPages; $page++) {
+        $separator = if ($Path.Contains('?')) { '&' } else { '?' }
+        $array = Invoke-GitHubApi 'GET' "$Path${separator}per_page=$PageSize&page=$page"
+        $count = 0
+        foreach ($item in $array.EnumerateArray()) {
+            $items.Add($item)
+            $count++
+        }
+
+        if ($count -lt $PageSize) {
+            break
+        }
+    }
+
+    return , $items
+}
+
+function Read-Receipt([string] $Repository, [string] $Path, [string] $Sha) {
+    $encodedPath = ($Path.Split('/') | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '/'
+    $item = Invoke-GitHubApi 'GET' "repos/$Repository/contents/$($encodedPath)?ref=$Sha"
+    $size = $item.GetProperty('size').GetInt64()
+    if ($size -gt $MaximumBytes) {
+        Stop-WithError "$Path is $size bytes; a receipt can be at most $MaximumBytes bytes."
+    }
+
+    $bytes = [System.Convert]::FromBase64String((Get-StringProperty $item 'content'))
+    try {
+        $text = [System.Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+    }
+    catch [System.Text.DecoderFallbackException] {
+        Stop-WithError "$Path is not valid UTF-8."
+    }
+
+    [string[]] $lines = @($text.Split("`n") | ForEach-Object { $_.TrimEnd("`r") })
+    if ($lines[0] -cne $Marker) {
+        Stop-WithError "$Path doesn't start with $Marker, so it isn't a CopilotLedger receipt."
+    }
+
+    $start = [System.Array]::IndexOf($lines, '```json')
+    $end = if ($start -lt 0) { -1 } else { [System.Array]::IndexOf($lines, '```', $start + 1) }
+    if ($start -lt 0 -or $end -le $start + 1) {
+        Stop-WithError "$Path has no JSON data block."
+    }
+
+    try {
+        $data = [System.Text.Json.JsonDocument]::Parse(($lines[($start + 1)..($end - 1)] -join "`n")).RootElement.Clone()
+    }
+    catch [System.Text.Json.JsonException] {
+        Stop-WithError "$Path has invalid JSON data: $($_.Exception.Message)"
+    }
+
+    $version = [System.Text.Json.JsonElement]::new()
+    if ($data.ValueKind -ne [System.Text.Json.JsonValueKind]::Object -or
+        -not $data.TryGetProperty('schemaVersion', [ref] $version) -or
+        $version.ValueKind -ne [System.Text.Json.JsonValueKind]::Number -or
+        $version.GetRawText() -cne '1') {
+        Stop-WithError "$Path has an unsupported schemaVersion; this action reads schemaVersion 1."
+    }
+
+    $branch = Get-StringProperty $data 'branch'
+    if ($null -eq $branch) {
+        Stop-WithError "$Path has no branch."
+    }
+
+    return [pscustomobject]@{ Path = $Path; Branch = $branch; Text = $text }
+}
+
+if ($env:EVENT_NAME -cne 'pull_request') {
+    Stop-WithError "The CopilotLedger receipt action runs on pull_request events, not $($env:EVENT_NAME)."
+}
+
+$repository = $env:GITHUB_REPOSITORY
+if (-not [string]::Equals($env:HEAD_REPOSITORY, $repository, [System.StringComparison]::OrdinalIgnoreCase)) {
+    Write-Notice 'Skipped the CopilotLedger receipt: workflows for pull requests from forks get a read-only token, so they can''t comment.'
+    Set-ActionOutput 'result' 'skipped'
+    Set-ActionOutput 'comment-url' ''
+    exit 0
+}
+
+$directory = $env:RECEIPTS_DIRECTORY.Trim('/') + '/'
+$candidates = [System.Collections.Generic.List[string]]::new()
+foreach ($file in (Get-Pages "repos/$repository/pulls/$($env:PR_NUMBER)/files")) {
+    $name = Get-StringProperty $file 'filename'
+    if ($null -ne $name -and
+        (Get-StringProperty $file 'status') -cne 'removed' -and
+        $name.StartsWith($directory, [System.StringComparison]::Ordinal) -and
+        $name.EndsWith('.md', [System.StringComparison]::Ordinal)) {
+        $candidates.Add($name)
+    }
+}
+
+if ($candidates.Count -eq 0) {
+    Write-Notice "No CopilotLedger receipt changed in this pull request. Run gh ledger export-pr on the branch, then commit the file it writes under $directory."
+    Set-ActionOutput 'result' 'no-receipt'
+    Set-ActionOutput 'comment-url' ''
+    exit 0
+}
+
+$receipts = @($candidates | ForEach-Object { Read-Receipt $repository $_ $env:HEAD_SHA })
+$matching = @($receipts | Where-Object { $_.Branch -ceq $env:HEAD_REF })
+if ($matching.Count -eq 0) {
+    $found = ($receipts | ForEach-Object { $_.Branch }) -join ', '
+    Stop-WithError "No receipt for $($env:HEAD_REF) changed in this pull request; found receipts for: $found."
+}
+
+if ($matching.Count -gt 1) {
+    $paths = ($matching | ForEach-Object { $_.Path }) -join ', '
+    Stop-WithError "More than one receipt for $($env:HEAD_REF) changed in this pull request: $paths."
+}
+
+$receipt = $matching[0]
+$existing = $null
+foreach ($comment in (Get-Pages "repos/$repository/issues/$($env:PR_NUMBER)/comments")) {
+    $user = [System.Text.Json.JsonElement]::new()
+    $login = if ($comment.TryGetProperty('user', [ref] $user)) { Get-StringProperty $user 'login' } else { $null }
+    $body = Get-StringProperty $comment 'body'
+    if ($login -ceq $env:COMMENT_AUTHOR -and
+        $null -ne $body -and
+        $body.StartsWith($Marker, [System.StringComparison]::Ordinal)) {
+        $existing = $comment
+        break
+    }
+}
+
+$payload = '{"body":' + (ConvertTo-Json -InputObject $receipt.Text -Compress) + '}'
+if ($null -eq $existing) {
+    $created = Invoke-GitHubApi 'POST' "repos/$repository/issues/$($env:PR_NUMBER)/comments" $payload
+    $result = 'created'
+    $url = Get-StringProperty $created 'html_url'
+}
+elseif ((Get-StringProperty $existing 'body').Replace("`r`n", "`n") -ceq $receipt.Text.Replace("`r`n", "`n")) {
+    $result = 'unchanged'
+    $url = Get-StringProperty $existing 'html_url'
+}
+else {
+    $id = $existing.GetProperty('id').GetInt64()
+    $updated = Invoke-GitHubApi 'PATCH' "repos/$repository/issues/comments/$id" $payload
+    $result = 'updated'
+    $url = Get-StringProperty $updated 'html_url'
+}
+
+Write-Host "CopilotLedger receipt ${result}: $url"
+Set-ActionOutput 'result' $result
+Set-ActionOutput 'comment-url' $url
+exit 0
+````
+
+How it behaves, in order:
+
+1. Any event but `pull_request`: `::error::The CopilotLedger receipt action runs on pull_request events, not <event>.`, exit 1, no API calls.
+2. A head repository other than this one (a fork, or a deleted fork): `::notice::Skipped the CopilotLedger receipt: …`, outputs `result=skipped` and an empty `comment-url`, exit 0, no API calls.
+3. List the changed files and keep the candidates. None: a `::notice::` naming `gh ledger export-pr` and the directory, `result=no-receipt`, exit 0.
+4. Read and validate every candidate (errors name the file and exit 1), then require exactly one whose `branch` is the head branch, case-sensitively.
+5. Find the comment, then create it, leave it, or update it, and write `CopilotLedger receipt <result>: <url>` and both outputs.
+
+Messages go through `Write-Host`, because `Write-Output` inside a function whose result is assigned would be swallowed. Workflow-command text escapes `%`, `\r`, and `\n`. `Set-StrictMode -Version 3.0` is deliberate.
+
+### `.github/workflows/receipt.yml` (copy exactly)
+
+```yaml
+name: Receipt
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: receipt-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  receipt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./action
+```
+
+On pull requests in this repository without a receipt, the action leaves a notice and succeeds, which checks the action's real API calls on every pull request.
+
+### CI
+
+In `.github/workflows/ci.yml`, add this step directly after `- run: dotnet test CopilotLedger.slnx`:
+
+```yaml
+      - name: Test the receipt action
+        shell: pwsh
+        run: pwsh -NoProfile -File action/tests/receipt.Tests.ps1
+```
+
+### `docs/action.md` (copy exactly)
+
+````markdown
+# Posting PR receipts with the CopilotLedger action
+
+The CopilotLedger action posts a branch's AI spend receipt on its pull request. The receipt comes from your machine: CopilotLedger's ledger is local, and the action only reads the receipt file the pull request commits. It needs no cloud service and no secrets.
+
+## How it works
+
+1. On your machine, check out the pull request's branch and run `gh ledger export-pr`. It writes the branch's receipt to `.github/copilot-ledger/receipts/<branch>-<hash>.md`.
+2. Commit that file on the branch and push.
+3. On each push, the action finds the receipt among the pull request's changed files, checks it, and posts it as one comment. Later pushes update that comment instead of adding new ones.
+
+The receipt is Markdown with its data in a JSON block. It shows GitHub AI Credits, Foundry BYOK spend, local-model tokens with the cloud spend they avoided, circuit-breaker trips, and the most expensive prompt. Its totals equal the branch's row in `gh ledger branch --since all --json`.
+
+Receipts stay in the repository after the pull request merges, as a record of what each branch spent.
+
+## Add the workflow
+
+Create `.github/workflows/copilot-ledger-receipt.yml`:
+
+```yaml
+name: CopilotLedger receipt
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: copilot-ledger-receipt-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  receipt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: swigerb/gh-ledger/action@v0.4.0
+```
+
+The action reads the receipt with `contents: read` and comments with `pull-requests: write`, using the workflow's `GITHUB_TOKEN`.
+
+## Inputs and outputs
+
+| Input | Default | Meaning |
+|---|---|---|
+| `github-token` | `${{ github.token }}` | Token that reads the pull request and writes the comment |
+| `receipts-directory` | `.github/copilot-ledger/receipts` | Where `export-pr` writes receipts |
+| `comment-author` | `github-actions[bot]` | The login that owns the receipt comment. Change it only when `github-token` belongs to another account. |
+
+| Output | Meaning |
+|---|---|
+| `result` | `created`, `updated`, `unchanged`, `no-receipt`, or `skipped` |
+| `comment-url` | The receipt comment's URL; empty for `no-receipt` and `skipped` |
+
+## What the action checks
+
+- It runs only for `pull_request` events. Pull requests from forks get a read-only token, so the action skips them with a notice.
+- A receipt must be among the pull request's changed files, under the receipts directory, and end in `.md`. With none, the action leaves a notice and succeeds.
+- A receipt must start with `<!-- copilot-ledger-receipt -->`, be at most 65,536 bytes of UTF-8, and hold a JSON block with `"schemaVersion": 1` and a `branch` equal to the pull request's branch. Otherwise the action fails with an error that names the file.
+- It updates the oldest comment by `comment-author` that starts with `<!-- copilot-ledger-receipt -->`. It never edits anyone else's comment.
+
+The action is a composite action that runs PowerShell 7, which GitHub-hosted runners include.
+````
+
+### `docs/cli.md`
+
+At the end of the first paragraph of "## Pull request receipts", after "Commit that file on the branch and push it.", add:
+
+```markdown
+The CopilotLedger action then posts it on the pull request; see [Posting PR receipts with the CopilotLedger action](action.md).
+```
+
+### Acceptance criteria
+
+- `pwsh -NoProfile -File action/tests/receipt.Tests.ps1` prints `All receipt action tests passed.` and exits 0 on Windows and Linux.
+- The action uses no other action and no network access other than `GITHUB_API_URL`. The workflow grants only `contents: read` and `pull-requests: write`.
+- `dotnet test` still passes 619 tests.
+- On this task's pull request, the `Receipt` workflow succeeds with a `No CopilotLedger receipt changed in this pull request.` notice.
+
+### Verify
+
+```shell
+dotnet build CopilotLedger.slnx
+dotnet test CopilotLedger.slnx
+pwsh -NoProfile -File action/tests/receipt.Tests.ps1
+```
+
+Report the .NET passed, failed, and skipped counts and the PowerShell result line.
+
+## Task 4 specification: gh Extension Release, Version 0.4.0 & Quickstart
+
+### Files
+
+| File | Change |
+|---|---|
+| `src/CopilotLedger.Cli/Install/GhExtension.cs` | New, copy exactly |
+| `src/CopilotLedger.Cli/Install/InstallCommands.cs` | Skip the alias as the extension; make two helpers internal |
+| `src/CopilotLedger.Cli/Reporting/ReportCommands.cs` | `status` as the extension and the install-path warning |
+| `src/CopilotLedger.Cli/CopilotLedger.Cli.csproj` | `<Version>0.4.0</Version>` |
+| `src/CopilotLedger.Cli/GhLedgerCli.cs` | Version comment and fallback `0.4.0` |
+| `.github/workflows/release.yml` | New, copy exactly |
+| `.github/workflows/ci.yml` | Smoke test expects `0.4.0` |
+| `README.md` | Quickstart around the extension, `export-pr`, and the action |
+| `docs/guide.md` | Install with gh; show spend on pull requests; uninstall |
+| `docs/cli.md` | Getting gh-ledger, install, uninstall, and troubleshooting |
+| `docs/releasing.md` | New, copy exactly |
+| `tests/CopilotLedger.Tests/Cli/InstallCommandTests.cs` | IN17–IN19 |
+| `tests/CopilotLedger.Tests/Cli/ReportCommandTests.cs` | RP12, RP13, and `StatusText` |
+| `tests/CopilotLedger.Tests/Cli/DaemonCommandTests.cs` | DM1 expects `0.4.0` |
+
+### `GhExtension.cs` (copy exactly)
+
+```csharp
+namespace CopilotLedger.Cli.Install;
+
+// `gh extension install swigerb/gh-ledger` saves the release asset for the platform as
+// <gh data directory>/extensions/gh-ledger/gh-ledger (gh-ledger.exe on Windows) next to a manifest.yml, and runs it for
+// `gh ledger ...`. Paths are split on both '/' and '\' so tests can use either style on any OS.
+internal static class GhExtension
+{
+    public static bool IsInstalled(ICliPlatform platform)
+    {
+        string? executable = platform.ProcessPath;
+        if (executable is null)
+        {
+            return false;
+        }
+
+        int separator = LastSeparator(executable);
+        if (separator < 0)
+        {
+            return false;
+        }
+
+        string name = executable[(separator + 1)..];
+        string directory = executable[..separator];
+        int parentSeparator = LastSeparator(directory);
+        if (parentSeparator < 0)
+        {
+            return false;
+        }
+
+        string parent = directory[..parentSeparator];
+        return (name.Equals("gh-ledger", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("gh-ledger.exe", StringComparison.OrdinalIgnoreCase))
+            && directory[(parentSeparator + 1)..].Equals("gh-ledger", StringComparison.OrdinalIgnoreCase)
+            && parent[(LastSeparator(parent) + 1)..].Equals("extensions", StringComparison.OrdinalIgnoreCase)
+            && platform.FileExists(directory + executable[separator] + "manifest.yml");
+    }
+
+    // How to run gh-ledger in messages: "gh ledger" for the extension, else "gh-ledger".
+    public static string CommandName(ICliPlatform platform) =>
+        IsInstalled(platform) ? "gh ledger" : "gh-ledger";
+
+    private static int LastSeparator(string path) =>
+        Math.Max(path.LastIndexOf('/'), path.LastIndexOf('\\'));
+}
+```
+
+### `InstallCommands` (copy exactly)
+
+1. Replace these lines in `InstallAsync`:
+
+   ```csharp
+           string? gh = context.Platform.FindOnPath("gh");
+           if (gh is null)
+           {
+   ```
+
+   with:
+
+   ```csharp
+           bool extension = GhExtension.IsInstalled(context.Platform);
+           string? gh = context.Platform.FindOnPath("gh");
+           if (extension)
+           {
+               context.Out.WriteLine(
+                   "gh ledger runs this GitHub CLI extension, so no alias is needed.");
+           }
+           else if (gh is null)
+           {
+   ```
+
+   (`UninstallAsync` has a similar `FindOnPath("gh")` line; don't change it.)
+2. Replace `if (gh is not null && context.Platform.IsWindows && FindSh(context) is null)` with:
+
+   ```csharp
+           if (!extension && gh is not null && context.Platform.IsWindows && FindSh(context) is null)
+   ```
+3. Change `private static async Task<InstallManifest?> TryReadManifestAsync(` to `internal static async Task<InstallManifest?> TryReadManifestAsync(`, and `private static string ManifestPath(CliContext context) =>` to `internal static string ManifestPath(CliContext context) =>`.
+
+Nothing else in `install` or `uninstall` changes. As the extension, the manifest keeps `GhAliasSet` from the previous manifest (false on a first install).
+
+### `ReportCommands` (copy exactly)
+
+1. In `StatusAsync`, replace:
+
+   ```csharp
+           IReadOnlyList<string> warnings = CopilotOtelEnvironment.GetWarnings(lookup);
+           bool enabled = IsOtelEnabled(lookup);
+   ```
+
+   with:
+
+   ```csharp
+           List<string> warnings = [.. CopilotOtelEnvironment.GetWarnings(lookup)];
+           bool enabled = IsOtelEnabled(lookup);
+           bool extension = GhExtension.IsInstalled(context.Platform);
+           string command = GhExtension.CommandName(context.Platform);
+           InstallManifest? manifest = await InstallCommands.TryReadManifestAsync(
+               InstallCommands.ManifestPath(context),
+               cancellationToken);
+           if (manifest is not null
+               && context.Platform.ProcessPath is string executable
+               && !string.Equals(
+                   manifest.ExecutablePath,
+                   executable,
+                   context.Platform.IsWindows ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+           {
+               warnings.Add(
+                   $"CopilotLedger was installed from {manifest.ExecutablePath}; run {command} install to use this copy instead.");
+           }
+   ```
+2. Pass `extension` as a new last argument to `WriteStatusJson`, and replace the first two text lines and the Copilot line:
+
+   ```csharp
+           context.Out.WriteLine(extension
+               ? $"gh-ledger {GhLedgerCli.Version} (GitHub CLI extension)"
+               : $"gh-ledger {GhLedgerCli.Version}");
+           context.Out.WriteLine($"Daemon:  {DaemonLine(running, state, context, command)}");
+   ```
+
+   ```csharp
+           context.Out.WriteLine(
+               $"Copilot: {(enabled
+                   ? CopilotEnabledLine(lookup)
+                   : $"OTel export not enabled; run: {command} install")}");
+   ```
+3. `WriteStatusJson` gets a last parameter `bool extension`, and writes `writer.WriteBoolean("ghExtension", extension);` directly after `writer.WriteString("version", GhLedgerCli.Version);`.
+4. `DaemonLine` gets a last parameter `string command`, and its not-running text becomes `$"not running; start it with: {command} daemon start"`.
+
+The new warning is printed with the others (`Warning: <text>`) and is in the JSON `warnings` array. Without `install.json`, or when it names this executable, nothing changes.
+
+### Version 0.4.0
+
+- `CopilotLedger.Cli.csproj`: `<Version>0.4.0</Version>`.
+- `GhLedgerCli.cs`: the comment becomes `// AssemblyInformationalVersionAttribute: "0.4.0"` and the fallback `?? "0.4.0";`.
+- `ci.yml`: the smoke test's version check compares with `"0.4.0"`.
+- Tests: in `DaemonCommandTests.DM1`, `Assert.Equal("0.4.0", root.GetProperty("version").GetString());`; in `ReportCommandTests.StatusText`, the first line is `gh-ledger 0.4.0`.
+
+### `.github/workflows/release.yml` (copy exactly)
+
+```yaml
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (${{ matrix.rid }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            asset: gh-ledger-windows-amd64.exe
+            smoke: true
+          - os: windows-latest
+            rid: win-arm64
+            asset: gh-ledger-windows-arm64.exe
+            smoke: false
+          - os: ubuntu-latest
+            rid: linux-x64
+            asset: gh-ledger-linux-amd64
+            smoke: true
+          - os: ubuntu-latest
+            rid: linux-arm64
+            asset: gh-ledger-linux-arm64
+            smoke: false
+          - os: macos-latest
+            rid: osx-x64
+            asset: gh-ledger-darwin-amd64
+            smoke: false
+          - os: macos-latest
+            rid: osx-arm64
+            asset: gh-ledger-darwin-arm64
+            smoke: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Check the version
+        shell: bash
+        run: |
+          version=$(dotnet msbuild src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -getProperty:Version | tr -d '\r')
+          echo "Project version: $version"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match the project version $version."
+            exit 1
+          fi
+      - name: Publish
+        run: dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release -r ${{ matrix.rid }} -o publish
+      - name: Name the asset
+        shell: bash
+        run: |
+          mkdir dist
+          if [ -f publish/gh-ledger.exe ]; then
+            cp publish/gh-ledger.exe "dist/${{ matrix.asset }}"
+          else
+            cp publish/gh-ledger "dist/${{ matrix.asset }}"
+          fi
+      - name: Smoke-test the asset
+        if: matrix.smoke
+        shell: bash
+        run: |
+          version=$(dotnet msbuild src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -getProperty:Version | tr -d '\r')
+          test "$("./dist/${{ matrix.asset }}" --version | tr -d '\r')" = "$version"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Add the rates and checksums
+        run: |
+          cp src/CopilotLedger.Core/Pricing/rates.json dist/rates.json
+          cd dist
+          sha256sum gh-ledger-* rates.json > gh-ledger-checksums.txt
+          cat gh-ledger-checksums.txt
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease=(--prerelease) ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "gh-ledger $GITHUB_REF_NAME" --generate-notes "${prerelease[@]}"
+```
+
+### `docs/releasing.md` (copy exactly)
+
+````markdown
+# Releasing gh-ledger
+
+Releases are GitHub Releases of this repository. They make `gh extension install swigerb/gh-ledger` work, and `gh ledger rates update` downloads their `rates.json`.
+
+## Cut a release
+
+1. Set `<Version>` in `src/CopilotLedger.Cli/CopilotLedger.Cli.csproj`, the version fallback in `GhLedgerCli.cs`, and the version that the CI smoke test checks, and merge that change.
+2. Optional: run the Release workflow from the Actions tab on `main`. A manual run builds and smoke-tests all six binaries and uploads them as workflow artifacts, without creating a release.
+3. Tag the merged commit and push the tag:
+
+   ```shell
+   git tag v0.4.0
+   git push origin v0.4.0
+   ```
+
+The Release workflow checks that the tag equals `v` plus the project version, builds a single-file binary for each platform, and creates the release with these assets:
+
+| Asset | Platform |
+|---|---|
+| `gh-ledger-windows-amd64.exe` | Windows x64 |
+| `gh-ledger-windows-arm64.exe` | Windows Arm64 |
+| `gh-ledger-linux-amd64` | Linux x64 |
+| `gh-ledger-linux-arm64` | Linux Arm64 |
+| `gh-ledger-darwin-amd64` | macOS x64 |
+| `gh-ledger-darwin-arm64` | macOS Apple silicon |
+| `rates.json` | The built-in rates, for `gh ledger rates update` |
+| `gh-ledger-checksums.txt` | SHA-256 checksums of the files above |
+
+GitHub CLI picks a release asset by the `<os>-<arch>` suffix of its name, so keep these names. A tag with a hyphen, such as `v0.5.0-rc.1`, makes a prerelease, which `gh extension install` and `rates update` ignore because they use the latest release.
+````
+
+### `README.md`
+
+Replace the sections from "## Features" through "## Documentation" (keep the title, the two opening paragraphs, and "## License") with:
+
+````markdown
+## Features
+
+- Reports for branches, agents, and prompt traces
+- Pull request receipts: commit a branch's spend receipt, and a GitHub Action posts it on the pull request
+- A circuit breaker for spend velocity and retry churn
+- Soft AI-credit budgets for each branch
+- An MCP server that lets Copilot agents inspect the ledger
+- Attribution for Foundry BYOK and local models
+- Local SQLite storage and JSON output for scripts
+
+## Requirements
+
+- GitHub CLI (`gh`) to install CopilotLedger as an extension, or the .NET 10 SDK to build it from source
+- Windows (x64 or Arm64), Linux (x64 or Arm64), or macOS (Intel or Apple silicon)
+- Projects in Git repositories, for per-branch attribution. CopilotLedger reads
+  `.git` directly and doesn't run `git`.
+- Copilot CLI, the GitHub Copilot app, or VS Code with Copilot
+
+## How it works
+
+CopilotLedger runs an OpenTelemetry HTTP receiver on your machine. Copilot sends
+usage spans to that receiver, and CopilotLedger stores usage and cost in a
+local SQLite ledger.
+
+Spend is available through text reports, JSON reports, pull request receipts,
+and the MCP server. Prompt and response content are not stored.
+
+## Quick start
+
+Install the GitHub CLI extension, then turn on Copilot's telemetry export and
+start the daemon:
+
+```shell
+gh extension install swigerb/gh-ledger
+gh ledger install
+```
+
+`install` also registers the daemon to start when you sign in: a Windows Run
+value, a macOS LaunchAgent, or an XDG autostart entry. The extension doesn't
+need Git for Windows.
+
+Restart the GitHub Copilot app, VS Code, and your open terminals. Send one
+Copilot prompt, then check the receiver and export configuration:
+
+```shell
+gh ledger status
+```
+
+See branch spend:
+
+```shell
+gh ledger branch
+```
+
+Run `gh ledger --help` for every command. The daemon runs from the extension's
+binary, so stop it before you upgrade:
+
+```shell
+gh ledger daemon stop
+gh extension upgrade ledger
+gh ledger daemon start
+```
+
+### Show spend on pull requests
+
+On a pull request's branch, write the branch's receipt and commit it:
+
+```shell
+gh ledger export-pr
+git add .github/copilot-ledger/receipts
+git commit -m "Add CopilotLedger receipt"
+git push
+```
+
+Then add `.github/workflows/copilot-ledger-receipt.yml` to the repository:
+
+```yaml
+name: CopilotLedger receipt
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: copilot-ledger-receipt-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  receipt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: swigerb/gh-ledger/action@v0.4.0
+```
+
+The action posts the receipt as one comment and updates it on later pushes.
+See [Posting PR receipts](docs/action.md).
+
+### Build from source
+
+Build a single-file, self-contained binary for your platform:
+
+```shell
+dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release \
+  -r <rid> -o artifacts/gh-ledger
+```
+
+Use `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `osx-x64`, or
+`osx-arm64`. Move the binary to a permanent folder, then run
+`/path/to/gh-ledger install`, which records that location and sets a
+`gh ledger` alias. On Windows, the alias needs Git for Windows (`sh.exe`);
+without it, run `gh-ledger` directly.
+
+## Documentation
+
+- [Getting the most from CopilotLedger](docs/guide.md)
+- [CLI command reference](docs/cli.md)
+- [Pricing and rates configuration](docs/configuration.md)
+- [Posting PR receipts with the CopilotLedger action](docs/action.md)
+- [Releasing gh-ledger](docs/releasing.md)
+````
+
+### `docs/guide.md`
+
+1. In the opening paragraph, replace the sentence that starts "Commands are shown as" through the end of the paragraph with:
+
+   ```markdown
+   Commands are shown as `gh-ledger <command>`. With the GitHub CLI extension, or after `install` sets the alias, run them as `gh ledger <command>`.
+   ```
+2. Replace the subsections "### Build the binary" and "### Install it" with:
+
+   ````markdown
+   ### Install it
+
+   Install the GitHub CLI extension and run its `install` command:
+
+   ```shell
+   gh extension install swigerb/gh-ledger
+   gh ledger install
+   ```
+
+   To build from source instead, publish a single-file binary for your platform, move it to a permanent folder, and run its `install`:
+
+   ```shell
+   dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release \
+     -r <rid> -o artifacts/gh-ledger
+   /path/to/gh-ledger install
+   ```
+
+   Replace `<rid>` with `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `osx-x64`, or `osx-arm64`.
+
+   `install` sets `COPILOT_OTEL_ENABLED=true` for your user, starts the daemon, and records its changes in `install.json`. For a binary you built, it also sets the `gh ledger` alias; the extension doesn't need one. Use `--dry-run` to print the changes first.
+
+   It also registers the daemon to start when you sign in:
+
+   - Windows uses `CopilotLedger` under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`.
+   - macOS uses `~/Library/LaunchAgents/io.github.swigerb.copilot-ledger.plist`.
+   - Linux uses `copilot-ledger.desktop` in `$XDG_CONFIG_HOME/autostart`, or `~/.config/autostart` by default.
+
+   Restart the GitHub Copilot app, VS Code, and open terminals after the install.
+   ````
+3. Add this section directly before "## Stop runaway loops":
+
+   ````markdown
+   ## Show spend on pull requests
+
+   Give reviewers the AI spend behind a pull request. On the pull request's branch, write its receipt and commit it:
+
+   ```shell
+   gh-ledger export-pr
+   git add .github/copilot-ledger/receipts
+   git commit -m "Add CopilotLedger receipt"
+   git push
+   ```
+
+   The receipt lists GitHub AI Credits by model, Foundry BYOK spend, local-model tokens with the cloud spend they avoided, circuit-breaker trips, and the most expensive prompt, with the data as JSON. Its totals match `gh-ledger branch --since all`. Run `export-pr` again before you push more work, so the receipt stays current.
+
+   Add the CopilotLedger action to the repository once, and it posts the receipt on the pull request and updates that comment on later pushes. See [Posting PR receipts](action.md) for the workflow.
+   ````
+4. In "## Uninstall", append this paragraph:
+
+   ```markdown
+   If you installed the GitHub CLI extension, remove it after `uninstall`, with `gh extension remove ledger`. On Windows, the daemon must be stopped first, because Windows can't replace or delete a running program; `uninstall` stops it.
+   ```
+
+### `docs/cli.md`
+
+1. Replace "## Build the binary" and its paragraph and code block with:
+
+   ````markdown
+   ## Get gh-ledger
+
+   Install the GitHub CLI extension:
+
+   ```shell
+   gh extension install swigerb/gh-ledger
+   ```
+
+   It downloads the release binary for your platform, which then runs as `gh ledger <command>`. Or publish one single-file, self-contained binary for your runtime identifier:
+
+   ```shell
+   dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release -r <rid> -o artifacts/gh-ledger
+   ```
+
+   Use `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `osx-x64`, or `osx-arm64`. Keep the binary in a permanent folder, because `install` points the sign-in item and the `gh ledger` alias at it.
+   ````
+2. In "## Install", replace the first paragraph's words "sets the `gh ledger` alias," with "sets the `gh ledger` alias (unless gh-ledger is running as the GitHub CLI extension, which provides `gh ledger` itself),".
+3. In "## Install", replace the paragraph "On Windows, `gh ledger` needs `sh.exe` from Git for Windows. The `gh-ledger` executable works without it." with:
+
+   ```markdown
+   On Windows, the `gh ledger` alias needs `sh.exe` from Git for Windows; the extension and the `gh-ledger` executable don't.
+
+   As the extension, `status` shows `(GitHub CLI extension)` after the version and names `gh ledger` commands. `status` warns when `install.json` names a different executable, for example after switching from a downloaded binary to the extension; run `install` again from the copy you want the sign-in item to start.
+
+   The sign-in item and the daemon run the extension's binary, and Windows can't replace a running program. Stop the daemon before you upgrade: `gh ledger daemon stop`, `gh extension upgrade ledger`, then `gh ledger daemon start`.
+   ```
+4. In "## Uninstall", append this sentence to its paragraph:
+
+   ```markdown
+   If you installed the GitHub CLI extension, run `gh extension remove ledger` afterward.
+   ```
+5. In "## Troubleshooting", add this item after "Port 4318 in use":
+
+   ```markdown
+   - **`gh extension upgrade` or `remove` fails on Windows.** The daemon is running from the extension's binary. Run `gh ledger daemon stop` first.
+   ```
+
+### Acceptance criteria
+
+- As the extension (`…/extensions/gh-ledger/gh-ledger[.exe]` with `manifest.yml` beside it), `install` runs no `gh` command, prints the no-alias line, never prints the `sh.exe` warning, and registers the extension's path; otherwise `install` is unchanged.
+- `status` text and JSON are unchanged for a standalone binary without `install.json` (apart from the version and `"ghExtension": false`).
+- `release.yml` publishes the six assets, `rates.json`, and `gh-ledger-checksums.txt` only for a `v*` tag whose version matches; `workflow_dispatch` builds without releasing. Don't push a tag or run a release.
+- `dotnet build` reports no warnings, and `dotnet test` passes 626 tests (619 + 7).
+
+### Verify
+
+```shell
+dotnet build CopilotLedger.slnx
+dotnet test CopilotLedger.slnx
+pwsh -NoProfile -File action/tests/receipt.Tests.ps1
+```
+
+Report the counts. After this task merges, the orchestrator runs the Release workflow manually on `main` (`gh workflow run release.yml -R swigerb/gh-ledger --ref main`) and checks that all six builds and the three smoke tests pass, before anyone tags `v0.4.0`.
+
+## Task 5 specification: `rates update`
+
+### Files
+
+| File | Change |
+|---|---|
+| `src/CopilotLedger.Core/Pricing/JsonRateCardCalculator.cs` | Add `LoadWithOverlay` |
+| `src/CopilotLedger.Cli/CliContext.cs` | Add `CreateHttpHandler` |
+| `src/CopilotLedger.Cli/Rates/RateCardFiles.cs` | New, copy exactly |
+| `src/CopilotLedger.Cli/Rates/RatesUpdate.cs` | New, copy exactly |
+| `src/CopilotLedger.Cli/Rates/RatesCommands.cs` | `rates update`; `validate` uses the downloaded base |
+| `src/CopilotLedger.Cli/Daemon/DaemonHost.cs` | Load rates through `RateCardFiles` |
+| `src/CopilotLedger.Cli/Reporting/ReportCommands.cs` | `status` shows the base and its warning |
+| `README.md`, `docs/cli.md`, `docs/configuration.md` | Document `rates update` |
+| `tests/CopilotLedger.Tests/TestSupport/CliHarness.cs` | Add `RunWithHttpAsync` |
+| `tests/CopilotLedger.Tests/TestSupport/FakeHttpHandler.cs` | New (Task 5 tests) |
+| `tests/CopilotLedger.Tests/TestSupport/PublishedRates.cs` | New (Task 5 tests) |
+| `tests/CopilotLedger.Tests/Cli/RatesUpdateTests.cs` | New (Task 5 tests) |
+| `tests/CopilotLedger.Tests/Pricing/LoadWithOverlayTests.cs` | New (Task 5 tests) |
+
+### `JsonRateCardCalculator.LoadWithOverlay` (copy exactly)
+
+Add directly after `LoadDefault()`:
+
+```csharp
+    // baseJson is a complete rates document, such as a downloaded rates.json; its errors have no prefix. When overlayPath
+    // isn't null, that overlay is merged as LoadEmbeddedWithOverlay merges it, and its errors start with overlayPath.
+    public static JsonRateCardCalculator LoadWithOverlay(string baseJson, string? overlayPath)
+    {
+        ArgumentNullException.ThrowIfNull(baseJson);
+        if (overlayPath is null)
+        {
+            return Create(baseJson, null, null);
+        }
+
+        string overlayJson;
+        try
+        {
+            overlayJson = File.ReadAllText(overlayPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidDataException($"{overlayPath}: could not read rates overlay.", ex);
+        }
+
+        return Create(baseJson, overlayJson, overlayPath);
+    }
+```
+
+The existing load methods don't change.
+
+### `CliContext` (copy exactly)
+
+Add directly after `ConfigureWebHost`:
+
+```csharp
+    public Func<HttpMessageHandler>? CreateHttpHandler { get; init; }                   // rates update; tests: a fake handler; null: RatesUpdate.CreateDefaultHandler()
+```
+
+### `RateCardFiles.cs` (copy exactly)
+
+```csharp
+using System.Globalization;
+using CopilotLedger.Core.Pricing;
+
+namespace CopilotLedger.Cli.Rates;
+
+// DownloadedJson: the text of rates.downloaded.json when it's the base, else null (the built-in rates are the base).
+// Version: the base's ratesVersion. Warning: why an existing rates.downloaded.json was ignored, or null.
+internal sealed record RatesBase(string? DownloadedJson, string Version, string? Warning);
+
+internal static class RateCardFiles
+{
+    public static string DownloadedPath(CliContext context) =>
+        Path.Combine(context.DataDirectory, "rates.downloaded.json");
+
+    // The downloaded rates when rates.downloaded.json is valid and its ratesVersion date is later than the built-in one;
+    // otherwise the built-in rates. A downloaded file that isn't later is ignored without a warning.
+    public static RatesBase LoadBase(CliContext context)
+    {
+        string builtIn = JsonRateCardCalculator.LoadEmbedded().RatesVersion;
+        string path = DownloadedPath(context);
+        if (!File.Exists(path))
+        {
+            return new RatesBase(null, builtIn, null);
+        }
+
+        string json;
+        string version;
+        try
+        {
+            json = File.ReadAllText(path);
+            version = JsonRateCardCalculator.Parse(json).RatesVersion;
+        }
+        catch (Exception ex) when (
+            ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return new RatesBase(null, builtIn, $"ignored {path}: {ex.Message}");
+        }
+
+        if (!TryParseVersion(version, out DateOnly downloaded))
+        {
+            return new RatesBase(
+                null,
+                builtIn,
+                $"ignored {path}: ratesVersion {version} isn't a yyyy-MM-dd date.");
+        }
+
+        return downloaded > ParseVersion(builtIn)
+            ? new RatesBase(json, version, null)
+            : new RatesBase(null, builtIn, null);
+    }
+
+    // The base rates with the overlay at overlayPath merged on top; null overlayPath means no overlay.
+    // Throws InvalidDataException when the overlay is invalid; the message starts with overlayPath.
+    public static JsonRateCardCalculator Load(RatesBase rates, string? overlayPath)
+    {
+        if (rates.DownloadedJson is not null)
+        {
+            return JsonRateCardCalculator.LoadWithOverlay(rates.DownloadedJson, overlayPath);
+        }
+
+        return overlayPath is null
+            ? JsonRateCardCalculator.LoadEmbedded()
+            : JsonRateCardCalculator.LoadEmbeddedWithOverlay(overlayPath);
+    }
+
+    // context.RatesOverlayPath when that file exists, else null.
+    public static string? OverlayPath(CliContext context) =>
+        File.Exists(context.RatesOverlayPath) ? context.RatesOverlayPath : null;
+
+    public static bool TryParseVersion(string version, out DateOnly date) =>
+        DateOnly.TryParseExact(
+            version,
+            "yyyy-MM-dd",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out date);
+
+    public static DateOnly ParseVersion(string version) =>
+        DateOnly.ParseExact(version, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+}
+```
+
+### `RatesUpdate.cs` (copy exactly)
+
+```csharp
+using System.Net;
+using System.Text;
+using CopilotLedger.Cli.Daemon;
+using CopilotLedger.Cli.Install;
+using CopilotLedger.Core.Pricing;
+
+namespace CopilotLedger.Cli.Rates;
+
+internal static class RatesUpdate
+{
+    public const string DownloadUrl =
+        "https://github.com/swigerb/gh-ledger/releases/latest/download/rates.json";
+
+    private const int MaximumBytes = 1_048_576;
+
+    private static readonly TimeSpan DownloadTimeout = TimeSpan.FromSeconds(30);
+
+    // Uses the system proxy (HttpClient.DefaultProxy) and signs in to it with the current user's credentials.
+    public static HttpMessageHandler CreateDefaultHandler() =>
+        new SocketsHttpHandler
+        {
+            DefaultProxyCredentials = CredentialCache.DefaultCredentials,
+        };
+
+    public static async Task<int> RunAsync(CliContext context, CancellationToken cancellationToken)
+    {
+        byte[] bytes;
+        using (HttpClient client = new(
+            context.CreateHttpHandler?.Invoke() ?? CreateDefaultHandler(),
+            disposeHandler: true))
+        {
+            client.Timeout = DownloadTimeout;
+            client.MaxResponseContentBufferSize = MaximumBytes;
+            client.DefaultRequestHeaders.UserAgent.ParseAdd($"gh-ledger/{GhLedgerCli.Version}");
+            try
+            {
+                using HttpResponseMessage response = await client.GetAsync(
+                    DownloadUrl,
+                    cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    context.Error.WriteLine(
+                        $"Could not download rates from {DownloadUrl}: HTTP {(int)response.StatusCode}.");
+                    return 1;
+                }
+
+                bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+            }
+            catch (HttpRequestException ex)
+            {
+                context.Error.WriteLine($"Could not download rates from {DownloadUrl}: {ex.Message}");
+                return 1;
+            }
+            catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                context.Error.WriteLine(
+                    $"Could not download rates from {DownloadUrl}: no response within 30 seconds.");
+                return 1;
+            }
+        }
+
+        string json;
+        try
+        {
+            json = new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(bytes);
+        }
+        catch (DecoderFallbackException)
+        {
+            context.Error.WriteLine("The downloaded rates are invalid: the file isn't UTF-8.");
+            return 1;
+        }
+
+        string version;
+        try
+        {
+            version = JsonRateCardCalculator.Parse(json).RatesVersion;
+        }
+        catch (InvalidDataException ex)
+        {
+            context.Error.WriteLine($"The downloaded rates are invalid: {ex.Message}");
+            return 1;
+        }
+
+        if (!RateCardFiles.TryParseVersion(version, out DateOnly published))
+        {
+            context.Error.WriteLine(
+                $"The downloaded rates are invalid: ratesVersion {version} isn't a yyyy-MM-dd date.");
+            return 1;
+        }
+
+        RatesBase current = RateCardFiles.LoadBase(context);
+        if (current.Warning is not null)
+        {
+            context.Out.WriteLine($"Warning: {current.Warning}");
+        }
+
+        DateOnly inUse = RateCardFiles.ParseVersion(current.Version);
+        if (published < inUse)
+        {
+            context.Out.WriteLine(
+                $"The published rates ({version}) are older than the rates in use ({current.Version}); nothing changed.");
+            return 0;
+        }
+
+        if (published == inUse)
+        {
+            context.Out.WriteLine($"Rates are up to date ({current.Version}).");
+            return 0;
+        }
+
+        string? overlay = RateCardFiles.OverlayPath(context);
+        if (overlay is not null)
+        {
+            try
+            {
+                JsonRateCardCalculator.LoadWithOverlay(json, overlay);
+            }
+            catch (InvalidDataException ex)
+            {
+                context.Error.WriteLine(
+                    $"The downloaded rates ({version}) don't work with your rates overlay: {ex.Message}");
+                return 1;
+            }
+        }
+
+        string path = RateCardFiles.DownloadedPath(context);
+        string temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            Directory.CreateDirectory(context.DataDirectory);
+            await File.WriteAllTextAsync(temp, json, new UTF8Encoding(false), cancellationToken);
+            File.Move(temp, path, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            DaemonFiles.DeleteIfExists(temp);
+            context.Error.WriteLine($"Could not write {path}: {ex.Message}");
+            return 1;
+        }
+
+        context.Out.WriteLine($"Updated rates from {current.Version} to {version}.");
+        if (DaemonFiles.IsHeld(context))
+        {
+            string command = GhExtension.CommandName(context.Platform);
+            context.Out.WriteLine(
+                $"Restart the daemon to price new spans with them: {command} daemon stop, then {command} daemon start.");
+        }
+
+        return 0;
+    }
+}
+```
+
+The messages:
+
+| Case | Stream | Text | Exit |
+|---|---|---|---|
+| `HttpRequestException` (offline, DNS, proxy, TLS, body over 1 MiB) | Error | `Could not download rates from <url>: <message>` | 1 |
+| No response within 30 seconds | Error | `Could not download rates from <url>: no response within 30 seconds.` | 1 |
+| Not a success status | Error | `Could not download rates from <url>: HTTP <code>.` | 1 |
+| Not UTF-8 | Error | `The downloaded rates are invalid: the file isn't UTF-8.` | 1 |
+| Rejected by the rates reader | Error | `The downloaded rates are invalid: <message>` | 1 |
+| `ratesVersion` isn't `yyyy-MM-dd` | Error | `The downloaded rates are invalid: ratesVersion <version> isn't a yyyy-MM-dd date.` | 1 |
+| The current download was ignored | Out | `Warning: ignored <path>: <reason>`, then one of the next rows | |
+| Older than the rates in use | Out | `The published rates (<new>) are older than the rates in use (<current>); nothing changed.` | 0 |
+| Same date | Out | `Rates are up to date (<current>).` | 0 |
+| The overlay doesn't merge | Error | `The downloaded rates (<new>) don't work with your rates overlay: <overlay message>` | 1 |
+| Can't write the file | Error | `Could not write <path>: <message>` | 1 |
+| Saved | Out | `Updated rates from <current> to <new>.` | 0 |
+| Saved while the daemon runs | Out | also `Restart the daemon to price new spans with them: <command> daemon stop, then <command> daemon start.` | 0 |
+
+`<url>` is `RatesUpdate.DownloadUrl`, and `<command>` is `GhExtension.CommandName`. A cancellation of the command's own token isn't caught.
+
+### `RatesCommands` (copy exactly)
+
+1. The `rates` command's description becomes `"Create, validate, and update rates."`.
+2. Directly after `rates.Add(validate);`, add a blank line and:
+
+   ```csharp
+           Command update = new("update", "Download the latest published rates.");
+           update.SetAction(
+               (ParseResult _, CancellationToken cancellationToken) =>
+                   RatesUpdate.RunAsync(context, cancellationToken));
+           rates.Add(update);
+   ```
+3. In `Validate`, directly after the `string path = …;` statement, add:
+
+   ```csharp
+           RatesBase rates = RateCardFiles.LoadBase(context);
+           if (rates.Warning is not null)
+           {
+               context.Out.WriteLine($"Warning: {rates.Warning}");
+           }
+
+   ```
+
+   Replace the no-overlay message with:
+
+   ```csharp
+               context.Out.WriteLine(
+                   $"No rates overlay at {path}; using the {(rates.DownloadedJson is null ? "built-in" : "downloaded")} rates ({rates.Version}).");
+   ```
+
+   and replace the `JsonRateCardCalculator calculator = JsonRateCardCalculator.LoadEmbeddedWithOverlay(path);` statement with:
+
+   ```csharp
+               JsonRateCardCalculator calculator = RateCardFiles.Load(rates, path);
+   ```
+
+Without a downloaded file, every existing `rates validate` message is unchanged.
+
+### `DaemonHost` (copy exactly)
+
+Add `using CopilotLedger.Cli.Rates;` after `using CopilotLedger.Cli.Alerts;`. Replace the rates block after `DaemonFiles.DeleteIfExists(DaemonFiles.StopPath(context));` with:
+
+```csharp
+            RatesBase rates = RateCardFiles.LoadBase(context);
+            if (rates.Warning is not null)
+            {
+                WriteLog(writer, context, $"Warning: {rates.Warning}");
+            }
+
+            JsonRateCardCalculator calculator;
+            try
+            {
+                calculator = RateCardFiles.Load(rates, RateCardFiles.OverlayPath(context));
+            }
+            catch (InvalidDataException ex)
+            {
+                WriteLog(writer, context, $"Invalid rates overlay: {ex.Message}");
+                return 1;
+            }
+```
+
+### `ReportCommands` (copy exactly)
+
+Add `using CopilotLedger.Cli.Rates;` after `using CopilotLedger.Cli.Install;`. In `StatusAsync`:
+
+1. Replace the rates block (from `string? ratesVersion;` through the end of its `catch`) with:
+
+   ```csharp
+           RatesBase rates = RateCardFiles.LoadBase(context);
+           string? ratesVersion;
+           string? ratesError = null;
+           try
+           {
+               ratesVersion = RateCardFiles.Load(rates, RateCardFiles.OverlayPath(context)).RatesVersion;
+           }
+           catch (InvalidDataException ex)
+           {
+               ratesVersion = null;
+               ratesError = ex.Message;
+           }
+   ```
+2. Directly after Task 4's install-path warning block, add:
+
+   ```csharp
+
+           if (rates.Warning is not null)
+           {
+               warnings.Add(rates.Warning);
+           }
+   ```
+3. Pass `rates.DownloadedJson is not null` as a new last argument to `WriteStatusJson`.
+4. Replace the `Rates:` line with:
+
+   ```csharp
+           context.Out.WriteLine(
+               $"Rates:   {(ratesError is not null ? $"invalid overlay: {ratesError}" : rates.DownloadedJson is null ? ratesVersion : $"{ratesVersion} (downloaded)")}");
+   ```
+5. `WriteStatusJson` gets a last parameter `bool downloadedRates` and writes `writer.WriteString("ratesSource", downloadedRates ? "downloaded" : "built-in");` directly before `if (ratesError is null)`.
+
+### `CliHarness` (copy exactly)
+
+Add directly after `RunInAsync`:
+
+```csharp
+    public Task<CliRun> RunWithHttpAsync(HttpMessageHandler handler, params string[] args) =>
+        InvokeAsync(Context with { CreateHttpHandler = () => handler }, args);
+```
+
+### Docs
+
+`README.md`: in "## Features", replace `- Attribution for Foundry BYOK and local models` with:
+
+```markdown
+- Attribution for Foundry BYOK and local models, and `rates update` for newer prices between releases
+```
+
+`docs/cli.md`: replace the "## Rates" paragraph with:
+
+```markdown
+Run `gh-ledger rates init` to create a starter overlay and `gh-ledger rates validate` to validate it. See [configuration.md](configuration.md) for the rates format and pricing channels.
+
+`gh-ledger rates update` downloads `rates.json` from the latest gh-ledger release and keeps it when it's newer than the rates in use and your overlay still applies to it. It uses your system proxy. Restart the daemon afterward; it reads rates when it starts.
+```
+
+`docs/configuration.md`:
+
+1. In the file table, add this row after the `rates.json` row:
+
+   ```markdown
+   | `~/.copilot-ledger/rates.downloaded.json` | Newer built-in rates saved by `gh-ledger rates update` |
+   ```
+2. Add this section directly before "## The rates overlay: `~/.copilot-ledger/rates.json`":
+
+   ```markdown
+   ## Newer rates between releases: `gh-ledger rates update`
+
+   Each gh-ledger release attaches the `rates.json` it was built with. `gh-ledger rates update` downloads the latest release's copy from `https://github.com/swigerb/gh-ledger/releases/latest/download/rates.json`, through your system proxy, and checks it with the same rules as the built-in rates.
+
+   Rates versions are dates. When the download is newer than the rates in use, `rates update` saves it as `rates.downloaded.json`; when it's the same or older, nothing changes. If your overlay doesn't merge with the newer rates, nothing is saved, and the error names the problem in your overlay.
+
+   CopilotLedger's base rates are `rates.downloaded.json` when that file is valid and newer than the built-in rates, and the built-in rates otherwise. So after you upgrade gh-ledger to newer built-in rates, an older download is ignored. A download that can't be read is ignored with a warning in `gh-ledger status`, `gh-ledger rates validate`, and the daemon log. Your overlay applies on top of either. `gh-ledger status` shows `(downloaded)` after the rates version when the download is in use.
+
+   The daemon reads rates when it starts, so restart it after an update. Spans already recorded keep the prices they were recorded with.
+   ```
+
+### Acceptance criteria
+
+- Tests never touch the network: every `rates update` test passes a `FakeHttpHandler`.
+- Without `rates.downloaded.json`, `status`, `rates validate`, and the daemon behave exactly as before, apart from `status --json`'s new `ratesSource`.
+- No new package references. No `double` or `float` in `src/`.
+- `docs/configuration.md` keeps exactly three `<!-- rates-error-example -->` blocks.
+- `dotnet build` reports no warnings, and `dotnet test` passes 647 tests (626 + 21).
+
+### Verify
+
+```shell
+dotnet build CopilotLedger.slnx
+dotnet test CopilotLedger.slnx
+pwsh -NoProfile -File action/tests/receipt.Tests.ps1
+```
+
+Report the counts. Don't run `rates update` against the real URL in tests; running it by hand is fine, and before the first release it prints `Could not download rates from https://github.com/swigerb/gh-ledger/releases/latest/download/rates.json: HTTP 404.`
 
 ## Test specifications
 
-Shared rules for every task, which extend Sprint 2's:
+Shared rules for every task, which extend Sprint 3's:
 
-- **Money.** Assertions use `decimal`. In JSON, compare money by value: read it with `GetDecimal()` or compare whole documents with `JsonNode.DeepEquals`, which compares numbers by value (`2.86` equals `2.860`). Never use `GetDouble`.
-- **Public API only.** No `InternalsVisibleTo`. CLI behavior is tested through `GhLedgerCli.InvokeAsync` (`CliHarness`), and the MCP server through the SDK's `McpClient` over in-memory pipes.
-- **Isolation.**
-  - Each test that writes files gets its own `TempDirectory`, called `<root>`. A path written `<root>/a/b` means `Path.Combine(<root>, "a", "b")`. Build every path in a test with `Path.Combine`; never write `\` or `/` into a path, because CI runs on Linux and Windows.
-  - Nothing touches the real registry, `~/.copilot`, `~/.copilot-ledger`, `~/Library`, `~/.config`, gh, user environment variables, or shell profiles. Notifications and processes go through `FakeCliPlatform`; receivers and daemons use `TestServer`; the MCP server uses pipes. No test opens a socket, starts a process, or runs `git`.
-- **SQLite and disposal.** As in Sprint 2: keep every database under the test's `TempDirectory`, and declare the `TempDirectory` first so it's disposed last (`using TempDirectory temp = new();`, then the harness, store, or app).
-- **Text.**
-  - `CliRun.Out` and `CliRun.Error` already have `\r\n` replaced with `\n`. When a case says `Out` *is* a text, compare it with that text plus a final `\n`.
-  - Files the product writes with `\n` line breaks (the flag file, sign-in items, the toast XML) are compared exactly, without normalizing.
-  - Write multi-line expected text as raw string literals followed by `.ReplaceLineEndings("\n")`, because checkouts use `core.autocrlf=true` and a raw literal takes the file's line endings.
-- **JSON.** Compare JSON with `JsonNode.DeepEquals(JsonNode.Parse(actual), JsonNode.Parse(expected))`. In expected JSON, a path is inserted as `JsonSerializer.Serialize(path, RelaxedJson)`, where `RelaxedJson` is `new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }`, so `\` is escaped on Windows and the text matches files written with that encoder even when the temp path isn't ASCII.
-- **Clocks.** `NOW` is `2026-11-21T12:00:00Z` and `T0` is `2026-11-21T10:00:00Z`. "A store at `NOW`" is `new SqliteLedgerStore(<path>, new ManualTimeProvider(NOW))`. `ManualTimeProvider.Advance` moves it.
-- **Waiting.** Tests that wait for the daemon use a private `WaitUntilAsync(Func<Task<bool>> condition)` that checks every 25 ms for up to 10 seconds and then throws `TimeoutException`.
-- **Git fixture.** `LedgerIngestorTests` keeps its own private fixture, so Task 1 adds a shared one; don't change `LedgerIngestorTests`. `tests/CopilotLedger.Tests/TestSupport/GitFixture.cs`:
-
-  ```csharp
-  public static class GitFixture
-  {
-      public const string Sha1 = "0123456789abcdef0123456789abcdef01234567";
-      public const string Sha2 = "89abcdef0123456789abcdef0123456789abcdef";
-
-      // Creates <root>/repo with .git/HEAD "ref: refs/heads/feature/ledger\n", .git/refs/heads/feature/ledger Sha1 + "\n",
-      // .git/config "[remote \"origin\"]\n\turl = https://github.com/swigerb/copilot-ledger.git\n", and an empty <root>/repo/src.
-      // Returns <root>/repo.
-      public static string Create(string root);
-
-      // new GitWorkspaceContext(<root>/repo, <root>/repo/.git, "feature/ledger", Sha1, "https://github.com/swigerb/copilot-ledger.git", "swigerb/copilot-ledger").
-      // It creates no files.
-      public static GitWorkspaceContext Feature(string root);
-  }
-  ```
-
-  Below, `SHA1` and `SHA2` are `GitFixture.Sha1` and `GitFixture.Sha2`, `FEATURE` is `GitFixture.Feature(<root>)`, and "the Git fixture" is `GitFixture.Create(<root>)`. BS1 and the MC seeds use `FEATURE`. The BM harness, BC3, BC6, AD1, and the MC harness (MC1–MC12) create the Git fixture.
-- **Outside a repository.** BC3 and BC6 expect "not in a Git repository" for `<root>`. The CLI commands resolve Git with `new FileSystemGitContextResolver()`, with no ceiling, as `branch` does, so these cases assume no `.git` directory or file above the system temp directory, as `ReportCommandTests` already does. That holds on developer machines and on GitHub's runners, whose temp directories are outside the checkout. MC9 doesn't depend on it, because the MC context's resolver stops at `<root>`.
-- **MCP tool hash.** `HASH` is `c3d1fe831856c77818bb8c1242d32d6efa6c37366eb902e56c5fd0054c1dcbc3/918a44e755cc5eee09b08d214831e8339a645158ef1f831a0fa02bd43999700f`, the `gen_ai.tool.name` of run C's `probe_write`.
+- **Money.** Assertions use `decimal`. Read JSON money with `GetDecimal()`, never `GetDouble`.
+- **Public API only.** No `InternalsVisibleTo`. CLI behavior is tested through `GhLedgerCli.InvokeAsync` (`CliHarness`). The public helpers `WindowsCommandLine` and `ReceiptMarkdown` are tested directly.
+- **Isolation.** Each test that writes files gets its own `TempDirectory`, declared first (`using TempDirectory temp = new();`) so it's disposed last, after the harness and any store. Build every path with `Path.Combine`, except the fake platform's paths, which are plain strings because the fake never touches the disk for them. Nothing touches the network, the real registry, `~/.copilot-ledger`, `~/.config`, gh, or shell profiles: HTTP goes through `FakeHttpHandler`, processes through `FakeCliPlatform`, and daemons through `TestServer`. No test opens a socket, starts a process, or runs `git`.
+- **SQLite pools.** Keep every database under the test's `TempDirectory`; `TempDirectory.Dispose` calls `SqliteConnection.ClearAllPools()` before deleting it. These tests never reopen a database with a changed schema, so they need no other pool handling.
+- **Files the product just wrote.** Read them with `FileRetry.ReadAllTextAsync` or `FileRetry.ReadAllBytesAsync`, which retry while Windows reports the file in use (antivirus scans of new files caused issue #30).
+- **Text.** `CliRun.Out` and `CliRun.Error` already have `\r\n` replaced with `\n`; never normalize them again, and never normalize a file the product wrote. Write multi-line expected text either as string literals that each end in `\n`, joined with `+`, or as a raw string literal followed by `.ReplaceLineEndings("\n")` *before* any value is substituted into it (checkouts use `core.autocrlf=true`, so a raw literal takes the file's line endings). Never call `ReplaceLineEndings` on interpolated text.
+- **Exact output.** When a case compares `Out` or `Error`, it compares the whole text. A line check compares a whole line (`Split('\n')[index]`), and `StartsWith` checks include the trailing `\n`. Every CLI run asserts its exit code.
+- **Clocks.** Receipt tests use `new ManualTimeProvider(2026-11-21T15:00:00Z, ManualTimeProvider.UtcMinus5)`. RU9 uses `ManualTimeProvider(2026-11-21T15:00:00Z)` so the daemon's log line is exact.
+- **Outside a repository.** EP6's `no-repository` case expects `<root>/work` not to be in a Git repository. Like `ReportCommandTests` and Sprint 3's BC3, it assumes no `.git` above the system temp directory, which holds on developer machines and GitHub's runners.
+- **The action's tests** are PowerShell: `pwsh -NoProfile -File action/tests/receipt.Tests.ps1`. They define a function named `Invoke-WebRequest` that answers from a table and fails on any request it doesn't expect, so they never reach the network.
 
 ### Task 1 tests
 
-#### Protobuf decoding: `OtlpProtobufDecodingTests`
+`tests/CopilotLedger.Tests/Cli/WindowsCommandLineTests.cs` (copy exactly). WC1 checks each argument rule; WC2 checks the daemon's whole command line and an empty argument list. These vectors are the ones that round-tripped through a real child process (see "Verified facts").
 
-**PB8** (theory over a case name). Decode `OtlpSpan span = Assert.Single(Assert.Single(DecodeSingleSpan(writer).ResourceSpans).Spans);`, where `writer` is `new OtlpProtoWriter().Bytes(2, Convert.FromHexString("eee19b7ec3c1b174"))` followed by the field below. Assert the span's `SpanId` is `eee19b7ec3c1b174` and its `StatusCode`:
+```csharp
+using CopilotLedger.Cli;
 
-| Case | Field after the span ID | `StatusCode` |
-|---|---|---|
-| `error` | `.Message(15, new OtlpProtoWriter().String(2, "Tool failed").Varint(3, 2))` | 2 |
-| `ok` | `.Message(15, new OtlpProtoWriter().Varint(3, 1))` | 1 |
-| `empty` | `.Message(15, new OtlpProtoWriter())` | 0 |
-| `unknown-code` | `.Message(15, new OtlpProtoWriter().Varint(3, 7))` | 0 |
-| `last-wins` | `.Message(15, new OtlpProtoWriter().Varint(3, 2).Varint(3, 1))` | 1 |
-| `status-wrong-wire-type` | `.Varint(15, 2)` | 0 |
-| `code-wrong-wire-type` | `.Message(15, new OtlpProtoWriter().String(3, "2"))` | 0 |
-| `missing` | nothing | 0 |
+namespace CopilotLedger.Tests.Cli;
 
-#### JSON decoding: `OtlpJsonDecodingTests`
+public sealed class WindowsCommandLineTests
+{
+    private const string Executable = @"C:\Program Files\gh-ledger\gh-ledger.exe";
 
-**JS10** (theory). Decode `SingleSpan(json)` for this JSON, where `STATUS` is empty in the `missing` case and otherwise `,"status":` followed by the value below:
+    public static TheoryData<string, string> Arguments => new()
+    {
+        { "daemon", "daemon" },
+        { "4318", "4318" },
+        { @"C:\Users\O'Brien Smith\data\daemon.log", "\"C:\\Users\\O'Brien Smith\\data\\daemon.log\"" },
+        { "", "\"\"" },
+        { "a\"b", "\"a\\\"b\"" },
+        { @"C:\a b\", "\"C:\\a b\\\\\"" },
+        { "a\\\\\"b", "\"a\\\\\\\\\\\"b\"" },
+        { "tab\there", "\"tab\there\"" },
+        { @"back\slash", @"back\slash" },
+        { @"end\", @"end\" },
+        { "\"quoted\"", "\"\\\"quoted\\\"\"" },
+        { "\u00FCn\u00EFc\u00F6d\u00E9 \u2713", "\"\u00FCn\u00EFc\u00F6d\u00E9 \u2713\"" },
+        { @"\\server\share\x y\", "\"\\\\server\\share\\x y\\\\\"" },
+    };
 
-```text
-{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"5b8efff798038103d269b633813fc60c","spanId":"eee19b7ec3c1b174","name":"execute_tool powershell pwsh.exe","startTimeUnixNano":"1795220217552000000"STATUS}]}]}]}
+    [Theory]
+    [MemberData(nameof(Arguments))]
+    public void WC1_EachArgumentIsQuotedForTheCRuntime(string argument, string written)
+    {
+        Assert.Equal($"\"{Executable}\" {written}", WindowsCommandLine.Build(Executable, [argument]));
+    }
+
+    [Fact]
+    public void WC2_DaemonCommandLineIsExact()
+    {
+        Assert.Equal(
+            "\"C:\\Program Files\\gh-ledger\\gh-ledger.exe\" daemon run --port 4318 --log-file \"C:\\Users\\O'Brien Smith\\data\\daemon.log\"",
+            WindowsCommandLine.Build(
+                Executable,
+                ["daemon", "run", "--port", "4318", "--log-file", @"C:\Users\O'Brien Smith\data\daemon.log"]));
+        Assert.Equal("\"C:\\gh-ledger.exe\"", WindowsCommandLine.Build(@"C:\gh-ledger.exe", []));
+    }
+}
 ```
 
-Assert `SpanId` is `eee19b7ec3c1b174` and `StatusCode`:
-
-| `status` value | `StatusCode` |
-|---|---|
-| `{"code":2,"message":"Tool failed"}` | 2 |
-| `{"message":"","code":0}` | 0 |
-| `{"code":1}` | 1 |
-| `{"code":"2"}` | 0 |
-| `{"code":"STATUS_CODE_ERROR"}` | 0 |
-| `{"code":3}` | 0 |
-| `{"code":2.5}` | 0 |
-| `{"code":1,"code":2}` | 2 |
-| `null` | 0 |
-| `"error"` | 0 |
-| (missing) | 0 |
-
-#### Normalization: `GenAiSpanNormalizerTests`
-
-**NZ12.** Normalize `Request(CopilotResource, …)` with these 8 spans, in this order. Each uses `Span(spanId: <id>, attributes: [...])` with the other defaults, and `with { StatusCode = <status> }` where a status is given. In the table, `execute_tool` stands for `Str("gen_ai.operation.name", "execute_tool")`:
-
-| # | Span ID | Attributes | Status |
-|---|---|---|---|
-| 1 | `00000000000000a1` | `Str("gen_ai.operation.name", "execute_tool")`, `Str("gen_ai.tool.name", "powershell")`, `Int("process.exit.code", 1)` | |
-| 2 | `00000000000000a2` | `execute_tool`, `Str("gen_ai.tool.name", "apply_patch")` | |
-| 3 | `00000000000000a3` | `execute_tool`, `Str("gen_ai.tool.name", HASH)` | 2 |
-| 4 | `00000000000000a4` | `execute_tool`, `Str("gen_ai.tool.name", "powershell")`, `Int("process.exit.code", -1073741510)` | |
-| 5 | `00000000000000a5` | `execute_tool`, `Str("gen_ai.tool.name", "powershell")`, `Str("process.exit.code", "1")` | |
-| 6 | `00000000000000a6` | `execute_tool`, `Int("gen_ai.tool.name", 7)` | |
-| 7 | `00000000000000c1` | `Str("gen_ai.operation.name", "chat")`, `Str("gen_ai.request.model", "mai-code-2")`, `Int("gen_ai.usage.input_tokens", 10)`, `Str("gen_ai.tool.name", "x")`, `Int("process.exit.code", 3)` | 1 |
-| 8 | `00000000000000b1` | none (a `permission` span) | |
-
-Assert: `ReceivedSpanCount` 8, `RejectedSpanCount` 0, one inference span (`00000000000000c1`), and 8 links in input order with these values:
-
-| # | `OperationName` | `ToolName` | `ToolExitCode` | `StatusCode` |
-|---|---|---|---|---|
-| 1 | `execute_tool` | `powershell` | 1 | 0 |
-| 2 | `execute_tool` | `apply_patch` | null | 0 |
-| 3 | `execute_tool` | `HASH` | null | 2 |
-| 4 | `execute_tool` | `powershell` | -1073741510 | 0 |
-| 5 | `execute_tool` | `powershell` | null | 0 |
-| 6 | `execute_tool` | null | null | 0 |
-| 7 | `chat` | null | null | 1 |
-| 8 | null | null | null | 0 |
-
-#### Storage: `SpanLinkStoreTests` and `SqliteLedgerStoreTests`
-
-- **SL1** (changed). Its setup SQL becomes `DROP INDEX ix_spans_trace; DROP TABLE span_links; DROP TABLE breaker_trips; DROP TABLE branch_budgets; DROP TABLE breaker_settings; PRAGMA user_version = 1;`, and the expected `user_version` is `3L`. Its other assertions are unchanged.
-- **S1** (changed). The expected `PRAGMA user_version` is `3L`.
-- **SL8.** Migration 3 upgrades a version-2 ledger. Record `Entry("mai-code-2", 1000, 100)` and the link `Link("8", "8888888888888881", null, "execute_tool") with { ToolName = "powershell", ToolExitCode = 1, StatusCode = 2 }`. Through a separate connection run `DROP TABLE breaker_trips; DROP TABLE branch_budgets; DROP TABLE breaker_settings; ALTER TABLE span_links DROP COLUMN tool_name; ALTER TABLE span_links DROP COLUMN tool_exit_code; ALTER TABLE span_links DROP COLUMN status_code; PRAGMA user_version = 2;`. A new store calls `InitializeAsync`. Then, through a separate connection: `PRAGMA user_version` is 3L; `SELECT COUNT(*) FROM spans` is 1L; `SELECT COUNT(*) FROM span_links` is 1L; `SELECT tool_name IS NULL AND tool_exit_code IS NULL AND status_code = 0 FROM span_links` is 1L; `SELECT velocity_threshold_usd_pico FROM breaker_settings WHERE id = 1` is 1500000000000L; and `SELECT COUNT(*) FROM breaker_trips` and `SELECT COUNT(*) FROM branch_budgets` are 0L.
-- **SL9.** `RecordSpanLinksAsync` with `Link("9", <span>, null, <operation>) with { ToolName, ToolExitCode, StatusCode }` for: `9999999999999991` (`execute_tool`, `powershell`, 1, 0); `9999999999999992` (`execute_tool`, `apply_patch`, null, 0); `9999999999999993` (`execute_tool`, `HASH`, null, 2); and `9999999999999994` (`chat`, null, null, 1). It returns 4. Recording `9999999999999991` again with `ToolName = "bash"` returns 0. Then `SELECT span_id, tool_name, tool_exit_code, status_code FROM span_links ORDER BY span_id`, through a separate connection, returns exactly those four rows, with `powershell` for `9999999999999991` and `DBNull` for the nulls.
-- **SL10, a migration that another process applies first.**
-  1. `StoreAsync(temp)` creates the ledger at version 3. Through a separate connection, run `PRAGMA user_version = 2;`, leaving Migration 3's tables and columns in place, as another process would have.
-  2. Open a separate connection `holder` and take the write lock: `SqliteTransaction held = holder.BeginTransaction(deferred: false);`.
-  3. `Task init = Task.Run(() => new SqliteLedgerStore(DatabasePath(temp)).InitializeAsync());`. Use `Task.Run`: the store's async calls complete synchronously, so calling `InitializeAsync` directly would block the test thread while it waits for the lock.
-  4. `await Task.Delay(TimeSpan.FromSeconds(1));` and assert `init.IsCompleted` is false: the store has read version 2 and is waiting for the lock.
-  5. On `holder`, with `Transaction = held`, run `PRAGMA user_version = 3;`, then `held.Commit()`.
-  6. `await init` completes without an exception. (With the merged loop it throws `SqliteException`, `duplicate column name: tool_name`.)
-  7. Through a separate connection: `PRAGMA user_version` is 3L, `SELECT COUNT(*) FROM breaker_settings` is 1L, and `SELECT COUNT(*) FROM pragma_table_info('span_links') WHERE name = 'tool_name'` is 1L.
-
-  With the fix, this case passes however the threads are scheduled. Without it, it fails whenever the store reads the version before the commit, which the 1-second delay all but guarantees.
-
-#### Breaker storage: `BreakerStoreTests` (new)
-
-Each case uses a store at `NOW` on `<root>/ledger.db`, initialized. `ToolLink(trace, span, start, tool, exit, status, operation = "execute_tool", conversation = null)` is a private helper that builds a `GenAiSpanLink` with those values. Trace IDs: `TA = "b5000000000000000000000000000001"`, `TB = "b5000000000000000000000000000002"`, `TC = "b5000000000000000000000000000003"`.
-
-**BS1, `GetTraceActivityAsync`.** Record three entries for `TA`, built with `TestSpans.Chat(...) with { TraceId = TA, SpanId = … }` and priced by the embedded calculator:
-
-- `b500000000000001`: `mai-code-2`, input 1,000, output 100, start `T0`, end `T0 + 2 s`, conversation `conv-b`, Git `FEATURE`;
-- `b500000000000002`: `claude-opus-5.5`, input 100,000, output 10,000, start `T0 + 60 s`, end `T0 + 62 s`, conversation `conv-b`, Git `FEATURE with { HeadCommitSha = SHA2 }`;
-- `b500000000000003`: `qwen3.8-27b-cuda-gpu:1`, server `127.0.0.1:11434`, input 1,000, start `T0 + 30 s`, end `T0 + 31 s`, no conversation, no Git.
-
-Record these links: `ToolLink(TA, "b5000000000000a1", T0 + 20 s, "powershell", 1, 0)`, `ToolLink(TA, "b5000000000000a2", T0 + 40 s, "powershell", 0, 0)`, `ToolLink(TA, "b5000000000000a3", T0 + 40 s, HASH, null, 2)`, `ToolLink(TA, "b500000000000001", T0, null, null, 0, operation: "chat")`, and `ToolLink(TB, "b5000000000000b1", T0, "powershell", 1, 0, conversation: "conv-links")`.
-
-- `GetTraceActivityAsync(TA)`: `TraceId` `TA`, `ConversationId` `conv-b`, `Repository` `swigerb/copilot-ledger`, `Branch` `feature/ledger`, `RepositoryRoot` `<root>/repo`, and `SpanCount` 3.
-  - `Costs` equals `[new CostEvent("b500000000000001", T0 + 2 s, 0.00075m), new CostEvent("b500000000000002", T0 + 62 s, 0.60m)]`.
-  - `ToolCalls` equals `[new ToolCallEvent("b5000000000000a1", T0 + 20 s, "powershell", 1, 0), new ToolCallEvent("b5000000000000a2", T0 + 40 s, "powershell", 0, 0), new ToolCallEvent("b5000000000000a3", T0 + 40 s, HASH, null, 2)]`.
-  - `Commits` equals `[new CommitObservation("b500000000000001", T0, SHA1), new CommitObservation("b500000000000002", T0 + 60 s, SHA2)]`.
-- `GetTraceActivityAsync(TB)`: `ConversationId` `conv-links`, `Repository` `(none)`, `Branch` `(none)`, `RepositoryRoot` null, `SpanCount` 0, empty `Costs` and `Commits`, and `ToolCalls` equal to `[new ToolCallEvent("b5000000000000b1", T0, "powershell", 1, 0)]`.
-- `GetTraceActivityAsync(TC)`: `ConversationId` null, `(none)`, `(none)`, `RepositoryRoot` null, `SpanCount` 0, and three empty lists.
-- `GetTraceActivityAsync(" ")` throws `ArgumentException`.
-
-**BS2, recording and reading trips.** `A` is `NewBreakerTrip { Rule = CreditVelocity, TraceId = TA, Repository = "swigerb/copilot-ledger", Branch = "feature/ledger", RepositoryRoot = <root>/repo, TrippedAt = T0 + 180 s, Detail = "180.00 AI credits in 5 minutes", WindowCostUsd = 1.80m, WindowMinutes = 5 }`. `B` is `{ Rule = RetryChurn, TraceId = TA, ConversationId = "conv-b", the same repository, branch, and root, TrippedAt = T0 + 120 s, Detail = "5 failed tool calls in a row", FailureCount = 5 }`. `C` is `{ Rule = RetryChurn, TraceId = TB, Repository = "contoso/api", Branch = "main", TrippedAt = T0 - 3600 s, Detail = "7 failed tool calls in a row", FailureCount = 7 }`.
-
-- `RecordBreakerTripAsync(A)` returns 1; `A with { Detail = "x" }` returns null; `B` returns 2; `C` returns 3.
-- `GetOpenBreakerTripsAsync(BreakerTripFilter.All)` returns ids 1, 2, 3 in that order. Trip 1 has `Rule` `CreditVelocity`, `TraceId` `TA`, `ConversationId` null, `Repository` `swigerb/copilot-ledger`, `Branch` `feature/ledger`, `RepositoryRoot` `<root>/repo`, `TrippedAt` `T0 + 180 s`, `Detail` `180.00 AI credits in 5 minutes`, `WindowCostUsd` 1.80m, `WindowMinutes` 5, `FailureCount` null, `RecordedAt` `NOW`, and `NotifiedAt` and `ResetAt` null. Trip 2 has `ConversationId` `conv-b`, `WindowCostUsd` null, `WindowMinutes` null, and `FailureCount` 5. Trip 3 has `RepositoryRoot` null and `FailureCount` 7.
-- With filters: `{ Repository = "contoso/api" }` returns [3]; `{ Branch = "feature/ledger" }` returns [1, 2]; `{ RepositoryRoot = <root>/repo }` returns [1, 2]; `{ Id = 2 }` returns [2]; and `{ Repository = "swigerb/copilot-ledger", Branch = "main" }` returns [].
-- `RecordBreakerTripAsync(A with { TraceId = TC, Detail = " " })` throws `ArgumentException`, and `A with { TraceId = TC, WindowCostUsd = -1m }` throws `ArgumentOutOfRangeException`.
-
-**BS3, notifying and resetting.** Record `A`, `B`, and `C` from BS2.
-
-- `GetUnnotifiedBreakerTripsAsync(NOW - 1 h)` returns ids [1, 2, 3].
-- `MarkBreakerTripNotifiedAsync(1)` returns true, again returns false, and `MarkBreakerTripNotifiedAsync(99)` returns false.
-- Advance the clock 30 minutes. `GetUnnotifiedBreakerTripsAsync(NOW - 1 h)` returns [2, 3], and `GetUnnotifiedBreakerTripsAsync(NOW + 1 ms)` returns [].
-- `ResetBreakerTripsAsync({ Repository = "swigerb/copilot-ledger", Branch = "feature/ledger" })` returns trips [1, 2], each with `ResetAt` `NOW + 30 min`; again, it returns [].
-- `GetOpenBreakerTripsAsync(All)` returns [3], and `GetUnnotifiedBreakerTripsAsync(NOW - 1 h)` returns [3].
-- `ResetBreakerTripsAsync({ Id = 3 })` returns [3]. Then `GetOpenBreakerTripsAsync(All)` and `ResetBreakerTripsAsync(All)` return [].
-
-**BS4, settings.** `GetBreakerSettingsAsync()` equals `BreakerSettings.Default` (150, 5, 5, false, true). `UpdateBreakerSettingsAsync(new BreakerSettings { VelocityCredits = 12.34m, VelocityWindowMinutes = 1440, ChurnFailures = 2, FlagFile = true, Notifications = false })`; then `GetBreakerSettingsAsync()` equals it, and through a separate connection `velocity_threshold_usd_pico` is 123400000000L and `updated_at_unix_ms` is `NOW`'s Unix milliseconds. Then the upper bound: `UpdateBreakerSettingsAsync(BreakerSettings.Default with { VelocityCredits = 1000000m })` succeeds, `GetBreakerSettingsAsync()` equals that value, and `velocity_threshold_usd_pico` is 10000000000000000L.
-
-**BS5, budgets.** Seed `LedgerSeeds.SeedChainsAsync(store, <root>/repo, <root>/api)`.
-
-- `SetBranchBudgetAsync("swigerb/copilot-ledger", "feature/ledger", 50m)`, `("contoso/api", "main", 40.5m)`, and `("(none)", "(none)", 1m)`.
-- `GetBranchBudgetsAsync()` returns, in order:
-
-  | Repository | Branch | Budget | Spent | Exceeded |
-  |---|---|---|---|---|
-  | `(none)` | `(none)` | 1 | 0 | false |
-  | `contoso/api` | `main` | 40.5 | 31.5 | false |
-  | `swigerb/copilot-ledger` | `feature/ledger` | 50 | 56 | true |
-
-  Each has `SetAt` `NOW` and null `AlertedAt` and `NotifiedAt`.
-- `GetBranchBudgetsAsync("contoso/api")` returns only that row, and `GetBranchBudgetsAsync("swigerb/copilot-ledger", "main")` returns [].
-- `MarkBranchBudgetAlertedAsync("swigerb/copilot-ledger", "feature/ledger")` returns true, again returns false, and `("x", "y")` returns false. `GetUnnotifiedBudgetAlertsAsync(NOW - 1 h)` returns that one row, with `AlertedAt` `NOW`.
-- `MarkBranchBudgetNotifiedAsync("swigerb/copilot-ledger", "feature/ledger")` returns true and again false; `MarkBranchBudgetNotifiedAsync("contoso/api", "main")` returns false, because it was never alerted. `GetUnnotifiedBudgetAlertsAsync(NOW - 1 h)` returns [].
-- Advance the clock 1 hour. `SetBranchBudgetAsync("swigerb/copilot-ledger", "feature/ledger", 60m)`; that row now has budget 60, spent 56, `Exceeded` false, `SetAt` `NOW + 1 h`, and null `AlertedAt` and `NotifiedAt`.
-- The boundary. `SetBranchBudgetAsync("swigerb/copilot-ledger", "feature/ledger", 56m)`: the row has budget 56, spent 56, and `Exceeded` false, because spend exactly at the budget doesn't exceed it. `MarkBranchBudgetAlertedAsync("swigerb/copilot-ledger", "feature/ledger")` returns false, and the row's `AlertedAt` is still null. Then `SetBranchBudgetAsync("swigerb/copilot-ledger", "feature/ledger", 55.99m)`: `Exceeded` is true, `MarkBranchBudgetAlertedAsync` returns true, and the row's `AlertedAt` is `NOW + 1 h`.
-- `ClearBranchBudgetAsync("contoso/api", "main")` returns true and again false, and `GetBranchBudgetsAsync()` then has 2 rows.
-- In a `foreach` inside this test (not a theory), each of `0m`, `-1m`, `1000000.01m`, and `0.001m` makes `SetBranchBudgetAsync("a", "b", value)` throw `ArgumentOutOfRangeException`. `SetBranchBudgetAsync(" ", "b", 1m)` throws `ArgumentException`. `GetBranchBudgetsAsync()` still has 2 rows.
-
-**BS6, failed tool calls.** Record links for trace `X = new string('7', 32)`: `ToolLink(X, "7777777777777771", T0, "powershell", 1, 0)`, `("7777777777777772", T0 + 1 s, "powershell", -1, 0)`, `("7777777777777773", T0 + 2 s, HASH, null, 2)`, `("7777777777777774", T0 + 3 s, "powershell", 0, 0)`, `("7777777777777775", T0 + 4 s, "powershell", 0, 2)`, and `("7777777777777776", T0 + 5 s, "apply_patch", null, 0)`. For `Y = new string('8', 32)`: `("8888888888888881", T0, "bash", 2, 0)`. For `Z = new string('9', 32)`: `("9999999999999991", T0, "powershell", 0, 0)`. `GetFailedToolCallCountsAsync([X, Y, Z, new string('6', 32)])` has exactly 2 entries: `X` 4 and `Y` 1. `GetFailedToolCallCountsAsync([])` is empty.
-
-**BS7, invalid settings** (a theory in its own method, with a fresh store for each case). `public static TheoryData<decimal, int, int> InvalidSettings` holds `(0.99m, 5, 5)`, `(1000000.01m, 5, 5)`, `(12.345m, 5, 5)`, `(150m, 0, 5)`, `(150m, 1441, 5)`, `(150m, 5, 1)`, and `(150m, 5, 101)`. For each `(credits, minutes, failures)`, `UpdateBreakerSettingsAsync(BreakerSettings.Default with { VelocityCredits = credits, VelocityWindowMinutes = minutes, ChurnFailures = failures })` throws `ArgumentOutOfRangeException`, and `GetBreakerSettingsAsync()` still equals `BreakerSettings.Default`.
+The capture behavior itself is checked by the two CI steps in Task 1, on both operating systems, because a unit test can't start processes.
 
 ### Task 2 tests
 
-#### Test support
+#### Seed: `tests/CopilotLedger.Tests/TestSupport/ReceiptSeeds.cs` (copy exactly)
 
-`RecordingAlertSink : IBreakerAlertSink` keeps `public List<BreakerAlert> Alerts { get; } = []` and `public List<string> Warnings { get; } = []`; `Publish` and `Warn` append to them.
+The seed records eight spans and three breaker trips. On `swigerb/copilot-ledger` `feature/ledger` (`GitFixture.Feature`):
 
-`BreakerTraces` builds requests with the `OtlpRequests` helpers:
+| Trace | Span | Model, endpoint | Tokens (input, output, cache read, cache write) | Priced at |
+|---|---|---|---|---|
+| `a…a` | 1 | `claude-opus-5.5`, none | 1,200,000, 50,000, 800,000, 100,000 | 300,000 × $4 + 800,000 × $0.20 + 100,000 × $5 + 50,000 × $20 per 1M = $2.86 = 286 credits |
+| `a…a` | 2 | `gpt-6.1-sol`, `contoso.openai.azure.com` | 100,000, 10,000 | BYOK fixture: 100,000 × $1.75 + 10,000 × $14 per 1M = $0.315 |
+| `b…b` | 1 | `mai-code-2`, none | 1,000,000, 100,000, 400,000 | 600,000 × $0.50 + 400,000 × $0.025 + 100,000 × $2.50 per 1M = $0.56 = 56 credits |
+| `b…b` | 2 | `qwen3.8-27b-cuda-gpu:1`, `127.0.0.1` | 400,000, 12,000 | local; saved at `mai-code-2`: 400,000 × $0.50 + 12,000 × $2.50 per 1M = $0.23 |
+| `c…c` | 1 | `gpt-unknown`, none | 1,000, 100 | `unknown_model` (GitHub channel, unpriced) |
+| `c…c` | 2 | `mystery-1`, `llm.example.com` | 2,000, 200 | `unrecognized_endpoint` (unpriced channel) |
+
+Plus `d…d` (`claude-opus-5.5`, 10,000 and 1,000 tokens = 6 credits) on `main`, and `e…e` (`mai-code-2`, 10,000 and 1,000 tokens = 0.75 credits) on `contoso/api` `feature/ledger`. Trips: trace `a…a` on `feature/ledger` (open), trace `b…b` on `feature/ledger` (reset), and trace `d…d` on `main`. So `feature/ledger` has 6 spans (2 unpriced), 342 credits, $3.42, $0.315 BYOK, $0.23 saved, 3 prompts, 2 trips, and its costliest prompt is trace `a…a`: ($2.86 + $0.315) / $0.01 = 317.5 credits.
 
 ```csharp
-public static class BreakerTraces
-{
-    public const string TraceH = "0a000000000000000000000000000001";
-    public const string ConversationH = "982f73ad-18f4-49ef-a1f9-70748fa013fb";
-    public const string TraceV = "0b000000000000000000000000000001";
-    public const string TraceW = "0c000000000000000000000000000001";
+using System.Globalization;
+using CopilotLedger.Core.Breaker;
+using CopilotLedger.Core.Git;
+using CopilotLedger.Core.Pricing;
+using CopilotLedger.Core.Telemetry;
+using CopilotLedger.Storage;
 
-    public static OtlpTraceRequest TraceHRequest(int request);                          // run A's export request 1–7
-    public static OtlpTraceRequest TraceVRequest(string repoRoot, params int[] chats);  // Trace V chats 1–3
-    public static OtlpTraceRequest TraceWRequest(string repoRoot);                       // Trace W's three chats
+namespace CopilotLedger.Tests.TestSupport;
+
+public static class ReceiptSeeds
+{
+    // Records eight spans and three breaker trips. Six spans in three traces are on swigerb/copilot-ledger feature/ledger
+    // (GitFixture.Feature(root)); one is on its main branch, and one is on contoso/api feature/ledger. Two trips are on
+    // feature/ledger (one of them reset) and one is on main. Returns the number of spans recorded (8).
+    public static async Task<int> SeedAsync(SqliteLedgerStore store, string root)
+    {
+        JsonRateCardCalculator embedded = JsonRateCardCalculator.LoadEmbedded();
+        JsonRateCardCalculator byok = JsonRateCardCalculator.Parse(RateFixtures.ByokTestRatesJson);
+        GitWorkspaceContext feature = GitFixture.Feature(root);
+        GitWorkspaceContext main = feature with { BranchName = "main" };
+        GitWorkspaceContext api = new(
+            Path.Combine(root, "api"),
+            Path.Combine(root, "api", ".git"),
+            "feature/ledger",
+            GitFixture.Sha1,
+            "https://github.com/contoso/api.git",
+            "contoso/api");
+
+        NormalizedGenAiSpan opus = Span('a', 1, "13:00", "claude-opus-5.5", null, 1_200_000, 50_000, 800_000, 100_000);
+        NormalizedGenAiSpan foundry = Span('a', 2, "13:01", "gpt-6.1-sol", "contoso.openai.azure.com", 100_000, 10_000);
+        NormalizedGenAiSpan mai = Span('b', 1, "13:10", "mai-code-2", null, 1_000_000, 100_000, 400_000);
+        NormalizedGenAiSpan qwen = Span('b', 2, "13:11", "qwen3.8-27b-cuda-gpu:1", "127.0.0.1", 400_000, 12_000);
+        NormalizedGenAiSpan unknown = Span('c', 1, "13:20", "gpt-unknown", null, 1_000, 100);
+        NormalizedGenAiSpan mystery = Span('c', 2, "13:21", "mystery-1", "llm.example.com", 2_000, 200);
+        NormalizedGenAiSpan onMain = Span('d', 1, "13:30", "claude-opus-5.5", null, 10_000, 1_000);
+        NormalizedGenAiSpan onApi = Span('e', 1, "13:40", "mai-code-2", null, 10_000, 1_000);
+
+        int recorded = await store.RecordAsync(
+        [
+            new LedgerEntry(opus, embedded.Calculate(opus), feature),
+            new LedgerEntry(foundry, byok.Calculate(foundry), feature),
+            new LedgerEntry(mai, embedded.Calculate(mai), feature),
+            new LedgerEntry(qwen, embedded.Calculate(qwen), feature),
+            new LedgerEntry(unknown, embedded.Calculate(unknown), feature),
+            new LedgerEntry(mystery, embedded.Calculate(mystery), feature),
+            new LedgerEntry(onMain, embedded.Calculate(onMain), main),
+            new LedgerEntry(onApi, embedded.Calculate(onApi), api),
+        ]);
+
+        await store.RecordBreakerTripAsync(Trip(new string('a', 32), "feature/ledger"));
+        long? reset = await store.RecordBreakerTripAsync(Trip(new string('b', 32), "feature/ledger"));
+        await store.ResetBreakerTripsAsync(new BreakerTripFilter { Id = reset });
+        await store.RecordBreakerTripAsync(Trip(new string('d', 32), "main"));
+        return recorded;
+    }
+
+    private static NormalizedGenAiSpan Span(
+        char trace,
+        int index,
+        string time,
+        string model,
+        string? serverAddress,
+        long inputTokens,
+        long outputTokens,
+        long cacheReadInputTokens = 0,
+        long cacheWriteInputTokens = 0) =>
+        TestSpans.Chat(
+            startTime: DateTimeOffset.Parse($"2026-11-21T{time}:00Z", CultureInfo.InvariantCulture),
+            requestModel: model,
+            serverAddress: serverAddress,
+            inputTokens: inputTokens,
+            outputTokens: outputTokens,
+            cacheReadInputTokens: cacheReadInputTokens,
+            cacheWriteInputTokens: cacheWriteInputTokens) with
+        {
+            TraceId = new string(trace, 32),
+            SpanId = new string(trace, 15) + index.ToString(CultureInfo.InvariantCulture),
+        };
+
+    private static NewBreakerTrip Trip(string traceId, string branch) => new()
+    {
+        Rule = BreakerRule.CreditVelocity,
+        TraceId = traceId,
+        Repository = "swigerb/copilot-ledger",
+        Branch = branch,
+        TrippedAt = DateTimeOffset.Parse("2026-11-21T14:00:00Z", CultureInfo.InvariantCulture),
+        Detail = "180.00 AI credits in 5 minutes",
+        WindowCostUsd = 1.8m,
+        WindowMinutes = 5,
+    };
 }
 ```
 
-**Trace H** replays live run A with synthetic IDs and the captured times and token counts. Every span has trace `TraceH`, parent `0a000000000000f0` (except the root), and `Str("gen_ai.conversation.id", ConversationH)`. The resource is `[.. CopilotResource, Str("service.version", "1.0.112")]`.
+#### `FileRetry.ReadAllBytesAsync` (copy exactly)
 
-- A **chat** span is named `chat mai-code-2-flash`, with `Str("gen_ai.operation.name", "chat")`, `Str("gen_ai.provider.name", "github")`, `Str("gen_ai.request.model", "mai-code-2-flash")`, `Str("gen_ai.response.model", "mai-code-2-flash")`, `Int("gen_ai.usage.input_tokens", in)`, `Int("gen_ai.usage.output_tokens", out)`, and, when the cache read isn't 0, `Int("gen_ai.usage.cache_read.input_tokens", cache)`.
-- A **tool** span is named `execute_tool apply_patch` or `execute_tool powershell pwsh.exe`, with `Str("gen_ai.operation.name", "execute_tool")` and `Str("gen_ai.tool.name", "apply_patch" or "powershell")`. A `powershell` span also has `Int("process.exit.code", exit)`.
-- The **root** `0a000000000000f0` has no parent and is named `invoke_agent`, with `Str("gen_ai.operation.name", "invoke_agent")`, `Str("gen_ai.provider.name", "github")`, and `Str("github.copilot.agent.type", "builtin")`. It spans 1795220210353000000–1795220248464000000 and is in request 7.
+Add to `tests/CopilotLedger.Tests/TestSupport/FileRetry.cs`, after `ReadAllTextAsync`, with a blank line before it:
 
-Each request holds its spans in this table's order (chats and tools are interleaved by time):
+```csharp
+    // Like ReadAllTextAsync, for the file's bytes.
+    public static async Task<byte[]> ReadAllBytesAsync(string path)
+    {
+        DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (true)
+        {
+            try
+            {
+                return await File.ReadAllBytesAsync(path);
+            }
+            catch (IOException) when (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(25);
+            }
+        }
+    }
+```
 
-| Request | Span | Kind | Start ns | End ns | Input | Output | Cache read | Exit |
-|---|---|---|---|---|---|---|---|---|
-| 1 | `0a000000000000c1` | chat | 1795220210781000000 | 1795220215181000000 | 17299 | 176 | 6656 | |
-| 1 | `0a000000000000a1` | `apply_patch` | 1795220215194000000 | 1795220215351000000 | | | | |
-| 2 | `0a000000000000c2` | chat | 1795220215368000000 | 1795220217545000000 | 17568 | 44 | 16896 | |
-| 2 | `0a000000000000a2` | `powershell` | 1795220217552000000 | 1795220219452000000 | | | | 1 |
-| 2 | `0a000000000000c3` | chat | 1795220219475000000 | 1795220221084000000 | 17681 | 44 | 16896 | |
-| 2 | `0a000000000000a3` | `apply_patch` | 1795220221093000000 | 1795220221233000000 | | | | |
-| 3 | `0a000000000000c4` | chat | 1795220221248000000 | 1795220222694000000 | 17825 | 44 | 16896 | |
-| 3 | `0a000000000000a4` | `powershell` | 1795220222710000000 | 1795220223969000000 | | | | 1 |
-| 3 | `0a000000000000c5` | chat | 1795220223990000000 | 1795220226844000000 | 17938 | 44 | 16896 | |
-| 3 | `0a000000000000a5` | `apply_patch` | 1795220226853000000 | 1795220227044000000 | | | | |
-| 4 | `0a000000000000c6` | chat | 1795220227064000000 | 1795220228239000000 | 18082 | 44 | 16896 | |
-| 4 | `0a000000000000a6` | `powershell` | 1795220228246000000 | 1795220229660000000 | | | | 1 |
-| 4 | `0a000000000000c7` | chat | 1795220229692000000 | 1795220231435000000 | 18195 | 44 | 0 | |
-| 4 | `0a000000000000a7` | `apply_patch` | 1795220231440000000 | 1795220231604000000 | | | | |
-| 5 | `0a000000000000c8` | chat | 1795220231625000000 | 1795220232986000000 | 18339 | 44 | 17920 | |
-| 5 | `0a000000000000a8` | `powershell` | 1795220232994000000 | 1795220234202000000 | | | | 1 |
-| 5 | `0a000000000000c9` | chat | 1795220234220000000 | 1795220235567000000 | 18452 | 44 | 17920 | |
-| 5 | `0a000000000000a9` | `apply_patch` | 1795220235578000000 | 1795220235717000000 | | | | |
-| 6 | `0a000000000000ca` | chat | 1795220235746000000 | 1795220237251000000 | 18596 | 44 | 17920 | |
-| 6 | `0a000000000000aa` | `powershell` | 1795220237260000000 | 1795220238525000000 | | | | 1 |
-| 6 | `0a000000000000cb` | chat | 1795220238545000000 | 1795220240767000000 | 18709 | 44 | 17920 | |
-| 6 | `0a000000000000ab` | `apply_patch` | 1795220240772000000 | 1795220240870000000 | | | | |
-| 7 | `0a000000000000cc` | chat | 1795220240889000000 | 1795220242864000000 | 18853 | 44 | 6656 | |
-| 7 | `0a000000000000ac` | `powershell` | 1795220242870000000 | 1795220243998000000 | | | | 0 |
-| 7 | `0a000000000000cd` | chat | 1795220244019000000 | 1795220245927000000 | 18964 | 57 | 17920 | |
-| 7 | `0a000000000000ad` | `powershell` | 1795220245934000000 | 1795220246848000000 | | | | 0 |
-| 7 | `0a000000000000ce` | chat | 1795220246868000000 | 1795220248402000000 | 19101 | 6 | 17920 | |
-| 7 | `0a000000000000f0` | root | 1795220210353000000 | 1795220248464000000 | | | | |
+#### Store: `tests/CopilotLedger.Tests/Storage/ReceiptQueryTests.cs` (copy exactly)
 
-The 14 chats total input 255,602, output 723, and cache read 205,312, and they cost 0.372181 AI credits at `mai-code-2-flash`'s promotional price: run A's 372,181,000 nano-AIU. The fifth failing call, `0a000000000000aa`, starts at 2026-11-21T00:17:17.260Z (Unix milliseconds 1795220237260).
+- **RQ1** checks the six channel-and-model rows across all repositories, in order, with every count and amount. `claude-opus-5.5` adds `main`'s 6 credits (292), and `mai-code-2` adds `contoso/api`'s 0.75 credits (56.75, $0.5675).
+- **RQ2** checks that the four existing groupings leave `Channel` null.
+- **RQ3** checks prompt counts: 5 in all, 3 on `feature/ledger`, 1 in `contoso/api`, 2 between 13:10 and 13:30, and 0 on an unknown branch.
+- **RQ4** checks trip counts: 2 on `feature/ledger` (one reset), 1 on `main`, 0 in `contoso/api`, and 0 for `Feature/Ledger` (keys are case-sensitive).
 
-**Trace V** has three `claude-opus-5.5` chats, each costing $0.60 (input 100,000 at $4 and output 10,000 at $20 per 1M). Each is a root span (no parent) named `chat claude-opus-5.5` with trace `TraceV`, `Str("gen_ai.operation.name", "chat")`, `Str("gen_ai.provider.name", "github")`, `Str("gen_ai.request.model", "claude-opus-5.5")`, `Str("gen_ai.conversation.id", "conv-v")`, `Int("gen_ai.usage.input_tokens", 100000)`, and `Int("gen_ai.usage.output_tokens", 10000)`. The resource is `[.. CopilotResource, Str("process.working_directory", repoRoot)]`. Chat `k` has span ID `0b000000000000c<k>`, ends at `T0 + 60k s`, and starts 2 seconds earlier:
+```csharp
+using System.Globalization;
+using CopilotLedger.Core.Pricing;
+using CopilotLedger.Storage;
+using CopilotLedger.Tests.TestSupport;
 
-| Chat | Span | Start ns | End ns |
-|---|---|---|---|
-| 1 | `0b000000000000c1` | 1795255258000000000 | 1795255260000000000 |
-| 2 | `0b000000000000c2` | 1795255318000000000 | 1795255320000000000 |
-| 3 | `0b000000000000c3` | 1795255378000000000 | 1795255380000000000 |
+namespace CopilotLedger.Tests.Storage;
 
-**Trace W** is built the same way with trace `TraceW`, span IDs `0c000000000000c1`–`0c000000000000c3`, conversation `conv-w`, and ends at `T0 + 60 s`, `T0 + 240 s`, and `T0 + 420 s` (end ns 1795255260000000000, 1795255440000000000, and 1795255620000000000). Each starts 2 seconds earlier. Any 5-minute window holds at most two of its chats ($1.20), so it never trips the default rule.
+public sealed class ReceiptQueryTests
+{
+    [Fact]
+    public async Task RQ1_ChannelModelRollupGroupsByChannelAndModel()
+    {
+        using TempDirectory temp = new();
+        SqliteLedgerStore store = await SeededStoreAsync(temp.Path);
 
-#### Rules: `BreakerRulesTests` (new, `tests/CopilotLedger.Tests/Breaker/`)
+        IReadOnlyList<LedgerRollupRow> rows = await store.GetRollupAsync(
+            LedgerGrouping.ChannelModel,
+            LedgerFilter.All);
 
-**BR1, rule 1** (theory over the case name, `TheoryData<string>`; each case builds its costs in the test, so no decimal passes through `InlineData`). Costs are `new CostEvent(<id>, T0 + <s> s, <usd>)`, passed in the order given. The rule is strict, so V1, exactly at the threshold, doesn't trip:
+        Assert.Equal(6, rows.Count);
+        AssertRow(rows[0], BillingChannel.GitHubAiCredits, "claude-opus-5.5", 2, 0, 1_210_000, 51_000, 800_000, 100_000, 292m, 2.92m, 0m, 0m);
+        AssertRow(rows[1], BillingChannel.GitHubAiCredits, "mai-code-2", 2, 0, 1_010_000, 101_000, 400_000, 0, 56.75m, 0.5675m, 0m, 0m);
+        AssertRow(rows[2], BillingChannel.FoundryByok, "gpt-6.1-sol", 1, 0, 100_000, 10_000, 0, 0, 0m, 0m, 0.315m, 0m);
+        AssertRow(rows[3], BillingChannel.Local, "qwen3.8-27b", 1, 0, 400_000, 12_000, 0, 0, 0m, 0m, 0m, 0.23m);
+        AssertRow(rows[4], BillingChannel.GitHubAiCredits, "gpt-unknown", 1, 1, 1_000, 100, 0, 0, 0m, 0m, 0m, 0m);
+        AssertRow(rows[5], BillingChannel.Unpriced, "mystery-1", 1, 1, 2_000, 200, 0, 0, 0m, 0m, 0m, 0m);
+        Assert.All(rows, row =>
+        {
+            Assert.Null(row.Repository);
+            Assert.Null(row.Branch);
+            Assert.Null(row.Agent);
+        });
+    }
 
-| Case | Costs (id@seconds=USD) | Threshold USD | Window | Result |
-|---|---|---|---|---|
-| V1 | a@30=0.50, b@120=0.60, c@299=0.40 | 1.50 | 5 min | null |
-| V2 | a@30=0.50, b@120=0.60, c@299=0.39 | 1.50 | 5 min | null |
-| V3 | a@0=1.00, b@300=0.60 | 1.50 | 5 min | null |
-| V4 | a@1=1.00, b@300=0.60 | 1.50 | 5 min | `T0 + 300 s`, 1.60 |
-| V5 | b@200=0.70, z@150=0.00, a@100=0.81 | 1.50 | 5 min | `T0 + 200 s`, 1.51 |
-| V6 | b@60=0.76, a@60=0.75 | 1.50 | 5 min | `T0 + 60 s`, 1.51 |
-| V7 | a@0=1.00, b@59=0.51 | 1.50 | 1 min | `T0 + 59 s`, 1.51 |
-| V8 | a@0=1.00, b@60=0.51 | 1.50 | 1 min | null |
-| V9 | none | 1.50 | 5 min | null |
-| V10 | a@30=0.50, b@120=0.60, c@299=0.400000000001 | 1.50 | 5 min | `T0 + 299 s`, 1.500000000001 |
+    [Fact]
+    public async Task RQ2_ChannelIsSetOnlyForChannelModelRows()
+    {
+        using TempDirectory temp = new();
+        SqliteLedgerStore store = await SeededStoreAsync(temp.Path);
 
-A non-null result is asserted as `Assert.Equal(new VelocityTrip(<time>, <usd>m), result)`.
+        foreach (LedgerGrouping grouping in new[] { LedgerGrouping.Repository, LedgerGrouping.Branch, LedgerGrouping.Model, LedgerGrouping.Agent })
+        {
+            IReadOnlyList<LedgerRollupRow> rows = await store.GetRollupAsync(grouping, LedgerFilter.All);
+            Assert.NotEmpty(rows);
+            Assert.All(rows, row => Assert.Null(row.Channel));
+        }
+    }
 
-**BR2, rule 2** (theory over the case name, like BR1). The `k`-th tool call in a case has span ID `0k` (two digits) and starts at `T0 + <s> s`. `F` is `("powershell", 1, 0)`, `S` is `("powershell", 0, 0)`, `E` is `(HASH, null, 2)`, `N` is `("apply_patch", null, 0)`, and `X` is `("powershell", 0, 2)`. Commits are `new CommitObservation(<id>, T0 + <s> s, <sha>)`.
+    [Fact]
+    public async Task RQ3_PromptCountsDistinctTracesThatMatchTheFilter()
+    {
+        using TempDirectory temp = new();
+        SqliteLedgerStore store = await SeededStoreAsync(temp.Path);
 
-| Case | Tool calls (kind@seconds) | Commits | Failures | Result |
-|---|---|---|---|---|
-| C1 | F@1 F@2 F@3 S@4 F@5 F@6 F@7 F@8 | none | 5 | null |
-| C2 | E@1 E@2 E@3 E@4 E@5 | none | 5 | `T0 + 5 s`, 5 |
-| C3 | F@1 F@2 F@3 F@4 F@5 | `c1`@0.5=`aaaa`, `c2`@3.5=`bbbb` | 5 | null |
-| C4 | F@1 F@2 F@3 F@4 F@5 | `c1`@0.5=`aaaa`, `c2`@3.5=`aaaa` | 5 | `T0 + 5 s`, 5 |
-| C5 | F@1 F@2 F@3 F@4 F@5 | `c1`@0.5=`aaaa`, `c2`@5=`bbbb` | 5 | null (a commit sorts before a call at the same time) |
-| C6 | F@1 N@2 F@3 N@4 F@5 N@6 F@7 N@8 F@9 | none | 5 | `T0 + 9 s`, 5 |
-| C7 | F@1 F@2 F@3 F@4 X@5 | none | 5 | `T0 + 5 s`, 5 |
-| C8 | F@1 F@2 | none | 2 | `T0 + 2 s`, 2 |
-| C9 | F@1 F@2 F@3 F@4 N@5 F@6 | none | 5 | `T0 + 6 s`, 5 |
-| C10 | F@1 F@2 F@3 F@4 S@5 F@6 | none | 5 | null |
-| C11 | none | none | 5 | null |
+        Assert.Equal(5L, await store.GetPromptCountAsync(LedgerFilter.All));
+        Assert.Equal(3L, await store.GetPromptCountAsync(new LedgerFilter { Repository = "swigerb/copilot-ledger", Branch = "feature/ledger" }));
+        Assert.Equal(1L, await store.GetPromptCountAsync(new LedgerFilter { Repository = "contoso/api" }));
+        Assert.Equal(2L, await store.GetPromptCountAsync(new LedgerFilter { From = DateTimeOffset.Parse("2026-11-21T13:10:00Z", CultureInfo.InvariantCulture), To = DateTimeOffset.Parse("2026-11-21T13:30:00Z", CultureInfo.InvariantCulture) }));
+        Assert.Equal(0L, await store.GetPromptCountAsync(new LedgerFilter { Branch = "nope" }));
+    }
 
-A non-null result is asserted as `Assert.Equal(new ChurnTrip(<time>, <n>), result)`.
+    [Fact]
+    public async Task RQ4_CountBreakerTripsCountsOpenAndResetTripsForOneBranch()
+    {
+        using TempDirectory temp = new();
+        SqliteLedgerStore store = await SeededStoreAsync(temp.Path);
 
-**BR3, argument checks.** `FindVelocityTrip(null!, 1m, TimeSpan.FromMinutes(5))` throws `ArgumentNullException`; `FindVelocityTrip([], 0m, TimeSpan.FromMinutes(5))` and `FindVelocityTrip([], 1m, TimeSpan.Zero)` throw `ArgumentOutOfRangeException`. `FindChurnTrip(null!, [], 5)` and `FindChurnTrip([], null!, 5)` throw `ArgumentNullException`, and `FindChurnTrip([], [], 1)` throws `ArgumentOutOfRangeException`.
+        Assert.Equal(2L, await store.CountBreakerTripsAsync("swigerb/copilot-ledger", "feature/ledger"));
+        Assert.Equal(1L, await store.CountBreakerTripsAsync("swigerb/copilot-ledger", "main"));
+        Assert.Equal(0L, await store.CountBreakerTripsAsync("contoso/api", "feature/ledger"));
+        Assert.Equal(0L, await store.CountBreakerTripsAsync("swigerb/copilot-ledger", "Feature/Ledger"));
+    }
 
-**BR4, messages.**
+    private static async Task<SqliteLedgerStore> SeededStoreAsync(string root)
+    {
+        SqliteLedgerStore store = new(Path.Combine(root, "ledger.db"));
+        await store.InitializeAsync();
+        Assert.Equal(8, await ReceiptSeeds.SeedAsync(store, root));
+        return store;
+    }
 
-- `BreakerMessages.Credits`: 180m → `180.00`, 1234.5m → `1,234.50`, 0.005m → `0.01`, 0.004999m → `0.00`, 2.675m → `2.68`.
-- `Minutes(1)` → `1 minute`; `Minutes(5)` → `5 minutes`.
-- `VelocityDetail(1.80m, 5)` → `180.00 AI credits in 5 minutes`; `VelocityDetail(0.015m, 1)` → `1.50 AI credits in 1 minute`. `ChurnDetail(5)` → `5 failed tool calls in a row`.
-- `RulesSummary(BreakerSettings.Default)` → `more than 150.00 AI credits in 5 minutes on one prompt; 5 failed tool calls in a row on one prompt`. With `VelocityCredits = 12.5m`, `VelocityWindowMinutes = 1`, and `ChurnFailures = 2` → `more than 12.50 AI credits in 1 minute on one prompt; 2 failed tool calls in a row on one prompt`.
-- `ForTrip(7, "swigerb/copilot-ledger", "feature/ledger", "5 failed tool calls in a row", false)` has `Kind` `Trip`, `TripId` 7, that repository and branch, `Title` `CopilotLedger circuit breaker tripped`, `Body` `swigerb/copilot-ledger @ feature/ledger: 5 failed tool calls in a row on one prompt. Run: gh-ledger breaker status`, and `ShowNotification` false.
-- `ForBudget(row, true)`, for `Repository = "contoso/api"`, `Branch = "main"`, `BudgetAiCredits = 40.5m`, and `SpentAiCredits = 31.5m`, has `Kind` `Budget`, `TripId` null, `Title` `CopilotLedger branch budget exceeded`, `Body` `contoso/api @ main: 31.50 of 40.50 AI credits spent. Run: gh-ledger budget list`, and `ShowNotification` true. (`ForBudget` formats any row; the monitor calls it only for exceeded ones.)
+    private static void AssertRow(
+        LedgerRollupRow row,
+        BillingChannel channel,
+        string model,
+        long spans,
+        long unpriced,
+        long input,
+        long output,
+        long cacheRead,
+        long cacheWrite,
+        decimal credits,
+        decimal githubUsd,
+        decimal byokUsd,
+        decimal savedUsd)
+    {
+        Assert.Equal(channel, row.Channel);
+        Assert.Equal(model, row.Model);
+        Assert.Equal(spans, row.SpanCount);
+        Assert.Equal(unpriced, row.UnpricedSpanCount);
+        Assert.Equal(input, row.InputTokens);
+        Assert.Equal(output, row.OutputTokens);
+        Assert.Equal(cacheRead, row.CacheReadInputTokens);
+        Assert.Equal(cacheWrite, row.CacheWriteInputTokens);
+        Assert.Equal(credits, row.AiCredits);
+        Assert.Equal(githubUsd, row.AiCreditsUsd);
+        Assert.Equal(byokUsd, row.FoundryByokUsd);
+        Assert.Equal(savedUsd, row.LocalSavedUsd);
+    }
+}
+```
 
-#### Monitor and ingestion: `CircuitBreakerMonitorTests` (new)
+#### Command: `tests/CopilotLedger.Tests/Cli/ReceiptCommandTests.cs` (copy exactly)
 
-The harness:
+- **EP1** runs `export-pr` from `<root>/repo/src` and compares `Out`, `Error`, the only file in the receipts directory, its first byte (no byte order mark), and its whole text with `FeatureReceipt`.
+- **EP2** compares `--stdout` with the same text and checks that no `.github` directory was created.
+- **EP3** compares `--json` with the JSON block inside that text, plus `\n`.
+- **EP4** reconciles `export-pr --json` with `branch --since all --json` field by field, checks the four amounts, and checks that the models' credits add up to the total.
+- **EP5** points `HEAD` at `fix/@octocat-#7`, a branch with no spend, and compares the whole empty receipt; the mention and the issue reference stay inside code spans.
+- **EP6** covers the four Git problems; each exits 1 with exactly its error and writes nothing.
+- **EP7** rejects `--stdout --json` together.
+- **EP8** and **EP9** check `ReceiptMarkdown.FileName` and `ReceiptMarkdown.Code` vectors. The hashes are the first 8 hex digits of SHA-256 of the branch's UTF-8 bytes, computed independently in PowerShell.
 
-- a store at `NOW` on `<root>/data/ledger.db`, initialized; when a case gives settings, `UpdateBreakerSettingsAsync(settings)` runs next;
-- the Git fixture, `GitFixture.Create(<root>)`, and `<root>/copilot-home/session-state/982f73ad-18f4-49ef-a1f9-70748fa013fb/workspace.yaml` containing `cwd: <root>/repo` and `\n`;
-- `sink = new RecordingAlertSink()` and `monitor = new CircuitBreakerMonitor(store, sink)`;
-- `new LedgerIngestor(store, JsonRateCardCalculator.LoadEmbedded(), new FileSystemGitContextResolver(ceilingDirectory: <root>), new CopilotSessionWorkspaceLocator(<root>/copilot-home), monitor)`. It uses the uncached resolver, so a new commit is visible at once.
+````csharp
+using System.Text.Json;
+using CopilotLedger.Cli;
+using CopilotLedger.Cli.Receipts;
+using CopilotLedger.Storage;
+using CopilotLedger.Tests.TestSupport;
 
-`FLAG` is `<root>/repo/.copilot-ledger/CIRCUIT_OPEN`. `TripH` is the expected trip for Trace H: `Id` 1, `Rule` `RetryChurn`, `TraceId` `TraceH`, `ConversationId` `ConversationH`, `Repository` `swigerb/copilot-ledger`, `Branch` `feature/ledger`, `RepositoryRoot` `<root>/repo`, `TrippedAt` `DateTimeOffset.FromUnixTimeMilliseconds(1795220237260)`, `Detail` `5 failed tool calls in a row`, `WindowCostUsd` null, `WindowMinutes` null, `FailureCount` 5, `RecordedAt` `NOW`, and `NotifiedAt` and `ResetAt` null. Compare trips property by property.
+namespace CopilotLedger.Tests.Cli;
 
-**BM1, run A trips rule 2 once, on request 6.**
+public sealed class ReceiptCommandTests
+{
+    private const string FeatureFile = ".github/copilot-ledger/receipts/feature-ledger-0a69c755.md";
 
-- Ingest `TraceHRequest(1)` through `TraceHRequest(5)`. After each, `sink.Alerts` is empty and `GetOpenBreakerTripsAsync(All)` is empty.
-- Ingest request 6: the result is Received 4, Rejected 0, Inference 2, and Recorded 2. `GetOpenBreakerTripsAsync(All)` is `[TripH]`. `sink.Alerts` has one alert: `Kind` `Trip`, `TripId` 1, `Repository` `swigerb/copilot-ledger`, `Branch` `feature/ledger`, `Title` `CopilotLedger circuit breaker tripped`, `Body` `swigerb/copilot-ledger @ feature/ledger: 5 failed tool calls in a row on one prompt. Run: gh-ledger breaker status`, and `ShowNotification` true.
-- Ingest request 7: Received 6, Inference 3, Recorded 3. There's still one alert and one open trip.
-- Ingest request 6 again: Recorded 0, and there's still one alert.
-- The Model rollup has one row: `mai-code-2-flash`, 14 spans, `AiCredits` 0.372181, `AiCreditsUsd` 0.00372181. The Branch rollup has one row: `swigerb/copilot-ledger` / `feature/ledger`.
-- `Directory.Exists(<root>/repo/.copilot-ledger)` is false, and `sink.Warnings` is empty.
+    private const string FeatureReceipt = """
+        <!-- copilot-ledger-receipt -->
+        ### CopilotLedger receipt for `feature/ledger`
 
-**BM2, a new commit resets the count.** Ingest requests 1–4. Overwrite `<root>/repo/.git/refs/heads/feature/ledger` with `SHA2` and `\n`. Ingest requests 5–7. `sink.Alerts` and `GetOpenBreakerTripsAsync(All)` are empty. Through a separate connection, `SELECT COUNT(*) FROM spans WHERE head_commit_sha = '<SHA2>'` is 7L and `… = '<SHA1>'` is 7L.
+        - **GitHub AI Credits:** 342.00 credits ($3.42) across 3 turns, 1 unpriced: `claude-opus-5.5` 286.00, `mai-code-2` 56.00, `gpt-unknown` 0.00
+        - **Foundry BYOK:** $0.32 across 1 turn: `gpt-6.1-sol` $0.32
+        - **Local offload:** 412,000 tokens across 1 turn ($0.00 billed • $0.23 cloud spend avoided): `qwen3.8-27b` 412,000
+        - **Not priced:** 1 turn: `mystery-1`
+        - **Circuit breaker:** 2 trips • max single-prompt burn: 317.50 credits
 
-**BM3, a higher threshold.** Settings `BreakerSettings.Default with { ChurnFailures = 6 }`. Ingest requests 1–7. `sink.Alerts` and `GetOpenBreakerTripsAsync(All)` are empty.
+        <details>
+        <summary>Details and data</summary>
 
-**BM4, budget then velocity.** Call `SetBranchBudgetAsync("swigerb/copilot-ledger", "feature/ledger", 100m)` first.
+        | Billing | Model | Turns | Unpriced | Input tokens | Output tokens | Cost | Cloud spend avoided |
+        | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+        | GitHub AI Credits | `claude-opus-5.5` | 1 | 0 | 1,200,000 | 50,000 | 286.00 credits ($2.86) | $0.00 |
+        | GitHub AI Credits | `mai-code-2` | 1 | 0 | 1,000,000 | 100,000 | 56.00 credits ($0.56) | $0.00 |
+        | Foundry BYOK | `gpt-6.1-sol` | 1 | 0 | 100,000 | 10,000 | $0.32 | $0.00 |
+        | Local | `qwen3.8-27b` | 1 | 0 | 400,000 | 12,000 | $0.00 | $0.23 |
+        | GitHub AI Credits | `gpt-unknown` | 1 | 1 | 1,000 | 100 | 0.00 credits ($0.00) | $0.00 |
+        | Not priced | `mystery-1` | 1 | 1 | 2,000 | 200 | $0.00 | $0.00 |
 
-- Ingest `TraceVRequest(<root>/repo, 1)`: no alerts.
-- Ingest `TraceVRequest(<root>/repo, 2)`: one alert, `Kind` `Budget`, `TripId` null, `Repository` `swigerb/copilot-ledger`, `Branch` `feature/ledger`, `Title` `CopilotLedger branch budget exceeded`, `Body` `swigerb/copilot-ledger @ feature/ledger: 120.00 of 100.00 AI credits spent. Run: gh-ledger budget list`, and `ShowNotification` true. The budget row's `AlertedAt` is `NOW`.
-- Ingest `TraceVRequest(<root>/repo, 3)`: two alerts. The second has `Kind` `Trip`, `TripId` 1, `Body` `swigerb/copilot-ledger @ feature/ledger: 180.00 AI credits in 5 minutes on one prompt. Run: gh-ledger breaker status`, and `ShowNotification` true. The open trip has `Id` 1, `Rule` `CreditVelocity`, `TraceId` `TraceV`, `ConversationId` `conv-v`, `Repository` `swigerb/copilot-ledger`, `Branch` `feature/ledger`, `RepositoryRoot` `<root>/repo`, `TrippedAt` `T0 + 180 s`, `Detail` `180.00 AI credits in 5 minutes`, `WindowCostUsd` 1.80m, `WindowMinutes` 5, `FailureCount` null, and `RecordedAt` `NOW`.
-- Ingest `TraceVRequest(<root>/repo, 3)` again: still two alerts.
+        Repository `swigerb/copilot-ledger` • 3 prompts • commit `0123456789ab` • generated 2026-11-21 15:00 UTC by gh-ledger <version>
 
-**BM5, the window slides.** Ingest `TraceWRequest(<root>/repo)`. `sink.Alerts` and `GetOpenBreakerTripsAsync(All)` are empty.
+        To check these totals, run `gh ledger branch --since all --json` in the repository and compare the `feature/ledger` row.
 
-**BM6, settings change the trip.** Settings `BreakerSettings.Default with { VelocityCredits = 100m, Notifications = false }`. Ingest `TraceVRequest(<root>/repo, 1, 2)` as one request. One alert: `Kind` `Trip`, `Body` `swigerb/copilot-ledger @ feature/ledger: 120.00 AI credits in 5 minutes on one prompt. Run: gh-ledger breaker status`, and `ShowNotification` false. The trip has `TrippedAt` `T0 + 120 s` and `WindowCostUsd` 1.20m.
+        ```json
+        {
+          "schemaVersion": 1,
+          "repository": "swigerb/copilot-ledger",
+          "branch": "feature/ledger",
+          "commit": "0123456789abcdef0123456789abcdef01234567",
+          "generatedAt": "2026-11-21T15:00:00.0000000+00:00",
+          "generator": "gh-ledger <version>",
+          "totals": {
+            "spans": 6,
+            "unpricedSpans": 2,
+            "inputTokens": 2703000,
+            "outputTokens": 172300,
+            "cacheReadInputTokens": 1200000,
+            "cacheWriteInputTokens": 100000,
+            "aiCredits": 342,
+            "aiCreditsUsd": 3.42,
+            "foundryByokUsd": 0.315,
+            "localSavedUsd": 0.23
+          },
+          "prompts": 3,
+          "maxPromptCredits": 317.5,
+          "breakerTrips": 2,
+          "models": [
+            {
+              "channel": "github_ai_credits",
+              "model": "claude-opus-5.5",
+              "spans": 1,
+              "unpricedSpans": 0,
+              "inputTokens": 1200000,
+              "outputTokens": 50000,
+              "cacheReadInputTokens": 800000,
+              "cacheWriteInputTokens": 100000,
+              "aiCredits": 286,
+              "aiCreditsUsd": 2.86,
+              "foundryByokUsd": 0,
+              "localSavedUsd": 0
+            },
+            {
+              "channel": "github_ai_credits",
+              "model": "mai-code-2",
+              "spans": 1,
+              "unpricedSpans": 0,
+              "inputTokens": 1000000,
+              "outputTokens": 100000,
+              "cacheReadInputTokens": 400000,
+              "cacheWriteInputTokens": 0,
+              "aiCredits": 56,
+              "aiCreditsUsd": 0.56,
+              "foundryByokUsd": 0,
+              "localSavedUsd": 0
+            },
+            {
+              "channel": "foundry_byok",
+              "model": "gpt-6.1-sol",
+              "spans": 1,
+              "unpricedSpans": 0,
+              "inputTokens": 100000,
+              "outputTokens": 10000,
+              "cacheReadInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "aiCredits": 0,
+              "aiCreditsUsd": 0,
+              "foundryByokUsd": 0.315,
+              "localSavedUsd": 0
+            },
+            {
+              "channel": "local",
+              "model": "qwen3.8-27b",
+              "spans": 1,
+              "unpricedSpans": 0,
+              "inputTokens": 400000,
+              "outputTokens": 12000,
+              "cacheReadInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "aiCredits": 0,
+              "aiCreditsUsd": 0,
+              "foundryByokUsd": 0,
+              "localSavedUsd": 0.23
+            },
+            {
+              "channel": "github_ai_credits",
+              "model": "gpt-unknown",
+              "spans": 1,
+              "unpricedSpans": 1,
+              "inputTokens": 1000,
+              "outputTokens": 100,
+              "cacheReadInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "aiCredits": 0,
+              "aiCreditsUsd": 0,
+              "foundryByokUsd": 0,
+              "localSavedUsd": 0
+            },
+            {
+              "channel": "unpriced",
+              "model": "mystery-1",
+              "spans": 1,
+              "unpricedSpans": 1,
+              "inputTokens": 2000,
+              "outputTokens": 200,
+              "cacheReadInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "aiCredits": 0,
+              "aiCreditsUsd": 0,
+              "foundryByokUsd": 0,
+              "localSavedUsd": 0
+            }
+          ]
+        }
+        ```
 
-**BM7, the flag file.** Settings `BreakerSettings.Default with { FlagFile = true }`. Ingest requests 1–6.
+        </details>
 
-- `File.ReadAllText(FLAG)` is exactly this text, with `ROOT` replaced by `JsonSerializer.Serialize(<root>/repo, RelaxedJson)`, after `.ReplaceLineEndings("\n")`, plus a final `\n`:
+        """;
 
-  ```text
-  {
-    "schemaVersion": 1,
-    "repositoryRoot": ROOT,
-    "openTrips": [
-      {
-        "id": 1,
-        "rule": "retry_churn",
-        "repository": "swigerb/copilot-ledger",
-        "branch": "feature/ledger",
-        "conversationId": "982f73ad-18f4-49ef-a1f9-70748fa013fb",
-        "traceId": "0a000000000000000000000000000001",
-        "trippedAt": "2026-11-21T00:17:17.2600000+00:00",
-        "detail": "5 failed tool calls in a row",
-        "resetCommand": "gh-ledger breaker reset --id 1"
-      }
-    ]
-  }
-  ```
+    private const string EmptyReceipt = """
+        <!-- copilot-ledger-receipt -->
+        ### CopilotLedger receipt for `fix/@octocat-#7`
 
-- `File.ReadAllText(<root>/repo/.copilot-ledger/.gitignore)` is exactly `*\n`.
-- `ResetBreakerTripsAsync(BreakerTripFilter.All)`, then `CircuitFlagFile.SyncAsync(store, <root>/repo)`: `FLAG` doesn't exist, and the `.gitignore` still does.
-- `CircuitFlagFile.SyncAsync(store, <root>/missing)` returns without an exception, and `<root>/missing` doesn't exist.
-- `sink.Warnings` is empty.
+        - **GitHub AI Credits:** none
+        - **Foundry BYOK:** none
+        - **Local offload:** none
+        - **Circuit breaker:** 0 trips • max single-prompt burn: 0.00 credits
 
-**BM8, a flag file that can't be written.** Settings `BreakerSettings.Default with { FlagFile = true }`. Create an empty **file** at `<root>/repo/.copilot-ledger`. Ingest requests 1–6. The trip is recorded (`GetOpenBreakerTripsAsync(All)` is `[TripH]`), `sink.Alerts` has the one trip alert, and `sink.Warnings` has one message starting with `could not update <FLAG>: ` (the rest is the OS's message).
+        <details>
+        <summary>Details and data</summary>
 
-**BM9, no monitor.** Build the ingestor with the four-argument constructor and ingest requests 1–7. `GetOpenBreakerTripsAsync(All)` is empty, and through a separate connection `SELECT COUNT(*) FROM breaker_trips` is 0L.
+        No spans are recorded for this branch.
 
-**BM10, a trip without a repository.** Settings `BreakerSettings.Default with { FlagFile = true, ChurnFailures = 2 }`. Ingest `Request(CopilotResource, …)` with two spans in trace `0d000000000000000000000000000001`, span IDs `0d000000000000a1` and `0d000000000000a2`, starting at `T0 + 1 s` and `T0 + 2 s` (end 1 second later), each with `Str("gen_ai.operation.name", "execute_tool")`, `Str("gen_ai.tool.name", "powershell")`, and `Int("process.exit.code", 1)`. The open trip has `Repository` `(none)`, `Branch` `(none)`, `RepositoryRoot` null, `ConversationId` null, `TrippedAt` `T0 + 2 s`, `Detail` `2 failed tool calls in a row`, and `FailureCount` 2. The one alert's `Body` is `(none) @ (none): 2 failed tool calls in a row on one prompt. Run: gh-ledger breaker status`. `sink.Warnings` is empty, and `Directory.GetDirectories(<root>, ".copilot-ledger", SearchOption.AllDirectories)` is empty.
+        Repository `swigerb/copilot-ledger` • 0 prompts • commit `0123456789ab` • generated 2026-11-21 15:00 UTC by gh-ledger <version>
 
-**BM11, spend exactly at the budget doesn't alert.** Call `SetBranchBudgetAsync("swigerb/copilot-ledger", "feature/ledger", 120m)` first, then ingest `TraceVRequest(<root>/repo, 1)`, `TraceVRequest(<root>/repo, 2)`, and `TraceVRequest(<root>/repo, 3)` as three separate requests.
+        To check these totals, run `gh ledger branch --since all --json` in the repository and compare the `fix/@octocat-#7` row.
 
-- After chat 1: `sink.Alerts` is empty.
-- After chat 2, the branch has spent exactly 120.00 AI credits: `sink.Alerts` is still empty, `GetOpenBreakerTripsAsync(All)` is empty ($1.20 isn't over $1.50), and the budget row has `Exceeded` false and a null `AlertedAt`.
-- After chat 3: `sink.Alerts` has exactly two alerts, in this order. First the trip: `Kind` `Trip`, `TripId` 1, `Title` `CopilotLedger circuit breaker tripped`, `Body` `swigerb/copilot-ledger @ feature/ledger: 180.00 AI credits in 5 minutes on one prompt. Run: gh-ledger breaker status`. Then the budget: `Kind` `Budget`, `TripId` null, `Title` `CopilotLedger branch budget exceeded`, `Body` `swigerb/copilot-ledger @ feature/ledger: 180.00 of 120.00 AI credits spent. Run: gh-ledger budget list`. Both have `Repository` `swigerb/copilot-ledger`, `Branch` `feature/ledger`, and `ShowNotification` true. The budget row's `AlertedAt` is `NOW`.
+        ```json
+        {
+          "schemaVersion": 1,
+          "repository": "swigerb/copilot-ledger",
+          "branch": "fix/@octocat-#7",
+          "commit": "0123456789abcdef0123456789abcdef01234567",
+          "generatedAt": "2026-11-21T15:00:00.0000000+00:00",
+          "generator": "gh-ledger <version>",
+          "totals": {
+            "spans": 0,
+            "unpricedSpans": 0,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "aiCredits": 0,
+            "aiCreditsUsd": 0,
+            "foundryByokUsd": 0,
+            "localSavedUsd": 0
+          },
+          "prompts": 0,
+          "maxPromptCredits": 0,
+          "breakerTrips": 0,
+          "models": []
+        }
+        ```
+
+        </details>
+
+        """;
+
+    private static ManualTimeProvider Time => new(
+        DateTimeOffset.Parse("2026-11-21T15:00:00Z"),
+        ManualTimeProvider.UtcMinus5);
+
+    [Fact]
+    public async Task EP1_ExportWritesTheExactReceiptFile()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = await SeededHarnessAsync(temp.Path);
+        string repo = Path.Combine(temp.Path, "repo");
+
+        CliRun run = await harness.RunInAsync(Path.Combine(repo, "src"), "export-pr");
+
+        Assert.Equal(0, run.ExitCode);
+        Assert.Equal(
+            $"Wrote {FeatureFile} for feature/ledger.\n" +
+            "Commit it on the branch and push; the CopilotLedger action posts it on the pull request.\n",
+            run.Out);
+        Assert.Equal(string.Empty, run.Error);
+        string[] files = Directory.GetFiles(Path.Combine(repo, ".github", "copilot-ledger", "receipts"));
+        Assert.Equal([Path.Combine(repo, ".github", "copilot-ledger", "receipts", "feature-ledger-0a69c755.md")], files);
+        byte[] bytes = await FileRetry.ReadAllBytesAsync(files[0]);
+        Assert.NotEqual(0xEF, bytes[0]);
+        Assert.Equal(Expected(FeatureReceipt), System.Text.Encoding.UTF8.GetString(bytes));
+    }
+
+    [Fact]
+    public async Task EP2_StdoutWritesTheMarkdownAndNoFile()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = await SeededHarnessAsync(temp.Path);
+        string repo = Path.Combine(temp.Path, "repo");
+
+        CliRun run = await harness.RunInAsync(repo, "export-pr", "--stdout");
+
+        Assert.Equal(0, run.ExitCode);
+        Assert.Equal(Expected(FeatureReceipt), run.Out);
+        Assert.Equal(string.Empty, run.Error);
+        Assert.False(Directory.Exists(Path.Combine(repo, ".github")));
+    }
+
+    [Fact]
+    public async Task EP3_JsonIsTheReceiptDataBlock()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = await SeededHarnessAsync(temp.Path);
+        string repo = Path.Combine(temp.Path, "repo");
+
+        CliRun run = await harness.RunInAsync(repo, "export-pr", "--json");
+
+        Assert.Equal(0, run.ExitCode);
+        string receipt = Expected(FeatureReceipt);
+        int start = receipt.IndexOf("```json\n", StringComparison.Ordinal) + "```json\n".Length;
+        int end = receipt.IndexOf("\n```\n", start, StringComparison.Ordinal);
+        Assert.Equal(receipt[start..end] + "\n", run.Out);
+        Assert.Equal(string.Empty, run.Error);
+        Assert.False(Directory.Exists(Path.Combine(repo, ".github")));
+    }
+
+    [Fact]
+    public async Task EP4_TotalsReconcileWithBranchJson()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = await SeededHarnessAsync(temp.Path);
+        string repo = Path.Combine(temp.Path, "repo");
+
+        CliRun receipt = await harness.RunInAsync(repo, "export-pr", "--json");
+        CliRun branch = await harness.RunInAsync(repo, "branch", "--since", "all", "--json");
+
+        Assert.Equal(0, receipt.ExitCode);
+        Assert.Equal(0, branch.ExitCode);
+        using JsonDocument receiptJson = JsonDocument.Parse(receipt.Out);
+        using JsonDocument branchJson = JsonDocument.Parse(branch.Out);
+        JsonElement totals = receiptJson.RootElement.GetProperty("totals");
+        JsonElement row = Assert.Single(
+            branchJson.RootElement.GetProperty("rows").EnumerateArray(),
+            item => item.GetProperty("branch").GetString() == "feature/ledger");
+        Assert.Equal("swigerb/copilot-ledger", row.GetProperty("repository").GetString());
+        foreach (string name in new[] { "spans", "unpricedSpans", "inputTokens", "outputTokens", "cacheReadInputTokens", "cacheWriteInputTokens" })
+        {
+            Assert.Equal(row.GetProperty(name).GetInt64(), totals.GetProperty(name).GetInt64());
+        }
+
+        foreach (string name in new[] { "aiCredits", "aiCreditsUsd", "foundryByokUsd", "localSavedUsd" })
+        {
+            Assert.Equal(row.GetProperty(name).GetDecimal(), totals.GetProperty(name).GetDecimal());
+        }
+
+        Assert.Equal(342m, totals.GetProperty("aiCredits").GetDecimal());
+        Assert.Equal(3.42m, totals.GetProperty("aiCreditsUsd").GetDecimal());
+        Assert.Equal(0.315m, totals.GetProperty("foundryByokUsd").GetDecimal());
+        Assert.Equal(0.23m, totals.GetProperty("localSavedUsd").GetDecimal());
+        decimal modelCredits = receiptJson.RootElement.GetProperty("models").EnumerateArray()
+            .Sum(item => item.GetProperty("aiCredits").GetDecimal());
+        Assert.Equal(342m, modelCredits);
+    }
+
+    [Fact]
+    public async Task EP5_BranchWithoutSpendGetsAnEmptyReceipt()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = await SeededHarnessAsync(temp.Path);
+        string repo = Path.Combine(temp.Path, "repo");
+        string git = Path.Combine(repo, ".git");
+        Directory.CreateDirectory(Path.Combine(git, "refs", "heads", "fix"));
+        File.WriteAllText(Path.Combine(git, "HEAD"), "ref: refs/heads/fix/@octocat-#7\n");
+        File.WriteAllText(Path.Combine(git, "refs", "heads", "fix", "@octocat-#7"), GitFixture.Sha1 + "\n");
+
+        CliRun run = await harness.RunInAsync(repo, "export-pr");
+
+        Assert.Equal(0, run.ExitCode);
+        Assert.Equal(
+            "Wrote .github/copilot-ledger/receipts/fix--octocat--7-98e51822.md for fix/@octocat-#7.\n" +
+            "Commit it on the branch and push; the CopilotLedger action posts it on the pull request.\n",
+            run.Out);
+        Assert.Equal(
+            Expected(EmptyReceipt),
+            await FileRetry.ReadAllTextAsync(Path.Combine(repo, ".github", "copilot-ledger", "receipts", "fix--octocat--7-98e51822.md")));
+    }
+
+    public static TheoryData<string, string> GitProblems => new()
+    {
+        { "no-repository", "<work> isn't in a Git repository.\n" },
+        { "detached", "HEAD is detached. Check out the pull request's branch, then run export-pr again.\n" },
+        { "unborn", "feature/ledger has no commits yet.\n" },
+        { "no-origin", "export-pr needs a GitHub remote named origin, and <repo> has none.\n" },
+    };
+
+    // Assumes no directory above the temp directory has a .git entry.
+    [Theory]
+    [MemberData(nameof(GitProblems))]
+    public async Task EP6_GitProblemsFailWithoutWriting(string problem, string error)
+    {
+        using TempDirectory temp = new();
+        string work = Path.Combine(temp.Path, "work");
+        Directory.CreateDirectory(work);
+        string repo = GitFixture.Create(temp.Path);
+        string git = Path.Combine(repo, ".git");
+        switch (problem)
+        {
+            case "detached":
+                File.WriteAllText(Path.Combine(git, "HEAD"), GitFixture.Sha1 + "\n");
+                break;
+            case "unborn":
+                File.Delete(Path.Combine(git, "refs", "heads", "feature", "ledger"));
+                break;
+            case "no-origin":
+                File.WriteAllText(Path.Combine(git, "config"), "[core]\n\tbare = false\n");
+                break;
+        }
+
+        await using CliHarness harness = new(temp.Path, new FakeCliPlatform(), Time);
+
+        CliRun run = await harness.RunInAsync(problem == "no-repository" ? work : repo, "export-pr");
+
+        Assert.Equal(1, run.ExitCode);
+        Assert.Equal(string.Empty, run.Out);
+        Assert.Equal(error.Replace("<work>", work).Replace("<repo>", repo), run.Error);
+        Assert.False(Directory.Exists(Path.Combine(repo, ".github")));
+    }
+
+    [Fact]
+    public async Task EP7_StdoutAndJsonTogetherFail()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = await SeededHarnessAsync(temp.Path);
+
+        CliRun run = await harness.RunInAsync(
+            Path.Combine(temp.Path, "repo"),
+            "export-pr",
+            "--stdout",
+            "--json");
+
+        Assert.Equal(1, run.ExitCode);
+        Assert.StartsWith("Use either --stdout or --json, not both.\n", run.Error);
+        Assert.False(Directory.Exists(Path.Combine(temp.Path, "repo", ".github")));
+    }
+
+    public static TheoryData<string, string> FileNames => new()
+    {
+        { "feature/ledger", "feature-ledger-0a69c755.md" },
+        { "fix/@octocat-#7", "fix--octocat--7-98e51822.md" },
+        { "Feature/Ledger", "Feature-Ledger-a4b486e4.md" },
+        { "release/v1.2_rc-1", "release-v1.2_rc-1-7a79d7e7.md" },
+        { "topic/\u00FCn\u00EFcode", "topic--n-code-ae54b3cf.md" },
+        { new string('a', 70), new string('a', 64) + "-6bd5e503.md" },
+        { "con", "con-1143da2b.md" },
+    };
+
+    [Theory]
+    [MemberData(nameof(FileNames))]
+    public void EP8_ReceiptFileNames(string branch, string fileName)
+    {
+        Assert.Equal(fileName, ReceiptMarkdown.FileName(branch));
+    }
+
+    public static TheoryData<string, string> CodeSpans => new()
+    {
+        { "feature/ledger", "`feature/ledger`" },
+        { "@octocat", "`@octocat`" },
+        { "a`b", "``a`b``" },
+        { "`tick", "`` `tick ``" },
+        { " lead", "`  lead `" },
+        { "a``b```c", "````a``b```c````" },
+        { "x\ny\u2028z", "`x\uFFFDy\uFFFDz`" },
+    };
+
+    [Theory]
+    [MemberData(nameof(CodeSpans))]
+    public void EP9_CodeSpansShowValuesLiterally(string value, string span)
+    {
+        Assert.Equal(span, ReceiptMarkdown.Code(value));
+    }
+
+    private static string Expected(string template) =>
+        template.ReplaceLineEndings("\n").Replace("<version>", GhLedgerCli.Version, StringComparison.Ordinal);
+
+    private static async Task<CliHarness> SeededHarnessAsync(string root)
+    {
+        GitFixture.Create(root);
+        CliHarness harness = new(root, new FakeCliPlatform(), Time);
+        SqliteLedgerStore store = new(Path.Combine(root, "data", "ledger.db"), harness.TimeProvider);
+        await store.InitializeAsync();
+        await ReceiptSeeds.SeedAsync(store, root);
+        return harness;
+    }
+}
+````
 
 ### Task 3 tests
 
-#### Test support
+`action/tests/receipt.Tests.ps1` (copy exactly). It fakes the GitHub API with a function named `Invoke-WebRequest`, runs `receipt.ps1` once per case with the action's environment variables, and checks the exit code, every log line, the `GITHUB_OUTPUT` file, every request in order, the posted body, and the request headers. A mutation check by the architect (comparing branches case-insensitively) made AC15 fail, as it should.
 
-`BreakerTraces.TraceVJson(string repoRoot)` returns Trace V's three chats as one OTLP/JSON request, on one line, with `REPO` replaced by `JsonSerializer.Serialize(repoRoot, RelaxedJson)`:
+| Case | Setup | Expected |
+|---|---|---|
+| AC1 | An added receipt, no comments | `POST` with the receipt as the body; `result=created`; the three headers |
+| AC2 | The bot's older receipt comment after someone else's comment | `PATCH` comment 55; `result=updated` |
+| AC3 | The bot's comment with the same body in `\r\n` form | No write; `result=unchanged` |
+| AC4 | A marker comment by `octocat` | Left alone; a new comment; `result=created` |
+| AC5 | Only a removed receipt and a non-`.md` file | Notice; `result=no-receipt`; one request |
+| AC6 | A fork's pull request | Notice; `result=skipped`; no requests |
+| AC7 | A `pull_request_target` event | Error; exit 1; no outputs; no requests |
+| AC8 | A receipt for another branch | Error naming both branches |
+| AC9 | A file without the marker | Error naming the file |
+| AC10 | `size` 65,537 | Error before decoding |
+| AC11 | Invalid JSON in the block | Error starting with the file and `has invalid JSON data:` |
+| AC12 | `"schemaVersion": 2` | Error |
+| AC13 | 100 files on page 1, the receipt on page 2 | Both pages read, then the usual requests |
+| AC14 | `receipts-directory` `/.github/copilot-ledger/receipts/` | Still found |
+| AC15 | Head branch `Feature/Ledger` | Error: branch names are case-sensitive |
 
-```text
-{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"github-copilot"}},{"key":"process.working_directory","value":{"stringValue":REPO}}]},"scopeSpans":[{"scope":{"name":"github.copilot"},"spans":[SPAN1,SPAN2,SPAN3]}]}]}
-```
+````powershell
+#Requires -Version 7.4
+# Runs action/receipt.ps1 against a fake GitHub REST API. No network.
+# Usage: pwsh -NoProfile -File action/tests/receipt.Tests.ps1
 
-`SPANk` is the following, with `ID`, `START`, and `END` from Trace V's table (chat `k`):
+Set-StrictMode -Version 3.0
+$ErrorActionPreference = 'Stop'
 
-```text
-{"traceId":"0b000000000000000000000000000001","spanId":"ID","parentSpanId":"","name":"chat claude-opus-5.5","kind":3,"startTimeUnixNano":"START","endTimeUnixNano":"END","attributes":[{"key":"gen_ai.operation.name","value":{"stringValue":"chat"}},{"key":"gen_ai.provider.name","value":{"stringValue":"github"}},{"key":"gen_ai.request.model","value":{"stringValue":"claude-opus-5.5"}},{"key":"gen_ai.conversation.id","value":{"stringValue":"conv-v"}},{"key":"gen_ai.usage.input_tokens","value":{"intValue":"100000"}},{"key":"gen_ai.usage.output_tokens","value":{"intValue":"10000"}}],"status":{"code":0}}
-```
+$ScriptPath = Join-Path $PSScriptRoot '..' 'receipt.ps1'
+$Api = 'https://api.github.test'
+$Repository = 'octo/widgets'
+$Sha = '0123456789abcdef0123456789abcdef01234567'
+$Directory = '.github/copilot-ledger/receipts'
+$ReceiptPath = "$Directory/feature-ledger-0a1b2c3d.md"
+$FilesUri = "GET $Api/repos/$Repository/pulls/7/files?per_page=100&page=1"
+$ContentUri = "GET $Api/repos/$Repository/contents/.github/copilot-ledger/receipts/feature-ledger-0a1b2c3d.md?ref=$Sha"
+$CommentsUri = "GET $Api/repos/$Repository/issues/7/comments?per_page=100&page=1"
+$CreateUri = "POST $Api/repos/$Repository/issues/7/comments"
 
-`SCRIPT(path)` is Task 3's PowerShell script with `XMLPATH` replaced by `path` in which each of `'`, `\u2018`, `\u2019`, `\u201A`, and `\u201B` is doubled; the test builds it with its own private helper, because `DesktopNotifier` is internal. `WINDOWS` is `new FakeCliPlatform { IsWindows = true, ProcessPath = @"C:\tools\gh-ledger.exe", ProcessVariables = { ["SystemRoot"] = @"C:\Windows" } }`. `RULES` is `Rules: more than 150.00 AI credits in 5 minutes on one prompt; 5 failed tool calls in a row on one prompt`.
+$ReceiptText = @'
+<!-- copilot-ledger-receipt -->
+### CopilotLedger receipt for `feature/ledger` — 56.00 AI credits
 
-#### Commands: `BreakerCommandTests` (new)
-
-Each case uses `new CliHarness(<root>, platform, new ManualTimeProvider(NOW, ManualTimeProvider.UtcMinus5))` and, to seed, a store at `NOW` on `<root>/data/ledger.db`. Trips are seeded with `RecordBreakerTripAsync`:
-
-- `VA`: `{ Rule = CreditVelocity, TraceId = new string('1', 32), Repository = "swigerb/copilot-ledger", Branch = "feature/ledger", TrippedAt = T0 + 180 s, Detail = "180.00 AI credits in 5 minutes", WindowCostUsd = 1.80m, WindowMinutes = 5 }`;
-- `CB`: `{ Rule = RetryChurn, TraceId = new string('2', 32), ConversationId = "conv-2", Repository = "swigerb/copilot-ledger", Branch = "main", TrippedAt = T0 + 300 s, Detail = "5 failed tool calls in a row", FailureCount = 5 }`.
-
-**BC1, closed.** `breaker status` exits 0, and `Out` is exactly:
-
-```text
-Circuit breaker: closed
-RULES
-Flag file: off. Notifications: on.
-```
-
-`breaker status --json` exits 0, and its `Out` deep-equals `{"state":"closed","settings":{"velocityCredits":150,"velocityWindowMinutes":5,"churnFailures":5,"flagFile":false,"notifications":true},"openTrips":[]}`.
-
-**BC2, open.** Seed `VA` (id 1) and `CB` (id 2), then `MarkBreakerTripNotifiedAsync(1)`. `breaker status` exits 0, and `Out` is exactly:
-
-```text
-Circuit breaker: open (2 trips)
-RULES
-Flag file: off. Notifications: on.
-
-Trip 2 at 2026-11-21 05:05: swigerb/copilot-ledger @ main: 5 failed tool calls in a row on one prompt
-  rule retry_churn, trace 22222222222222222222222222222222, session conv-2
-Trip 1 at 2026-11-21 05:03: swigerb/copilot-ledger @ feature/ledger: 180.00 AI credits in 5 minutes on one prompt
-  rule credit_velocity, trace 11111111111111111111111111111111, session (none)
-Reset a trip with: gh-ledger breaker reset --id <id>
-```
-
-`breaker status --json` deep-equals:
+<details>
+<summary>Data</summary>
 
 ```json
 {
-  "state": "open",
-  "settings": { "velocityCredits": 150, "velocityWindowMinutes": 5, "churnFailures": 5, "flagFile": false, "notifications": true },
-  "openTrips": [
-    { "id": 2, "rule": "retry_churn", "repository": "swigerb/copilot-ledger", "branch": "main", "repositoryRoot": null, "conversationId": "conv-2", "traceId": "22222222222222222222222222222222", "trippedAt": "2026-11-21T10:05:00.0000000+00:00", "detail": "5 failed tool calls in a row", "windowAiCredits": null, "windowMinutes": null, "failureCount": 5, "recordedAt": "2026-11-21T12:00:00.0000000+00:00", "notifiedAt": null },
-    { "id": 1, "rule": "credit_velocity", "repository": "swigerb/copilot-ledger", "branch": "feature/ledger", "repositoryRoot": null, "conversationId": null, "traceId": "11111111111111111111111111111111", "trippedAt": "2026-11-21T10:03:00.0000000+00:00", "detail": "180.00 AI credits in 5 minutes", "windowAiCredits": 180, "windowMinutes": 5, "failureCount": null, "recordedAt": "2026-11-21T12:00:00.0000000+00:00", "notifiedAt": "2026-11-21T12:00:00.0000000+00:00" }
-  ]
+  "schemaVersion": 1,
+  "branch": "feature/ledger"
 }
 ```
 
-**BC3, reset.** Create the Git fixture. Seed `VA` (1), `CB` (2), `CB with { TraceId = new string('3', 32), Repository = "contoso/api" }` (3), and `CB with { TraceId = new string('4', 32) }` (4). In order:
+</details>
+'@.ReplaceLineEndings("`n") + "`n"
 
-1. `breaker reset --id 2 --all` and `breaker reset --all --repo x --branch y` each exit 1, with `Error` containing `Use only one of --id, --all, or --repo with --branch.`
-2. `breaker reset --repo swigerb/copilot-ledger` exits 1, with `Error` containing `--repo and --branch must be used together.`
-3. `breaker reset`, run in `<root>`, exits 1, and `Error` is exactly `Not in a Git repository. Pass --repo and --branch, --id, or --all.`
-4. `breaker reset` run in `<root>/repo` (`RunInAsync`) exits 0 with `Out` exactly `Reset 1 trip.`; run again, `No open trips to reset.`
-5. `breaker reset --repo swigerb/copilot-ledger --branch main` prints exactly `Reset 2 trips.`
-6. `breaker reset --id 3` prints exactly `Reset 1 trip.`; run again, `No open trips to reset.`
-7. `breaker reset --all` prints exactly `No open trips to reset.`, and `GetOpenBreakerTripsAsync(All)` is empty.
+$Fake = @{ Requests = $null; Bodies = $null; Headers = $null; Responses = $null }
+$Failures = [System.Collections.Generic.List[string]]::new()
 
-**BC4, config.** `breaker config` exits 0, and `Out` is exactly `RULES` and `Flag file: off. Notifications: on.` on two lines. `breaker config --velocity-credits 12.5 --velocity-minutes 1 --churn-failures 2 --notifications off` exits 0, and `Out` is exactly:
+# Replaces the cmdlet for receipt.ps1, which runs in a child scope of this script.
+function Invoke-WebRequest {
+    param(
+        [string] $Uri,
+        [string] $Method,
+        [hashtable] $Headers,
+        [byte[]] $Body,
+        [string] $ContentType)
+    $key = "$Method $Uri"
+    $Fake.Requests.Add($key)
+    $Fake.Headers = $Headers
+    if ($null -ne $Body) {
+        $Fake.Bodies.Add("$ContentType $([System.Text.Encoding]::UTF8.GetString($Body))")
+    }
 
-```text
-Updated the circuit breaker settings.
-Rules: more than 12.50 AI credits in 1 minute on one prompt; 2 failed tool calls in a row on one prompt
-Flag file: off. Notifications: off.
-```
+    if (-not $Fake.Responses.ContainsKey($key)) {
+        throw "Unexpected request: $key"
+    }
 
-`GetBreakerSettingsAsync()` then equals `{ VelocityCredits = 12.5m, VelocityWindowMinutes = 1, ChurnFailures = 2, FlagFile = false, Notifications = false }`. Then, a theory in a fresh harness: each of these exits 1 with `Error` containing the message, and the settings still equal `BreakerSettings.Default`:
+    return [pscustomobject]@{ Content = $Fake.Responses[$key] }
+}
 
-| Arguments | Message |
-|---|---|
-| `--velocity-credits 0.99`, `1000000.01`, `1.001`, `1e2`, `1,5` | `--velocity-credits must be a number from 1 to 1000000 with at most 2 decimal places.` |
-| `--velocity-minutes 0`, `1441` | `--velocity-minutes must be from 1 to 1440.` |
-| `--churn-failures 1`, `101` | `--churn-failures must be from 2 to 100.` |
-| `--flag-file yes` | `--flag-file must be on or off.` |
-| `--notifications ON` | `--notifications must be on or off.` |
+function ConvertTo-CompactJson($Value) {
+    return ConvertTo-Json -InputObject $Value -Compress -Depth 5
+}
 
-**BC5, the flag file follows the setting.** Create the directory `<root>/repo` and seed `VA with { RepositoryRoot = <root>/repo }` (id 1).
+function New-Files([object[]] $Files) {
+    return ConvertTo-CompactJson @($Files | ForEach-Object { [ordered]@{ filename = $_[0]; status = $_[1] } })
+}
 
-- `breaker config --flag-file on` exits 0 with `Out` exactly `Updated the circuit breaker settings.`, `RULES`, and `Flag file: on. Notifications: on.` on three lines. `<root>/repo/.copilot-ledger/CIRCUIT_OPEN` then holds exactly BM7's text, with `"rule": "credit_velocity"`, `"branch": "feature/ledger"`, `"conversationId": null`, `"traceId": "11111111111111111111111111111111"`, `"trippedAt": "2026-11-21T10:03:00.0000000+00:00"`, and `"detail": "180.00 AI credits in 5 minutes"` in place of Trace H's values.
-- Delete the flag file, as if the daemon had failed to write it. `breaker config --flag-file on`, run again with the setting already on, exits 0 and writes the same text again.
-- `breaker config --flag-file off` exits 0, and the flag file doesn't exist.
+function New-Content([string] $Text, [long] $Size = -1) {
+    $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($Text)
+    return ConvertTo-CompactJson ([ordered]@{
+        size = if ($Size -ge 0) { $Size } else { $bytes.Length }
+        encoding = 'base64'
+        content = [System.Convert]::ToBase64String($bytes, [System.Base64FormattingOptions]::InsertLineBreaks)
+    })
+}
 
-**BC6, budgets.** Create the Git fixture.
+function New-Comment([long] $Id, [string] $Login, [string] $Body) {
+    return [ordered]@{
+        id = $Id
+        user = [ordered]@{ login = $Login }
+        body = $Body
+        html_url = "https://github.test/octo/widgets/pull/7#issuecomment-$Id"
+    }
+}
 
-1. `budget list` exits 0 with `Out` exactly `No branch budgets are set.`
-2. Seed `LedgerSeeds.SeedChainsAsync(store, <root>/repo, <root>/api)`.
-3. `budget set 56` in `<root>/repo` exits 0, and `Out` is exactly the one line `Budget for swigerb/copilot-ledger @ feature/ledger: 56.00 AI credits. Spent so far: 56.00.`: spend exactly at the budget isn't over it. Then `budget set 50` in `<root>/repo` exits 0, and `Out` is exactly `Budget for swigerb/copilot-ledger @ feature/ledger: 50.00 AI credits. Spent so far: 56.00.` and `This branch is already over its budget.` on two lines.
-4. `budget set 40.5 --repo contoso/api --branch main` prints exactly `Budget for contoso/api @ main: 40.50 AI credits. Spent so far: 31.50.`
-5. `budget list` prints exactly `contoso/api @ main: 31.50 of 40.50 AI credits` and `swigerb/copilot-ledger @ feature/ledger: 56.00 of 50.00 AI credits (over budget)` on two lines.
-6. `budget list --json` deep-equals `{"budgets":[{"repository":"contoso/api","branch":"main","budgetAiCredits":40.5,"spentAiCredits":31.5,"exceeded":false,"setAt":"2026-11-21T12:00:00.0000000+00:00","alertedAt":null},{"repository":"swigerb/copilot-ledger","branch":"feature/ledger","budgetAiCredits":50,"spentAiCredits":56,"exceeded":true,"setAt":"2026-11-21T12:00:00.0000000+00:00","alertedAt":null}]}`.
-7. `budget clear --repo contoso/api --branch main` prints exactly `Cleared the budget for contoso/api @ main.`; again, `No budget is set for contoso/api @ main.`
-8. `budget set 0`, `budget set abc`, `budget set 1000000.01`, and `budget set 0.001` (in `<root>/repo`) each exit 1 with `Error` containing `Credits must be a number greater than 0 and at most 1000000 with at most 2 decimal places.`
-9. `budget set 5` in `<root>` exits 1, and `Error` is exactly `Not in a Git repository. Pass --repo and --branch.`
-10. `budget clear --branch main` exits 1 with `Error` containing `--repo and --branch must be used together.`
+function Invoke-Receipt([hashtable] $Responses, [hashtable] $Environment = @{}) {
+    $Fake.Requests = [System.Collections.Generic.List[string]]::new()
+    $Fake.Bodies = [System.Collections.Generic.List[string]]::new()
+    $Fake.Headers = $null
+    $Fake.Responses = $Responses
+    $outputFile = [System.IO.Path]::GetTempFileName()
+    $values = @{
+        GITHUB_API_URL = $Api
+        GITHUB_REPOSITORY = $Repository
+        GITHUB_OUTPUT = $outputFile
+        RECEIPT_TOKEN = 'test-token'
+        RECEIPTS_DIRECTORY = $Directory
+        COMMENT_AUTHOR = 'github-actions[bot]'
+        EVENT_NAME = 'pull_request'
+        PR_NUMBER = '7'
+        HEAD_REF = 'feature/ledger'
+        HEAD_SHA = $Sha
+        HEAD_REPOSITORY = $Repository
+    }
+    foreach ($name in $Environment.Keys) {
+        $values[$name] = $Environment[$name]
+    }
 
-#### Daemon alerts: `AlertDaemonTests` (new)
+    foreach ($name in $values.Keys) {
+        [System.Environment]::SetEnvironmentVariable($name, $values[$name])
+    }
 
-Each case starts the daemon with `StartInProcessDaemonAsync()`, so its log goes to `DaemonOutput`. It waits with `WaitUntilAsync`, then runs `daemon stop` and awaits `harness.InProcessDaemon` before reading `ProcessRuns` or `DaemonOutput`. `ALERT_A` is `ALERT CopilotLedger circuit breaker tripped: swigerb/copilot-ledger @ feature/a: 5 failed tool calls in a row on one prompt. Run: gh-ledger breaker status`.
+    $global:LASTEXITCODE = 0
+    [string[]] $lines = @(& $ScriptPath *>&1 | ForEach-Object { "$_" })
+    $run = [pscustomobject]@{
+        ExitCode = $global:LASTEXITCODE
+        Lines = $lines
+        Outputs = [System.IO.File]::ReadAllText($outputFile)
+        Requests = [string[]] $Fake.Requests.ToArray()
+        Bodies = [string[]] $Fake.Bodies.ToArray()
+        Headers = $Fake.Headers
+    }
+    Remove-Item -LiteralPath $outputFile
+    return $run
+}
 
-**AD1, end to end on Windows.** `WINDOWS` platform, `TimeProvider.System`, and the Git fixture.
+function Assert-Equal($Expected, $Actual, [string] $Message) {
+    $expectedJson = ConvertTo-CompactJson $Expected
+    $actualJson = ConvertTo-CompactJson $Actual
+    if ($expectedJson -cne $actualJson) {
+        $Failures.Add("$Message`n  expected: $expectedJson`n  actual:   $actualJson")
+    }
+}
 
-1. `breaker config --flag-file on` exits 0.
-2. `StartInProcessDaemonAsync()`. With `harness.CreateDaemonClient()`, post `TraceVJson(<root>/repo)` to `/v1/traces` as `application/json`: the status is 200 and the body is `{}`.
-3. `<root>/repo/.copilot-ledger/CIRCUIT_OPEN` exists as soon as the response arrives.
-4. Wait until the store's single open trip has a non-null `NotifiedAt`. `breaker status` exits 0, and `Out` starts with `Circuit breaker: open (1 trip)\n`.
-5. Stop the daemon. `ProcessRuns` has exactly one entry: `@"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"` with arguments `["-NoProfile", "-NonInteractive", "-Command", SCRIPT(<root>/data/alert-toast.xml)]`.
-6. `File.ReadAllText(<root>/data/alert-toast.xml)` is exactly `<toast><visual><binding template="ToastGeneric"><text>CopilotLedger circuit breaker tripped</text><text>swigerb/copilot-ledger @ feature/ledger: 180.00 AI credits in 5 minutes on one prompt. Run: gh-ledger breaker status</text></binding></visual></toast>`.
-7. `DaemonOutput` contains `ALERT CopilotLedger circuit breaker tripped: swigerb/copilot-ledger @ feature/ledger: 180.00 AI credits in 5 minutes on one prompt. Run: gh-ledger breaker status`.
-8. `breaker reset` in `<root>/repo` prints exactly `Reset 1 trip.`. The flag file no longer exists, and `<root>/repo/.copilot-ledger/.gitignore` does. `breaker status` then prints `Circuit breaker: closed` as its first line.
+function Get-PostedBody([string] $Request) {
+    $json = $Request.Substring('application/json '.Length)
+    return [System.Text.Json.JsonDocument]::Parse($json).RootElement.GetProperty('body').GetString()
+}
 
-**AD2, a restart re-sends recent alerts.** `new FakeCliPlatform { IsMacOS = true }`, with the harness on `new ManualTimeProvider(NOW)`. Before starting the daemon, seed through stores on `<root>/data/ledger.db` whose clocks are set as shown. Each trip is `{ Rule = RetryChurn, TraceId = new string(<c>, 32), Repository = "swigerb/copilot-ledger", Branch = <branch>, TrippedAt = <clock>, Detail = "5 failed tool calls in a row", FailureCount = 5 }`:
+# AC1: a new receipt is posted as a new comment.
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(@('src/app.cs', 'modified'), @($ReceiptPath, 'added'))
+    $ContentUri = New-Content $ReceiptText
+    $CommentsUri = '[]'
+    $CreateUri = ConvertTo-CompactJson (New-Comment 100 'github-actions[bot]' $ReceiptText)
+}
+Assert-Equal 0 $run.ExitCode 'AC1 exit code'
+Assert-Equal @('CopilotLedger receipt created: https://github.test/octo/widgets/pull/7#issuecomment-100') $run.Lines 'AC1 log'
+Assert-Equal "result=created`ncomment-url=https://github.test/octo/widgets/pull/7#issuecomment-100`n" $run.Outputs 'AC1 outputs'
+Assert-Equal @($FilesUri, $ContentUri, $CommentsUri, $CreateUri) $run.Requests 'AC1 requests'
+Assert-Equal 1 $run.Bodies.Count 'AC1 body count'
+Assert-Equal $ReceiptText (Get-PostedBody $run.Bodies[0]) 'AC1 posted body'
+Assert-Equal 'Bearer test-token' $run.Headers['Authorization'] 'AC1 authorization header'
+Assert-Equal 'application/vnd.github+json' $run.Headers['Accept'] 'AC1 accept header'
+Assert-Equal '2026-03-10' $run.Headers['X-GitHub-Api-Version'] 'AC1 API version header'
 
-| Clock | Action |
-|---|---|
-| `NOW - 30 min` | `LedgerSeeds.SeedChainsAsync(store, <root>/repo, <root>/api)`; trip `'1'`, `feature/a` (id 1) |
-| `NOW - 2 h` | trip `'2'`, `feature/b` (id 2) |
-| `NOW - 15 min` | trip `'3'`, `feature/c` (id 3), then `MarkBreakerTripNotifiedAsync(3)` |
-| `NOW - 10 min` | trip `'4'`, `feature/d` (id 4), then `ResetBreakerTripsAsync(new BreakerTripFilter { Id = 4 })` |
-| `NOW - 20 min` | `SetBranchBudgetAsync("swigerb/copilot-ledger", "feature/ledger", 50m)`, then `MarkBranchBudgetAlertedAsync` for that branch |
+# AC2: the bot's earlier receipt comment is updated in place.
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(, @($ReceiptPath, 'modified'))
+    $ContentUri = New-Content $ReceiptText
+    $CommentsUri = ConvertTo-CompactJson @(
+        (New-Comment 54 'octocat' 'Looks good'),
+        (New-Comment 55 'github-actions[bot]' "<!-- copilot-ledger-receipt -->`nold"))
+    "PATCH $Api/repos/$Repository/issues/comments/55" = ConvertTo-CompactJson (New-Comment 55 'github-actions[bot]' $ReceiptText)
+}
+Assert-Equal 0 $run.ExitCode 'AC2 exit code'
+Assert-Equal @('CopilotLedger receipt updated: https://github.test/octo/widgets/pull/7#issuecomment-55') $run.Lines 'AC2 log'
+Assert-Equal "result=updated`ncomment-url=https://github.test/octo/widgets/pull/7#issuecomment-55`n" $run.Outputs 'AC2 outputs'
+Assert-Equal @($FilesUri, $ContentUri, $CommentsUri, "PATCH $Api/repos/$Repository/issues/comments/55") $run.Requests 'AC2 requests'
+Assert-Equal $ReceiptText (Get-PostedBody $run.Bodies[0]) 'AC2 posted body'
 
-Start the daemon with `StartInProcessDaemonAsync()`, and wait until trip 1's `NotifiedAt` and the budget's `NotifiedAt` are both set. After stopping:
+# AC3: an identical comment (stored with CRLF line endings) isn't edited.
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(, @($ReceiptPath, 'added'))
+    $ContentUri = New-Content $ReceiptText
+    $CommentsUri = ConvertTo-CompactJson @(, (New-Comment 56 'github-actions[bot]' $ReceiptText.Replace("`n", "`r`n")))
+}
+Assert-Equal 0 $run.ExitCode 'AC3 exit code'
+Assert-Equal @('CopilotLedger receipt unchanged: https://github.test/octo/widgets/pull/7#issuecomment-56') $run.Lines 'AC3 log'
+Assert-Equal "result=unchanged`ncomment-url=https://github.test/octo/widgets/pull/7#issuecomment-56`n" $run.Outputs 'AC3 outputs'
+Assert-Equal @($FilesUri, $ContentUri, $CommentsUri) $run.Requests 'AC3 requests'
 
-- `ProcessRuns` has exactly two entries, both `/usr/bin/osascript` with arguments `["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", <title>, <body>]`. The first has `CopilotLedger circuit breaker tripped` and `swigerb/copilot-ledger @ feature/a: 5 failed tool calls in a row on one prompt. Run: gh-ledger breaker status`. The second has `CopilotLedger branch budget exceeded` and `swigerb/copilot-ledger @ feature/ledger: 56.00 of 50.00 AI credits spent. Run: gh-ledger budget list`.
-- Trip 1's `NotifiedAt` is `NOW`, trip 2 is still open with a null `NotifiedAt`, and the budget's `NotifiedAt` is `NOW`.
-- `DaemonOutput` contains `ALERT_A` and `ALERT CopilotLedger branch budget exceeded: swigerb/copilot-ledger @ feature/ledger: 56.00 of 50.00 AI credits spent. Run: gh-ledger budget list`, and doesn't contain `feature/b`, `feature/c`, or `feature/d`.
+# AC4: a marker comment by someone else isn't touched; the action adds its own.
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(, @($ReceiptPath, 'added'))
+    $ContentUri = New-Content $ReceiptText
+    $CommentsUri = ConvertTo-CompactJson @(, (New-Comment 57 'octocat' $ReceiptText))
+    $CreateUri = ConvertTo-CompactJson (New-Comment 101 'github-actions[bot]' $ReceiptText)
+}
+Assert-Equal 0 $run.ExitCode 'AC4 exit code'
+Assert-Equal "result=created`ncomment-url=https://github.test/octo/widgets/pull/7#issuecomment-101`n" $run.Outputs 'AC4 outputs'
+Assert-Equal @($FilesUri, $ContentUri, $CommentsUri, $CreateUri) $run.Requests 'AC4 requests'
 
-**AD3, notification outcomes** (theory over a case name). The harness is `new CliHarness(<harness root>, platform, new ManualTimeProvider(NOW))`, where `<harness root>` is `<root>` unless the case says otherwise. Before `StartInProcessDaemonAsync()`, seed trip `'1'` on `feature/a` (as in AD2) with a store at `NOW` on `<harness root>/data/ledger.db`. Wait until its `NotifiedAt` is set. In every case, `NotifiedAt` is then `NOW` and `DaemonOutput` contains `ALERT_A`. Then:
+# AC5: no receipt in the pull request (a removed receipt doesn't count).
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(@('src/app.cs', 'modified'), @($ReceiptPath, 'removed'), @("$Directory/notes.txt", 'added'))
+}
+Assert-Equal 0 $run.ExitCode 'AC5 exit code'
+Assert-Equal @('::notice::No CopilotLedger receipt changed in this pull request. Run gh ledger export-pr on the branch, then commit the file it writes under .github/copilot-ledger/receipts/.') $run.Lines 'AC5 log'
+Assert-Equal "result=no-receipt`ncomment-url=`n" $run.Outputs 'AC5 outputs'
+Assert-Equal @(, $FilesUri) $run.Requests 'AC5 requests'
 
-| Case | Platform and setup | Expected |
-|---|---|---|
-| `linux-notify-send` | `new FakeCliPlatform { PathExecutables = { ["notify-send"] = "/usr/bin/notify-send" } }` | `ProcessRuns` is exactly `[("/usr/bin/notify-send", ["--app-name=CopilotLedger", "CopilotLedger circuit breaker tripped", "swigerb/copilot-ledger @ feature/a: 5 failed tool calls in a row on one prompt. Run: gh-ledger breaker status"])]` |
-| `linux-missing` | `new FakeCliPlatform()` | `ProcessRuns` is empty; `DaemonOutput` contains `Notification skipped: notify-send was not found.` |
-| `notifications-off` | `WINDOWS`, and `breaker config --notifications off` before starting | `ProcessRuns` is empty |
-| `windows-exit-code` | `WINDOWS` with `RunHandler = (_, _, _) => Task.FromResult(new ProcessRunResult(1, "", "boom\n"))` | `DaemonOutput` contains `Notification failed: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe exited with code 1: boom` |
-| `windows-throws` | `WINDOWS` with `RunHandler = (_, _, _) => throw new Win32Exception(2, "The system cannot find the file specified.")` | `DaemonOutput` contains `Notification failed: The system cannot find the file specified.` |
-| `windows-quotes` | `WINDOWS`, with `<harness root>` = `Path.Combine(<root>, "it's O\u2019Brien")` | `ProcessRuns` has exactly one entry: `@"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"` with `["-NoProfile", "-NonInteractive", "-Command", SCRIPT(Path.Combine(<root>, "it's O\u2019Brien", "data", "alert-toast.xml"))]`. That script contains `it''s O\u2019\u2019Brien`. |
+# AC6: pull requests from forks are skipped without any request.
+$run = Invoke-Receipt @{} @{ HEAD_REPOSITORY = 'fork-owner/widgets' }
+Assert-Equal 0 $run.ExitCode 'AC6 exit code'
+Assert-Equal @('::notice::Skipped the CopilotLedger receipt: workflows for pull requests from forks get a read-only token, so they can''t comment.') $run.Lines 'AC6 log'
+Assert-Equal "result=skipped`ncomment-url=`n" $run.Outputs 'AC6 outputs'
+Assert-Equal @() $run.Requests 'AC6 requests'
+
+# AC7: other events fail without any request.
+$run = Invoke-Receipt @{} @{ EVENT_NAME = 'pull_request_target' }
+Assert-Equal 1 $run.ExitCode 'AC7 exit code'
+Assert-Equal @('::error::The CopilotLedger receipt action runs on pull_request events, not pull_request_target.') $run.Lines 'AC7 log'
+Assert-Equal '' $run.Outputs 'AC7 outputs'
+Assert-Equal @() $run.Requests 'AC7 requests'
+
+# AC8: a receipt for another branch fails.
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(, @($ReceiptPath, 'added'))
+    $ContentUri = New-Content $ReceiptText
+} @{ HEAD_REF = 'feature/other' }
+Assert-Equal 1 $run.ExitCode 'AC8 exit code'
+Assert-Equal @('::error::No receipt for feature/other changed in this pull request; found receipts for: feature/ledger.') $run.Lines 'AC8 log'
+Assert-Equal @($FilesUri, $ContentUri) $run.Requests 'AC8 requests'
+
+# AC9: a file without the marker fails.
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(, @($ReceiptPath, 'added'))
+    $ContentUri = New-Content ("# Notes`n" + $ReceiptText)
+}
+Assert-Equal 1 $run.ExitCode 'AC9 exit code'
+Assert-Equal @("::error::$ReceiptPath doesn't start with <!-- copilot-ledger-receipt -->, so it isn't a CopilotLedger receipt.") $run.Lines 'AC9 log'
+
+# AC10: a receipt over 65,536 bytes fails before it's decoded.
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(, @($ReceiptPath, 'added'))
+    $ContentUri = New-Content $ReceiptText 65537
+}
+Assert-Equal 1 $run.ExitCode 'AC10 exit code'
+Assert-Equal @("::error::$ReceiptPath is 65537 bytes; a receipt can be at most 65536 bytes.") $run.Lines 'AC10 log'
+
+# AC11: invalid JSON in the data block fails.
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(, @($ReceiptPath, 'added'))
+    $ContentUri = New-Content $ReceiptText.Replace('"schemaVersion": 1,', '"schemaVersion": 1')
+}
+Assert-Equal 1 $run.ExitCode 'AC11 exit code'
+Assert-Equal 1 $run.Lines.Count 'AC11 log line count'
+Assert-Equal $true ($run.Lines[0].StartsWith("::error::$ReceiptPath has invalid JSON data: ", [System.StringComparison]::Ordinal)) 'AC11 log'
+
+# AC12: an unsupported schema version fails.
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(, @($ReceiptPath, 'added'))
+    $ContentUri = New-Content $ReceiptText.Replace('"schemaVersion": 1,', '"schemaVersion": 2,')
+}
+Assert-Equal 1 $run.ExitCode 'AC12 exit code'
+Assert-Equal @("::error::$ReceiptPath has an unsupported schemaVersion; this action reads schemaVersion 1.") $run.Lines 'AC12 log'
+
+# AC13: pages are read until one has fewer than 100 items.
+$page1 = @(1..100 | ForEach-Object { , @("src/file$_.cs", 'modified') })
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files $page1
+    "GET $Api/repos/$Repository/pulls/7/files?per_page=100&page=2" = New-Files @(, @($ReceiptPath, 'added'))
+    $ContentUri = New-Content $ReceiptText
+    $CommentsUri = '[]'
+    $CreateUri = ConvertTo-CompactJson (New-Comment 102 'github-actions[bot]' $ReceiptText)
+}
+Assert-Equal 0 $run.ExitCode 'AC13 exit code'
+Assert-Equal @($FilesUri, "GET $Api/repos/$Repository/pulls/7/files?per_page=100&page=2", $ContentUri, $CommentsUri, $CreateUri) $run.Requests 'AC13 requests'
+
+# AC14: a receipts-directory input with surrounding slashes still matches.
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(, @($ReceiptPath, 'added'))
+    $ContentUri = New-Content $ReceiptText
+    $CommentsUri = '[]'
+    $CreateUri = ConvertTo-CompactJson (New-Comment 103 'github-actions[bot]' $ReceiptText)
+} @{ RECEIPTS_DIRECTORY = "/$Directory/" }
+Assert-Equal 0 $run.ExitCode 'AC14 exit code'
+Assert-Equal "result=created`ncomment-url=https://github.test/octo/widgets/pull/7#issuecomment-103`n" $run.Outputs 'AC14 outputs'
+
+# AC15: branch names are compared case-sensitively.
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(, @($ReceiptPath, 'added'))
+    $ContentUri = New-Content $ReceiptText
+} @{ HEAD_REF = 'Feature/Ledger' }
+Assert-Equal 1 $run.ExitCode 'AC15 exit code'
+Assert-Equal @('::error::No receipt for Feature/Ledger changed in this pull request; found receipts for: feature/ledger.') $run.Lines 'AC15 log'
+
+if ($Failures.Count -gt 0) {
+    $Failures | ForEach-Object { Write-Host "FAIL: $_" }
+    Write-Host "$($Failures.Count) assertion(s) failed."
+    exit 1
+}
+
+Write-Host 'All receipt action tests passed.'
+exit 0
+````
 
 ### Task 4 tests
 
-#### Test support
-
-`McpTestHarness` (new) connects the SDK client to the server over two `System.IO.Pipelines.Pipe`s:
+1. In `DaemonCommandTests.DM1`, the version assertion becomes `Assert.Equal("0.4.0", root.GetProperty("version").GetString());`.
+2. In `ReportCommandTests.StatusText`, the first line becomes `gh-ledger 0.4.0`.
+3. Add to `InstallCommandTests`, after the `WindowsPlatform()` helper (copy exactly):
 
 ```csharp
-public sealed class McpTestHarness : IAsyncDisposable
-{
-    // Starts LedgerMcpServer.RunAsync(context, toServer.Reader.AsStream(), toClient.Writer.AsStream()) and connects
-    // McpClient.CreateAsync(new StreamClientTransport(toServer.Writer.AsStream(), toClient.Reader.AsStream()),
-    //     new McpClientOptions { ClientInfo = new Implementation { Name = "ledger-tests", Version = "1.0" } }).
-    public static Task<McpTestHarness> StartAsync(LedgerMcpContext context);
+    private const string WindowsExtension =
+        @"C:\Users\me\AppData\Local\GitHub CLI\extensions\gh-ledger\gh-ledger.exe";
 
-    public McpClient Client { get; }
+    [Fact]
+    public async Task IN17_WindowsExtensionInstallSkipsTheAlias()
+    {
+        using TempDirectory temp = new();
+        FakeCliPlatform platform = WindowsPlatform();
+        platform.ProcessPath = WindowsExtension;
+        platform.ExistingFiles.Add(
+            @"C:\Users\me\AppData\Local\GitHub CLI\extensions\gh-ledger\manifest.yml");
+        await using CliHarness harness = new(temp.Path, platform);
 
-    // Disposes the client, completes toServer.Writer, and waits up to 10 seconds for the server task.
-    public ValueTask DisposeAsync();
-}
+        CliRun run = await harness.RunAsync("install");
+
+        Assert.Equal(0, run.ExitCode);
+        Assert.Equal(
+            "Set COPILOT_OTEL_ENABLED=true for your user account.\n" +
+            "gh ledger runs this GitHub CLI extension, so no alias is needed.\n" +
+            "gh-ledger will start when you sign in.\n" +
+            $"gh-ledger daemon started (pid {Environment.ProcessId}) on http://localhost:4318.\n" +
+            "CopilotLedger is installed. Restart the GitHub Copilot app, VS Code, and open terminals so they pick up COPILOT_OTEL_ENABLED.\n",
+            run.Out);
+        Assert.Equal(string.Empty, run.Error);
+        Assert.Empty(platform.ProcessRuns);
+        Assert.Equal(
+            [("CopilotLedger", $"\"{WindowsExtension}\" daemon start")],
+            platform.StartupCommandWrites);
+        DetachedStart start = Assert.Single(platform.DetachedStarts);
+        Assert.Equal(WindowsExtension, start.FileName);
+        using JsonDocument manifest = JsonDocument.Parse(
+            await FileRetry.ReadAllTextAsync(ManifestPath(temp.Path)));
+        Assert.Equal(
+            WindowsExtension,
+            manifest.RootElement.GetProperty("executablePath").GetString());
+        Assert.False(manifest.RootElement.GetProperty("ghAliasSet").GetBoolean());
+    }
+
+    [Fact]
+    public async Task IN18_LinuxExtensionInstallStartsTheExtensionAtSignIn()
+    {
+        using TempDirectory temp = new();
+        FakeCliPlatform platform = UnixPlatform(temp.Path);
+        platform.ProcessPath = "/home/me/.local/share/gh/extensions/gh-ledger/gh-ledger";
+        platform.ExistingFiles.Add("/home/me/.local/share/gh/extensions/gh-ledger/manifest.yml");
+        await using CliHarness harness = new(temp.Path, platform);
+
+        CliRun run = await harness.RunAsync("install");
+
+        Assert.Equal(0, run.ExitCode);
+        Assert.Equal(
+            $"Added COPILOT_OTEL_ENABLED=true to {Path.Combine(temp.Path, "home", ".zshrc")}.\n" +
+            "gh ledger runs this GitHub CLI extension, so no alias is needed.\n" +
+            "gh-ledger will start when you sign in.\n" +
+            $"gh-ledger daemon started (pid {Environment.ProcessId}) on http://localhost:4318.\n" +
+            "CopilotLedger is installed. Restart the GitHub Copilot app, VS Code, and open terminals so they pick up COPILOT_OTEL_ENABLED.\n",
+            run.Out);
+        Assert.Equal(string.Empty, run.Error);
+        Assert.Empty(platform.ProcessRuns);
+        Assert.Equal(
+            """
+            [Desktop Entry]
+            Type=Application
+            Name=CopilotLedger
+            Comment=Starts the CopilotLedger daemon
+            Exec="/home/me/.local/share/gh/extensions/gh-ledger/gh-ledger" daemon start
+            Terminal=false
+            """.ReplaceLineEndings("\n") + "\n",
+            await FileRetry.ReadAllTextAsync(Path.Combine(
+                temp.Path,
+                "home",
+                ".config",
+                "autostart",
+                "copilot-ledger.desktop")));
+    }
+
+    public static TheoryData<string, string?> NotExtensions => new()
+    {
+        { @"C:\Users\me\AppData\Local\GitHub CLI\extensions\gh-ledger\gh-ledger.exe", null },
+        { @"C:\Users\me\AppData\Local\GitHub CLI\other\gh-ledger\gh-ledger.exe", @"C:\Users\me\AppData\Local\GitHub CLI\other\gh-ledger\manifest.yml" },
+        { @"C:\Users\me\AppData\Local\GitHub CLI\extensions\gh-tools\gh-ledger.exe", @"C:\Users\me\AppData\Local\GitHub CLI\extensions\gh-tools\manifest.yml" },
+    };
+
+    [Theory]
+    [MemberData(nameof(NotExtensions))]
+    public async Task IN19_OnlyTheGhExtensionLayoutSkipsTheAlias(string executable, string? existingManifest)
+    {
+        using TempDirectory temp = new();
+        FakeCliPlatform platform = WindowsPlatform();
+        platform.ProcessPath = executable;
+        if (existingManifest is not null)
+        {
+            platform.ExistingFiles.Add(existingManifest);
+        }
+
+        await using CliHarness harness = new(temp.Path, platform);
+
+        CliRun run = await harness.RunAsync("install");
+
+        Assert.Equal(0, run.ExitCode);
+        (string gh, IReadOnlyList<string> arguments) = Assert.Single(platform.ProcessRuns);
+        Assert.Equal(@"C:\gh\gh.exe", gh);
+        Assert.Equal(
+            ["alias", "set", "ledger", $"'{executable.Replace('\\', '/')}' \"$@\"", "--shell", "--clobber"],
+            arguments);
+        Assert.DoesNotContain("no alias is needed", run.Out);
+    }
 ```
 
-`CallAsync(harness, tool, json)` is a private helper that turns a JSON object into arguments (`JsonDocument.Parse(json).RootElement.EnumerateObject().ToDictionary(p => p.Name, p => (object?)p.Value.Clone())`) and calls `Client.CallToolAsync(tool, arguments)`. `Text(result)` is the `Text` of the single `TextContentBlock` in `result.Content`.
+   - **IN17**: as the Windows extension, the whole `Out`, no `gh` call, the Run value and daemon use the extension's path, and the manifest records it with `ghAliasSet` false.
+   - **IN18**: as the Linux extension, the whole `Out`, no `gh` call, and the exact desktop entry.
+   - **IN19**: without `manifest.yml`, in a directory not named `extensions`, or in an extension directory not named `gh-ledger`, `install` sets the alias as before.
+4. Add to `ReportCommandTests`, after RP11 (copy exactly):
 
-The context is `new LedgerMcpContext { DatabasePath = <root>/data/ledger.db, WorkingDirectory = <root>/repo, GetEnvironmentVariable = name => env.GetValueOrDefault(name), GitResolver = new FileSystemGitContextResolver(ceilingDirectory: <root>), TimeProvider = new ManualTimeProvider(NOW), Version = "9.9.9" }`, where `env` is a `Dictionary<string, string>` that starts empty. The Git fixture is created with `GitFixture.Create(<root>)`.
+```csharp
+    [Fact]
+    public async Task RP12_StatusAsGhExtensionNamesGhLedgerCommands()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = await SeededHarnessAsync(
+            temp.Path,
+            platform =>
+            {
+                platform.ProcessPath = "/home/me/.local/share/gh/extensions/gh-ledger/gh-ledger";
+                platform.ExistingFiles.Add("/home/me/.local/share/gh/extensions/gh-ledger/manifest.yml");
+            });
 
-**Seeds** (`SeedAsync`, with a store at `NOW`):
+        CliRun text = await harness.RunAsync("status");
+        CliRun json = await harness.RunAsync("status", "--json");
 
-1. `LedgerSeeds.SeedChainsAsync(store, <root>/repo, <root>/api)`.
-2. `T5 = new string('5', 32)`: `TestSpans.Chat(startTime: 2026-11-21T15:00:00Z, requestModel: "claude-sonnet-5.5", conversationId: "conv-5", inputTokens: 100_000, outputTokens: 50_000) with { TraceId = T5, SpanId = "5555555555555555" }`, with Git `FEATURE`; it costs $0.70.
-3. `T6 = new string('6', 32)`: `TestSpans.Chat(startTime: 2026-11-21T16:00:00Z, requestModel: "mai-code-2", conversationId: "conv-6", inputTokens: 10_000, outputTokens: 200_000) with { TraceId = T6, SpanId = "6666666666666666" }`, with Git `FEATURE`; it costs $0.505.
-4. `execute_tool` links for `T5`: `55555555555555a1`–`55555555555555a5` (`powershell`, exit 1, starting at 15:00:01–15:00:05) and `55555555555555a6` (`powershell`, exit 0, 15:00:06). For `T6`: `66666666666666a1` (`HASH`, no exit code, status 2, 16:00:01).
+        Assert.Equal(0, text.ExitCode);
+        Assert.Equal(
+            StatusText(temp.Path)
+                .Replace($"gh-ledger {GhLedgerCli.Version}\n", $"gh-ledger {GhLedgerCli.Version} (GitHub CLI extension)\n", StringComparison.Ordinal)
+                .Replace("start it with: gh-ledger daemon start", "start it with: gh ledger daemon start", StringComparison.Ordinal)
+                .Replace("run: gh-ledger install", "run: gh ledger install", StringComparison.Ordinal),
+            text.Out);
+        Assert.Equal(0, json.ExitCode);
+        using JsonDocument document = JsonDocument.Parse(json.Out);
+        Assert.True(document.RootElement.GetProperty("ghExtension").GetBoolean());
+        Assert.Empty(document.RootElement.GetProperty("warnings").EnumerateArray());
+    }
 
-So `swigerb/copilot-ledger` / `feature/ledger` holds `T2` (from `LedgerSeeds`, 56 AI credits), `T5` (70), and `T6` (50.5).
+    [Fact]
+    public async Task RP13_StatusWarnsWhenInstalledFromAnotherExecutable()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = await SeededHarnessAsync(temp.Path);
+        await File.WriteAllTextAsync(
+            Path.Combine(temp.Path, "data", "install.json"),
+            """
+            {"schemaVersion":1,"installedAt":"2026-11-20T00:00:00+00:00","executablePath":"/opt/old/gh-ledger","windowsUserVariableSet":false,"windowsUserVariablePreviousValue":null,"profileFiles":[],"ghAliasSet":false}
+            """);
+        const string Warning =
+            "CopilotLedger was installed from /opt/old/gh-ledger; run gh-ledger install to use this copy instead.";
 
-`BRANCH` is the expected `get_branch_ledger` object for that branch with no trips and no budget:
+        CliRun text = await harness.RunAsync("status");
+        CliRun json = await harness.RunAsync("status", "--json");
 
-```json
-{
-  "repository": "swigerb/copilot-ledger",
-  "branch": "feature/ledger",
-  "spans": 4,
-  "unpricedSpans": 0,
-  "inputTokens": 1510000,
-  "outputTokens": 362000,
-  "cacheReadInputTokens": 400000,
-  "cacheWriteInputTokens": 0,
-  "aiCredits": 176.5,
-  "aiCreditsUsd": 1.765,
-  "foundryByokUsd": 0,
-  "localSavedUsd": 0.23,
-  "billedAiCredits": 176.5,
-  "topModel": "mai-code-2",
-  "budget": null,
-  "circuitBreaker": { "state": "closed", "openTrips": [] },
-  "warnings": []
-}
+        Assert.Equal(0, text.ExitCode);
+        Assert.Equal(
+            StatusText(temp.Path).Replace(
+                "run: gh-ledger install\n",
+                $"run: gh-ledger install\nWarning: {Warning}\n",
+                StringComparison.Ordinal),
+            text.Out);
+        Assert.Equal(0, json.ExitCode);
+        using JsonDocument document = JsonDocument.Parse(json.Out);
+        Assert.False(document.RootElement.GetProperty("ghExtension").GetBoolean());
+        Assert.Equal(
+            [Warning],
+            document.RootElement.GetProperty("warnings").EnumerateArray().Select(item => item.GetString()));
+    }
 ```
 
-#### MCP: `LedgerMcpServerTests` (new, `tests/CopilotLedger.Tests/Mcp/`)
-
-For a successful call, "the result is X" means: `IsError` isn't true (`Assert.NotEqual(true, result.IsError)`); `Content` is one `TextContentBlock`; its text, split on `\n`, is the warnings in order followed by one line of compact JSON; that JSON and `JsonNode.Parse(structured.GetRawText())`, where `JsonElement structured = Assert.NotNull(result.StructuredContent);`, both deep-equal X; and the warning lines equal X's `warnings` array.
-
-The SDK's `McpClient.ServerInfo` is `Implementation?` and `Tool.Annotations` is `ToolAnnotations?`. Under `TreatWarningsAsErrors`, reading a member of either directly is error CS8602, so copy each into a local and `Assert.NotNull` it first: `Implementation? serverInfo = harness.Client.ServerInfo; Assert.NotNull(serverInfo);`.
-
-**MC1, `tools/list`.** No seeds. `serverInfo` (as above) is not null, `serverInfo.Name` is `copilot-ledger`, `serverInfo.Version` is `9.9.9`, and `Client.ServerInstructions` equals `LedgerMcpServer.Instructions`. `ListToolsAsync()` returns the four tools in Task 4's order. For each, `ProtocolTool.Title` and `Description` equal Task 4's text, `InputSchema` deep-equals Task 4's schema, `OutputSchema` is null, and `ProtocolTool.Annotations` is not null, with: `ReadOnlyHint` true, `DestructiveHint` null, `IdempotentHint` null, and `OpenWorldHint` false for the read tools; and `ReadOnlyHint` false, `DestructiveHint` false, `IdempotentHint` true, and `OpenWorldHint` false for `set_branch_budget`.
-
-**MC2, the branch ledger.** Seeds. `get_branch_ledger` with `{}`: the result is `BRANCH`.
-
-**MC3, warnings.** Seeds. Then, with the store, trips 1–3 and a budget:
-
-- trip 1: `{ Rule = RetryChurn, TraceId = T5, ConversationId = "conv-5", Repository = "swigerb/copilot-ledger", Branch = "feature/ledger", RepositoryRoot = <root>/repo, TrippedAt = 2026-11-21T15:00:05Z, Detail = "5 failed tool calls in a row", FailureCount = 5 }`;
-- trip 2: `{ Rule = RetryChurn, TraceId = new string('a', 32), ConversationId = "conv-other", Repository = "contoso/api", Branch = "main", TrippedAt = 2026-11-21T09:00:00Z, Detail = "7 failed tool calls in a row", FailureCount = 7 }`;
-- trip 3: `{ Rule = RetryChurn, TraceId = new string('b', 32), ConversationId = "conv-5", Repository = "swigerb/copilot-ledger", Branch = "main", TrippedAt = 2026-11-21T14:30:00Z, Detail = "6 failed tool calls in a row", FailureCount = 6 }`;
-- `SetBranchBudgetAsync("swigerb/copilot-ledger", "feature/ledger", 150m)`.
-
-`OPEN1` is `{"id":1,"rule":"retry_churn","repository":"swigerb/copilot-ledger","branch":"feature/ledger","traceId":"55555555555555555555555555555555","conversationId":"conv-5","currentSession":S,"trippedAt":"2026-11-21T15:00:05.0000000+00:00","detail":"5 failed tool calls in a row","resetCommand":"gh-ledger breaker reset --id 1"}`, and `OPEN3` is `{"id":3,"rule":"retry_churn","repository":"swigerb/copilot-ledger","branch":"main","traceId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","conversationId":"conv-5","currentSession":true,"trippedAt":"2026-11-21T14:30:00.0000000+00:00","detail":"6 failed tool calls in a row","resetCommand":"gh-ledger breaker reset --id 3"}`. The warnings are:
-
-- `W1`: `WARNING: CopilotLedger circuit breaker is open for swigerb/copilot-ledger @ feature/ledger: 5 failed tool calls in a row on one prompt (trip 1). Stop and ask the user before continuing. The user can reset it with: gh-ledger breaker reset --id 1`
-- `W3`: `WARNING: CopilotLedger circuit breaker is open for swigerb/copilot-ledger @ main: 6 failed tool calls in a row on one prompt (trip 3). Stop and ask the user before continuing. The user can reset it with: gh-ledger breaker reset --id 3`
-- `WB`: `WARNING: swigerb/copilot-ledger @ feature/ledger has spent 176.50 of its 150.00 AI credit budget.`
-
-Without `COPILOT_AGENT_SESSION_ID`, `get_branch_ledger` `{}` gives `BRANCH` with `budget` `{"aiCredits":150,"spentAiCredits":176.5,"exceeded":true}`, `circuitBreaker` `{"state":"open","openTrips":[OPEN1 with S = false]}`, and `warnings` `[W1, WB]`. With `env["COPILOT_AGENT_SESSION_ID"] = "conv-5"` in a new harness, the same call gives `openTrips` `[OPEN1 with S = true, OPEN3]` and `warnings` `[W1, W3, WB]`.
-
-**MC4, an explicit scope.** Seeds. `get_branch_ledger` with `{"repository":"contoso/api","branch":"main"}`: the result is `{"repository":"contoso/api","branch":"main","spans":1,"unpricedSpans":0,"inputTokens":100000,"outputTokens":10000,"cacheReadInputTokens":0,"cacheWriteInputTokens":0,"aiCredits":0,"aiCreditsUsd":0,"foundryByokUsd":0.315,"localSavedUsd":0,"billedAiCredits":31.5,"topModel":"gpt-6.1-sol","budget":null,"circuitBreaker":{"state":"closed","openTrips":[]},"warnings":[]}`. With `{"repository":"swigerb/copilot-ledger","branch":"nope"}`, every count and amount is 0, `topModel` is `null`, `budget` is `null`, and the breaker is closed.
-
-**MC5, top prompts.** Seeds. `P5`, `P2`, and `P6` are these prompt objects (without `rank`):
-
-- `P5`: `{"traceId":"55555555555555555555555555555555","conversationId":"conv-5","startTime":"2026-11-21T15:00:00.0000000+00:00","endTime":"2026-11-21T15:00:02.0000000+00:00","agents":[],"models":["claude-sonnet-5.5"],"spans":1,"unpricedSpans":0,"inputTokens":100000,"outputTokens":50000,"cacheReadInputTokens":0,"cacheWriteInputTokens":0,"aiCredits":70,"aiCreditsUsd":0.7,"foundryByokUsd":0,"localSavedUsd":0,"billedAiCredits":70,"failedToolCalls":5}`
-- `P2`: `{"traceId":"22222222222222222222222222222222","conversationId":"conv-2","startTime":"2026-11-21T13:00:00.0000000+00:00","endTime":"2026-11-21T13:05:02.0000000+00:00","agents":["ledger-builder"],"models":["mai-code-2","qwen3.8-27b"],"spans":2,"unpricedSpans":0,"inputTokens":1400000,"outputTokens":112000,"cacheReadInputTokens":400000,"cacheWriteInputTokens":0,"aiCredits":56,"aiCreditsUsd":0.56,"foundryByokUsd":0,"localSavedUsd":0.23,"billedAiCredits":56,"failedToolCalls":0}`
-- `P6`: `{"traceId":"66666666666666666666666666666666","conversationId":"conv-6","startTime":"2026-11-21T16:00:00.0000000+00:00","endTime":"2026-11-21T16:00:02.0000000+00:00","agents":[],"models":["mai-code-2"],"spans":1,"unpricedSpans":0,"inputTokens":10000,"outputTokens":200000,"cacheReadInputTokens":0,"cacheWriteInputTokens":0,"aiCredits":50.5,"aiCreditsUsd":0.505,"foundryByokUsd":0,"localSavedUsd":0,"billedAiCredits":50.5,"failedToolCalls":1}`
-
-| Arguments | `orderBy`, `limit` | `prompts` |
-|---|---|---|
-| `{}` | `cost`, 5 | `P5` (rank 1), `P2` (2), `P6` (3) |
-| `{"orderBy":"outputTokens","limit":2}` | `outputTokens`, 2 | `P6` (1), `P2` (2) |
-| `{"orderBy":"failedToolCalls"}` | `failedToolCalls`, 5 | `P5` (1), `P6` (2), `P2` (3) |
-
-Each result is `{"repository":"swigerb/copilot-ledger","branch":"feature/ledger","orderBy":…,"limit":…,"prompts":[…],"circuitBreaker":{"state":"closed","openTrips":[]},"warnings":[]}`, where each prompt is the object above with `"rank"` added first.
-
-**MC6, agents.** Seeds. `get_agent_breakdown` with `{}`: the result is `{"repository":"swigerb/copilot-ledger","branch":"feature/ledger","agents":[{"agent":"(none)","spans":2,"unpricedSpans":0,"inputTokens":110000,"outputTokens":250000,"cacheReadInputTokens":0,"cacheWriteInputTokens":0,"aiCredits":120.5,"aiCreditsUsd":1.205,"foundryByokUsd":0,"localSavedUsd":0,"billedAiCredits":120.5},{"agent":"ledger-builder","spans":2,"unpricedSpans":0,"inputTokens":1400000,"outputTokens":112000,"cacheReadInputTokens":400000,"cacheWriteInputTokens":0,"aiCredits":56,"aiCreditsUsd":0.56,"foundryByokUsd":0,"localSavedUsd":0.23,"billedAiCredits":56}],"circuitBreaker":{"state":"closed","openTrips":[]},"warnings":[]}`.
-
-**MC7, setting a budget.** Seeds.
-
-- `set_branch_budget` with `{"aiCredits":200}`: the result is `{"repository":"swigerb/copilot-ledger","branch":"feature/ledger","budget":{"aiCredits":200,"spentAiCredits":176.5,"exceeded":false},"circuitBreaker":{"state":"closed","openTrips":[]},"warnings":[]}`. `GetBranchBudgetsAsync()` then has one row: that branch, budget 200, `SetAt` `NOW`.
-- With `{"aiCredits":150.5,"repository":"swigerb/copilot-ledger","branch":"feature/ledger"}`: `budget` is `{"aiCredits":150.5,"spentAiCredits":176.5,"exceeded":true}`, and `warnings` is `["WARNING: swigerb/copilot-ledger @ feature/ledger has spent 176.50 of its 150.50 AI credit budget."]`.
-- With `{"aiCredits":176.5}`: `budget` is `{"aiCredits":176.5,"spentAiCredits":176.5,"exceeded":false}`, and `warnings` is `[]`, because spend exactly at the budget doesn't exceed it.
-- With `aiCredits` set to `JsonDocument.Parse("1e2").RootElement`: `budget` is `{"aiCredits":100,"spentAiCredits":176.5,"exceeded":true}`.
-
-**MC8, invalid arguments** (theory). Each returns `IsError` true, one `TextContentBlock` with exactly the message, and a null `StructuredContent`. After the `set_branch_budget` cases, `GetBranchBudgetsAsync()` is empty.
-
-| Tool | Arguments | Message |
-|---|---|---|
-| `get_branch_ledger` | `{"repository":"a/b"}` | `Pass repository and branch together, or neither.` |
-| `get_branch_ledger` | `{"branch":"main"}` | `Pass repository and branch together, or neither.` |
-| `get_branch_ledger` | `{"repository":"","branch":"main"}` | `repository must be a non-empty string.` |
-| `get_branch_ledger` | `{"repository":"   ","branch":"main"}` | `repository must be a non-empty string.` |
-| `get_branch_ledger` | `{"repository":"a/b","branch":5}` | `branch must be a non-empty string.` |
-| `get_branch_ledger` | `{"extra":1,"another":2}` | `Unknown argument: another.` |
-| `get_agent_breakdown` | `{"limit":5}` | `Unknown argument: limit.` |
-| `get_top_expensive_prompts` | `{"limit":0}`, `{"limit":21}`, `{"limit":5.5}`, `{"limit":"5"}` | `limit must be an integer from 1 to 20.` |
-| `get_top_expensive_prompts` | `{"orderBy":"Cost"}`, `{"orderBy":null}` | `orderBy must be cost, outputTokens, or failedToolCalls.` |
-| `set_branch_budget` | `{}` | `aiCredits is required.` |
-| `set_branch_budget` | `{"aiCredits":0}`, `{"aiCredits":-1}`, `{"aiCredits":1000000.01}`, `{"aiCredits":0.001}`, `{"aiCredits":"5"}` | `aiCredits must be a number greater than 0 and at most 1000000, with at most 2 decimal places.` |
-| `set_branch_budget` | `{"aiCredits":5,"repository":"a/b"}` | `Pass repository and branch together, or neither.` |
-
-**MC9, finding the branch.** Seeds, with `WorkingDirectory = <root>`:
-
-- With no environment, `get_branch_ledger` `{}` returns `IsError` true and exactly `No Git repository at <root>. Pass repository and branch.`
-- With `env["COPILOT_SESSION_CWD"] = <root>/repo`, the result is `BRANCH`.
-- With `COPILOT_SESSION_CWD` set to `repo` (relative) or to `<root>/missing`, it's the same error as with no environment.
-
-**MC10, an unknown tool.** `Client.CallToolAsync("nope", null)` throws `McpProtocolException` with `ErrorCode` `McpErrorCode.InvalidParams` and a `Message` containing `Unknown tool: nope` (the client's whole message is `Request failed (remote): Unknown tool: nope`).
-
-**MC11, the `mcp` command.** Seeds and a `CliHarness`. Start `GhLedgerCli.InvokeAsync(["mcp"], harness.Context with { StandardInput = toServer.Reader.AsStream(), StandardOutput = toClient.Writer.AsStream(), WorkingDirectory = <root>/repo, Out = output, Error = error })`, where `output` and `error` are `StringWriter`s, and connect a client to the pipes as `McpTestHarness` does. `ListToolsAsync()` returns 4 tools, the client's `ServerInfo` (in a local, checked with `Assert.NotNull`) has `Version` equal to `GhLedgerCli.Version`, and `get_branch_ledger` `{}` returns `repository` `swigerb/copilot-ledger` and `branch` `feature/ledger`. Dispose the client and complete `toServer.Writer`: the command returns 0, and `output` is empty.
-
-**MC12, an unavailable ledger.** Create the directory `<root>/dbdir` and use it as `DatabasePath`. `get_branch_ledger` with `{"repository":"a/b","branch":"main"}` returns `IsError` true, with text starting `The ledger at <root>/dbdir is unavailable: `.
+   - **RP12**: as the extension, `status` is the usual text with the three changed lines, and `ghExtension` is true with no warnings.
+   - **RP13**: an `install.json` that names `/opt/old/gh-ledger` adds one warning line after the Copilot line and one entry to `warnings`.
 
 ### Task 5 tests
 
-#### Install: `InstallCommandTests` (changed and new)
+#### Support (copy exactly)
 
-`RUN_VALUE` is `@"HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CopilotLedger"`. `AUTOSTART` is `<root>/home/.config/autostart/copilot-ledger.desktop`, and `AGENT` is `<root>/home/Library/LaunchAgents/io.github.swigerb.copilot-ledger.plist`.
+`tests/CopilotLedger.Tests/TestSupport/FakeHttpHandler.cs`:
 
-Changed cases:
+```csharp
+namespace CopilotLedger.Tests.TestSupport;
 
-- **IN1.** The expected output gains `gh-ledger will start when you sign in.` between the `sh.exe` warning and the daemon line. Also assert `platform.StartupCommandWrites` equals `[("CopilotLedger", "\"C:\\tools\\gh-ledger.exe\" daemon start")]` and the manifest's `startupItem` is `RUN_VALUE`.
-- **IN2.** The same line comes between `Set gh alias: …` and the daemon line, with the same two assertions.
-- **IN3.** The second install's `Out` also contains `gh-ledger already starts when you sign in.`, and `StartupCommandWrites` has exactly one entry.
-- **IN9.** The expected output gains `Would start gh-ledger when you sign in.` between the `sh.exe` warning and `Would start the gh-ledger daemon.`, and `StartupCommandWrites` is empty.
-- **IN10.** `after-windows` also asserts `Out` contains `gh-ledger will no longer start when you sign in.` and `StartupCommandWrites[^1]` is `("CopilotLedger", null)`. `after-unix` also asserts `Out` contains that line and `AUTOSTART` doesn't exist.
+public sealed record HttpCall(string Method, string Uri, string UserAgent);
 
-New cases, using the existing `WindowsPlatform()` and `UnixPlatform(<root>)` helpers:
+// Answers every request with respond(request). An exception that respond throws becomes the faulted result of SendAsync.
+public sealed class FakeHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+{
+    public List<HttpCall> Calls { get; } = [];
 
-**IN11, Linux autostart.** `UnixPlatform(<root>)`.
+    protected override Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        Calls.Add(new HttpCall(
+            request.Method.Method,
+            request.RequestUri!.AbsoluteUri,
+            request.Headers.UserAgent.ToString()));
+        try
+        {
+            return Task.FromResult(respond(request));
+        }
+        catch (Exception ex)
+        {
+            return Task.FromException<HttpResponseMessage>(ex);
+        }
+    }
 
-- `install`: `Out` contains `gh-ledger will start when you sign in.`, and `File.ReadAllText(AUTOSTART)` is exactly this, plus a final `\n`:
+    // 200 with the bytes and no Content-Type, like any body the product reads as bytes.
+    public static HttpResponseMessage Bytes(byte[] body) =>
+        new(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent(body) };
+}
+```
 
-  ```ini
-  [Desktop Entry]
-  Type=Application
-  Name=CopilotLedger
-  Comment=Starts the CopilotLedger daemon
-  Exec="/opt/bin/gh-ledger" daemon start
-  Terminal=false
-  ```
+`tests/CopilotLedger.Tests/TestSupport/PublishedRates.cs`:
 
-  The manifest's `startupItem` is `AUTOSTART`.
-- A second `install`: `Out` contains `gh-ledger already starts when you sign in.`
-- `uninstall`: `Out` contains `gh-ledger will no longer start when you sign in.`, and `AUTOSTART` doesn't exist.
+```csharp
+using System.Text;
+using System.Text.Json.Nodes;
+using CopilotLedger.Core.Pricing;
 
-**IN12, `XDG_CONFIG_HOME`** (theory). `UnixPlatform(<root>)` with `ProcessVariables["XDG_CONFIG_HOME"]` set. With `<root>/xdg`, `install` writes `<root>/xdg/autostart/copilot-ledger.desktop`, and `<root>/home/.config` doesn't exist. With `relative/xdg`, it writes `AUTOSTART`.
+namespace CopilotLedger.Tests.TestSupport;
 
-**IN13, the macOS LaunchAgent.** `UnixPlatform(<root>)` with `IsMacOS = true`. `install`: `Out` contains `gh-ledger will start when you sign in.`, and `File.ReadAllText(AGENT)` is Task 5's property list with `EXE` = `/opt/bin/gh-ledger` and `LOG` = `SecurityElement.Escape(<root>/data/daemon.log)`, after `.ReplaceLineEndings("\n")`, plus a final `\n`. The manifest's `startupItem` is `AGENT`. `uninstall`: `Out` contains `gh-ledger will no longer start when you sign in.`, and `AGENT` doesn't exist.
+public static class PublishedRates
+{
+    public const string Url = "https://github.com/swigerb/gh-ledger/releases/latest/download/rates.json";
 
-**IN14, items that can't be registered** (theory).
+    // The embedded rates.json text, exactly as built into CopilotLedger.Core.
+    public static string Embedded()
+    {
+        using Stream stream = typeof(JsonRateCardCalculator).Assembly
+            .GetManifestResourceStream(JsonRateCardCalculator.EmbeddedResourceName)!;
+        using StreamReader reader = new(stream);
+        return reader.ReadToEnd();
+    }
 
-- `windows-too-long`: `WindowsPlatform()` with `ProcessPath = @"C:\" + new string('a', 250) + @"\gh-ledger.exe"` (a 267-character path, so a 282-character command). `Out` contains `Warning: the gh-ledger path is too long for a sign-in command, so gh-ledger won't start when you sign in. Run gh-ledger daemon start after you sign in.`, `StartupCommandWrites` is empty, and the manifest's `startupItem` is `null`.
-- `linux-characters`: `UnixPlatform(<root>)` with `ProcessPath = "/opt/my$tools/gh-ledger"`. `Out` contains `Warning: the gh-ledger path has characters that a desktop autostart entry can't run, so gh-ledger won't start when you sign in. Run gh-ledger daemon start after you sign in.`, `AUTOSTART` doesn't exist, and the manifest's `startupItem` is `null`.
+    // The embedded rates with "ratesVersion": "2026-11-20" replaced by ratesVersion.
+    public static string WithVersion(string ratesVersion) =>
+        Embedded().Replace(
+            "\"ratesVersion\": \"2026-11-20\"",
+            $"\"ratesVersion\": \"{ratesVersion}\"",
+            StringComparison.Ordinal);
 
-Both installs exit 0.
+    // WithVersion(ratesVersion) with claude-opus-5.5's inputPer1M set to 8 and outputPer1M to 40 (twice the built-in rates).
+    public static string DoubledOpus(string ratesVersion)
+    {
+        JsonNode document = JsonNode.Parse(WithVersion(ratesVersion))!;
+        JsonNode tier = document["githubAiCredits"]!["models"]!.AsArray()
+            .Single(model => model!["id"]!.GetValue<string>() == "claude-opus-5.5")!["windows"]![0]!["tiers"]![0]!;
+        tier["inputPer1M"] = 8m;
+        tier["outputPer1M"] = 40m;
+        return document.ToJsonString();
+    }
 
-**IN15, `COPILOT_LEDGER_HOME`.** `WindowsPlatform()` with `ProcessVariables["COPILOT_LEDGER_HOME"] = <root>/data`. `install` exits 0, and `Out` contains `Warning: COPILOT_LEDGER_HOME is set. The daemon that starts when you sign in uses it only if your sign-in environment sets it too.` before `gh-ledger will start when you sign in.`
+    public static byte[] Utf8(string text) => new UTF8Encoding(false).GetBytes(text);
 
-**IN16, sign-in items that fail** (theory over a case name). Each `install` and `uninstall` exits 0.
+    // WithVersion(ratesVersion) plus a GitHub model gpt-new, alias gpt-preview, at $1 input, $0.10 cached input, and
+    // $4 output per 1M tokens.
+    public static string WithGptNew(string ratesVersion)
+    {
+        JsonNode document = JsonNode.Parse(WithVersion(ratesVersion))!;
+        document["githubAiCredits"]!["models"]!.AsArray().Add(JsonNode.Parse(
+            """
+            { "id": "gpt-new", "aliases": ["gpt-preview"], "windows": [ { "effectiveFrom": null, "effectiveUntil": null, "tiers": [ { "name": "default", "maxInputTokens": null, "inputPer1M": 1, "cachedInputPer1M": 0.1, "cacheWritePer1M": null, "outputPer1M": 4 } ] } ] }
+            """));
+        return document.ToJsonString();
+    }
 
-- `windows-register-fails`: `WindowsPlatform()` with `StartupCommandException = new UnauthorizedAccessException("Access to the registry key is denied.")`. `install`'s `Out` contains `Warning: could not register the sign-in item: Access to the registry key is denied.` and `gh-ledger daemon started (pid <Environment.ProcessId>) on http://localhost:4318.`, and doesn't contain `gh-ledger will start when you sign in.`. `StartupCommandWrites` is empty, and the manifest's `startupItem` is `null`.
-- `linux-register-fails`: `UnixPlatform(<root>)`, plus the directory `<root>/home/.config` holding an empty **file** named `autostart`, so creating the autostart folder throws `IOException`. `install`'s `Out` has a line starting with `Warning: could not register the sign-in item: ` (the rest is the OS's message), the manifest's `startupItem` is `null`, and `<root>/home/.config/autostart` is still a file.
-- `windows-remove-fails`: `WindowsPlatform()`. `install` registers the item. Then set `StartupCommandException = new System.Security.SecurityException("Requested registry access is not allowed.")` and run `uninstall`: `Out` contains `Warning: could not remove the sign-in item: Requested registry access is not allowed.`, `StartupCommands` still holds `CopilotLedger`, and `Out` ends with `CopilotLedger is uninstalled. Your ledger data is still in <root>/data.` and `\n`.
+    // An overlay that adds the GitHub model gpt-preview. It's valid with the built-in rates and conflicts with WithGptNew.
+    public const string GptPreviewOverlay = """
+        { "schemaVersion": 1, "githubAiCredits": { "models": [ { "id": "gpt-preview", "aliases": [], "windows": [ { "effectiveFrom": null, "effectiveUntil": null, "tiers": [ { "name": "default", "maxInputTokens": null, "inputPer1M": 1, "cachedInputPer1M": 0.1, "cacheWritePer1M": null, "outputPer1M": 4 } ] } ] } ] } }
+        """;
+}
+```
 
-#### Version
+Responses use `ByteArrayContent` without a content type, never `StringContent`, because the product must not depend on a charset.
 
-- **DM1.** The expected `version` in `daemon.json` is `0.3.0`.
-- **`ReportCommandTests`.** The expected `status` text's first line is `gh-ledger 0.3.0`.
+#### `tests/CopilotLedger.Tests/Cli/RatesUpdateTests.cs` (copy exactly)
+
+- **RU1**: newer rates are saved byte for byte from one `GET` with the user agent `gh-ledger/<version>`, nothing else is written, and `rates validate`, `status`, and `status --json` report the downloaded rates.
+- **RU2**: equal and older rates aren't saved.
+- **RU3**: offline, 404, timeout, invalid UTF-8, invalid JSON, an incomplete document, and a non-date version each give exactly one error line and save nothing.
+- **RU4**: rates that conflict with the overlay aren't saved, and the error carries the overlay's message.
+- **RU5**: a download replaces an older download and is up to date against an equal one.
+- **RU6**: an unreadable download is ignored with the same warning in `rates validate`, `status --json`, and `rates update`, which then replaces it.
+- **RU7**: a download dated before the built-in rates is ignored without a warning.
+- **RU8**: with the daemon running on downloaded rates that double `claude-opus-5.5`'s prices, `rates update` adds the restart line, and trace V's three chats are priced at the downloaded rates: 3 × (100,000 × $8 + 10,000 × $40) per 1M = $3.60, or 360 AI credits, instead of the built-in 180.
+- **RU9**: the daemon logs the ignored download as its first line and still starts and stops.
+- **RU10**: the built-in `ratesVersion` is a `yyyy-MM-dd` date.
+
+```csharp
+using System.Globalization;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text.Json;
+using CopilotLedger.Cli;
+using CopilotLedger.Core.Pricing;
+using CopilotLedger.Tests.TestSupport;
+
+namespace CopilotLedger.Tests.Cli;
+
+public sealed class RatesUpdateTests
+{
+    [Fact]
+    public async Task RU1_NewerPublishedRatesAreSavedAndUsed()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = new(temp.Path);
+        string published = PublishedRates.WithVersion("2026-12-01");
+        FakeHttpHandler handler = new(_ => FakeHttpHandler.Bytes(PublishedRates.Utf8(published)));
+
+        CliRun run = await harness.RunWithHttpAsync(handler, "rates", "update");
+
+        Assert.Equal(0, run.ExitCode);
+        Assert.Equal("Updated rates from 2026-11-20 to 2026-12-01.\n", run.Out);
+        Assert.Equal(string.Empty, run.Error);
+        Assert.Equal(
+            [new HttpCall("GET", PublishedRates.Url, $"gh-ledger/{GhLedgerCli.Version}")],
+            handler.Calls);
+        string downloaded = Path.Combine(temp.Path, "data", "rates.downloaded.json");
+        Assert.Equal(published, await FileRetry.ReadAllTextAsync(downloaded));
+        Assert.Equal([downloaded], Directory.GetFiles(Path.Combine(temp.Path, "data")));
+
+        CliRun validate = await harness.RunAsync("rates", "validate");
+        Assert.Equal(0, validate.ExitCode);
+        Assert.Equal(
+            $"No rates overlay at {Path.Combine(temp.Path, "data", "rates.json")}; using the downloaded rates (2026-12-01).\n",
+            validate.Out);
+        CliRun status = await harness.RunAsync("status");
+        Assert.Equal(0, status.ExitCode);
+        Assert.Equal("Rates:   2026-12-01 (downloaded)", status.Out.Split('\n')[3]);
+        CliRun json = await harness.RunAsync("status", "--json");
+        Assert.Equal(0, json.ExitCode);
+        using JsonDocument document = JsonDocument.Parse(json.Out);
+        Assert.Equal("2026-12-01", document.RootElement.GetProperty("ratesVersion").GetString());
+        Assert.Equal("downloaded", document.RootElement.GetProperty("ratesSource").GetString());
+    }
+
+    public static TheoryData<string, string> NotNewer => new()
+    {
+        { "2026-11-20", "Rates are up to date (2026-11-20).\n" },
+        { "2026-10-01", "The published rates (2026-10-01) are older than the rates in use (2026-11-20); nothing changed.\n" },
+    };
+
+    [Theory]
+    [MemberData(nameof(NotNewer))]
+    public async Task RU2_RatesThatAreNotNewerAreNotSaved(string version, string output)
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = new(temp.Path);
+        FakeHttpHandler handler = new(_ => FakeHttpHandler.Bytes(
+            PublishedRates.Utf8(PublishedRates.WithVersion(version))));
+
+        CliRun run = await harness.RunWithHttpAsync(handler, "rates", "update");
+
+        Assert.Equal(0, run.ExitCode);
+        Assert.Equal(output, run.Out);
+        Assert.Equal(string.Empty, run.Error);
+        Assert.False(File.Exists(Path.Combine(temp.Path, "data", "rates.downloaded.json")));
+    }
+
+    public static TheoryData<string, string> Failures => new()
+    {
+        { "offline", $"Could not download rates from {PublishedRates.Url}: No such host is known. (github.com:443)\n" },
+        { "404", $"Could not download rates from {PublishedRates.Url}: HTTP 404.\n" },
+        { "timeout", $"Could not download rates from {PublishedRates.Url}: no response within 30 seconds.\n" },
+        { "not-utf8", "The downloaded rates are invalid: the file isn't UTF-8.\n" },
+        { "not-json", "The downloaded rates are invalid: line 1, column 2: invalid JSON\n" },
+        { "incomplete", "The downloaded rates are invalid: source: is required\n" },
+        { "not-a-date", "The downloaded rates are invalid: ratesVersion 2026-12 isn't a yyyy-MM-dd date.\n" },
+    };
+
+    [Theory]
+    [MemberData(nameof(Failures))]
+    public async Task RU3_FailuresReportExactErrorsAndSaveNothing(string failure, string error)
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = new(temp.Path);
+        FakeHttpHandler handler = new(_ => failure switch
+        {
+            "offline" => throw new HttpRequestException("No such host is known. (github.com:443)"),
+            "404" => new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new ByteArrayContent(PublishedRates.Utf8("{\"error\":\"Not Found\"}")),
+            },
+            "timeout" => throw new TaskCanceledException(),
+            "not-utf8" => FakeHttpHandler.Bytes([0xC3, 0x28]),
+            "not-json" => FakeHttpHandler.Bytes(PublishedRates.Utf8("{")),
+            "incomplete" => FakeHttpHandler.Bytes(PublishedRates.Utf8("{ \"schemaVersion\": 1, \"ratesVersion\": \"2026-12-01\" }")),
+            "not-a-date" => FakeHttpHandler.Bytes(PublishedRates.Utf8(PublishedRates.WithVersion("2026-12"))),
+            _ => throw new InvalidOperationException(failure),
+        });
+
+        CliRun run = await harness.RunWithHttpAsync(handler, "rates", "update");
+
+        Assert.Equal(1, run.ExitCode);
+        Assert.Equal(string.Empty, run.Out);
+        Assert.Equal(error, run.Error);
+        Assert.False(File.Exists(Path.Combine(temp.Path, "data", "rates.downloaded.json")));
+    }
+
+    [Fact]
+    public async Task RU4_OverlayConflictKeepsTheCurrentRates()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = new(temp.Path);
+        string overlay = Path.Combine(temp.Path, "data", "rates.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(overlay)!);
+        await File.WriteAllTextAsync(overlay, PublishedRates.GptPreviewOverlay);
+        Assert.Equal(0, (await harness.RunAsync("rates", "validate")).ExitCode);
+        FakeHttpHandler handler = new(_ => FakeHttpHandler.Bytes(
+            PublishedRates.Utf8(PublishedRates.WithGptNew("2026-12-01"))));
+
+        CliRun run = await harness.RunWithHttpAsync(handler, "rates", "update");
+
+        Assert.Equal(1, run.ExitCode);
+        Assert.Equal(string.Empty, run.Out);
+        Assert.Equal(
+            $"The downloaded rates (2026-12-01) don't work with your rates overlay: {overlay}: githubAiCredits.models[0].id: duplicate model identity in the merged rates: gpt-preview (built-in model gpt-new)\n",
+            run.Error);
+        Assert.False(File.Exists(Path.Combine(temp.Path, "data", "rates.downloaded.json")));
+    }
+
+    [Fact]
+    public async Task RU5_LaterRatesReplaceEarlierDownloads()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = new(temp.Path);
+        string downloaded = Path.Combine(temp.Path, "data", "rates.downloaded.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(downloaded)!);
+        await File.WriteAllTextAsync(downloaded, PublishedRates.WithVersion("2026-12-01"));
+
+        CliRun same = await harness.RunWithHttpAsync(
+            new FakeHttpHandler(_ => FakeHttpHandler.Bytes(PublishedRates.Utf8(PublishedRates.WithVersion("2026-12-01")))),
+            "rates",
+            "update");
+        CliRun later = await harness.RunWithHttpAsync(
+            new FakeHttpHandler(_ => FakeHttpHandler.Bytes(PublishedRates.Utf8(PublishedRates.WithVersion("2026-12-15")))),
+            "rates",
+            "update");
+
+        Assert.Equal(0, same.ExitCode);
+        Assert.Equal("Rates are up to date (2026-12-01).\n", same.Out);
+        Assert.Equal(0, later.ExitCode);
+        Assert.Equal("Updated rates from 2026-12-01 to 2026-12-15.\n", later.Out);
+        Assert.Equal(PublishedRates.WithVersion("2026-12-15"), await FileRetry.ReadAllTextAsync(downloaded));
+    }
+
+    [Fact]
+    public async Task RU6_UnusableDownloadsAreIgnoredWithAWarning()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = new(temp.Path);
+        string downloaded = Path.Combine(temp.Path, "data", "rates.downloaded.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(downloaded)!);
+        await File.WriteAllTextAsync(downloaded, "not json");
+        string warning = $"Warning: ignored {downloaded}: line 1, column 2: invalid JSON\n";
+
+        CliRun validate = await harness.RunAsync("rates", "validate");
+        CliRun status = await harness.RunAsync("status", "--json");
+        CliRun update = await harness.RunWithHttpAsync(
+            new FakeHttpHandler(_ => FakeHttpHandler.Bytes(PublishedRates.Utf8(PublishedRates.WithVersion("2026-12-01")))),
+            "rates",
+            "update");
+
+        Assert.Equal(0, validate.ExitCode);
+        Assert.Equal(
+            warning + $"No rates overlay at {Path.Combine(temp.Path, "data", "rates.json")}; using the built-in rates (2026-11-20).\n",
+            validate.Out);
+        Assert.Equal(0, status.ExitCode);
+        using JsonDocument document = JsonDocument.Parse(status.Out);
+        Assert.Equal("2026-11-20", document.RootElement.GetProperty("ratesVersion").GetString());
+        Assert.Equal("built-in", document.RootElement.GetProperty("ratesSource").GetString());
+        Assert.Equal(
+            [warning[9..^1]],
+            document.RootElement.GetProperty("warnings").EnumerateArray().Select(item => item.GetString()));
+        Assert.Equal(0, update.ExitCode);
+        Assert.Equal(warning + "Updated rates from 2026-11-20 to 2026-12-01.\n", update.Out);
+    }
+
+    [Fact]
+    public async Task RU7_DownloadsNotLaterThanTheBuiltInRatesAreIgnoredSilently()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = new(temp.Path);
+        string downloaded = Path.Combine(temp.Path, "data", "rates.downloaded.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(downloaded)!);
+        await File.WriteAllTextAsync(downloaded, PublishedRates.WithVersion("2026-11-01"));
+
+        CliRun validate = await harness.RunAsync("rates", "validate");
+
+        Assert.Equal(0, validate.ExitCode);
+        Assert.Equal(
+            $"No rates overlay at {Path.Combine(temp.Path, "data", "rates.json")}; using the built-in rates (2026-11-20).\n",
+            validate.Out);
+    }
+
+    [Fact]
+    public async Task RU8_RunningDaemonGetsARestartHintAndPricesWithDownloadedRates()
+    {
+        using TempDirectory temp = new();
+        string repo = GitFixture.Create(temp.Path);
+        await using CliHarness harness = new(temp.Path);
+        string downloaded = Path.Combine(temp.Path, "data", "rates.downloaded.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(downloaded)!);
+        await File.WriteAllTextAsync(downloaded, PublishedRates.DoubledOpus("2026-12-01"));
+        await harness.StartInProcessDaemonAsync();
+
+        CliRun update = await harness.RunWithHttpAsync(
+            new FakeHttpHandler(_ => FakeHttpHandler.Bytes(PublishedRates.Utf8(PublishedRates.WithVersion("2026-12-15")))),
+            "rates",
+            "update");
+        using HttpClient client = harness.CreateDaemonClient();
+        using StringContent content = new(
+            BreakerTraces.TraceVJson(repo),
+            new MediaTypeHeaderValue("application/json"));
+        using HttpResponseMessage response = await client.PostAsync("/v1/traces", content);
+        CliRun branch = await harness.RunInAsync(repo, "branch", "--since", "all", "--json");
+
+        Assert.Equal(0, update.ExitCode);
+        Assert.Equal(
+            "Updated rates from 2026-12-01 to 2026-12-15.\n" +
+            "Restart the daemon to price new spans with them: gh-ledger daemon stop, then gh-ledger daemon start.\n",
+            update.Out);
+        Assert.Equal(200, (int)response.StatusCode);
+        Assert.Equal(0, branch.ExitCode);
+        using JsonDocument document = JsonDocument.Parse(branch.Out);
+        JsonElement row = Assert.Single(document.RootElement.GetProperty("rows").EnumerateArray());
+        Assert.Equal(3, row.GetProperty("spans").GetInt64());
+        Assert.Equal(360m, row.GetProperty("aiCredits").GetDecimal());
+        Assert.Equal(3.6m, row.GetProperty("aiCreditsUsd").GetDecimal());
+    }
+
+    [Fact]
+    public async Task RU9_DaemonLogsIgnoredDownloadsAndStillStarts()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = new(
+            temp.Path,
+            timeProvider: new ManualTimeProvider(
+                DateTimeOffset.Parse("2026-11-21T15:00:00Z", CultureInfo.InvariantCulture)));
+        string downloaded = Path.Combine(temp.Path, "data", "rates.downloaded.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(downloaded)!);
+        await File.WriteAllTextAsync(downloaded, "not json");
+
+        await harness.StartInProcessDaemonAsync();
+        CliRun stop = await harness.RunAsync("daemon", "stop");
+        await harness.InProcessDaemon!;
+
+        Assert.Equal(0, stop.ExitCode);
+        Assert.StartsWith(
+            $"2026-11-21T15:00:00.0000000+00:00 Warning: ignored {downloaded}: line 1, column 2: invalid JSON\n",
+            harness.DaemonOutput);
+    }
+
+    [Fact]
+    public void RU10_BuiltInRatesVersionIsADate()
+    {
+        Assert.True(DateOnly.TryParseExact(
+            JsonRateCardCalculator.LoadEmbedded().RatesVersion,
+            "yyyy-MM-dd",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out _));
+    }
+}
+```
+
+#### `tests/CopilotLedger.Tests/Pricing/LoadWithOverlayTests.cs` (copy exactly)
+
+- **LW1**: a base without an overlay keeps its version.
+- **LW2**: an overlay without a label gives `<base>+user`.
+- **LW3**: an invalid or missing overlay's error starts with its path.
+- **LW4**: a base's error has no prefix.
+
+```csharp
+using CopilotLedger.Core.Pricing;
+using CopilotLedger.Tests.TestSupport;
+
+namespace CopilotLedger.Tests.Pricing;
+
+public sealed class LoadWithOverlayTests
+{
+    [Fact]
+    public void LW1_BaseWithoutOverlayKeepsItsVersion()
+    {
+        JsonRateCardCalculator calculator =
+            JsonRateCardCalculator.LoadWithOverlay(PublishedRates.WithVersion("2026-12-01"), null);
+
+        Assert.Equal("2026-12-01", calculator.RatesVersion);
+    }
+
+    [Fact]
+    public void LW2_OverlayIsMergedOnTheGivenBase()
+    {
+        using TempDirectory temp = new();
+        string overlay = Path.Combine(temp.Path, "rates.json");
+        File.WriteAllText(overlay, PublishedRates.GptPreviewOverlay);
+
+        JsonRateCardCalculator calculator =
+            JsonRateCardCalculator.LoadWithOverlay(PublishedRates.WithVersion("2026-12-01"), overlay);
+
+        Assert.Equal("2026-12-01+user", calculator.RatesVersion);
+    }
+
+    [Fact]
+    public void LW3_OverlayErrorsStartWithTheOverlayPath()
+    {
+        using TempDirectory temp = new();
+        string overlay = Path.Combine(temp.Path, "rates.json");
+        File.WriteAllText(overlay, "{");
+
+        InvalidDataException invalid = Assert.Throws<InvalidDataException>(() =>
+            JsonRateCardCalculator.LoadWithOverlay(PublishedRates.WithVersion("2026-12-01"), overlay));
+        InvalidDataException missing = Assert.Throws<InvalidDataException>(() =>
+            JsonRateCardCalculator.LoadWithOverlay(
+                PublishedRates.WithVersion("2026-12-01"),
+                Path.Combine(temp.Path, "missing.json")));
+
+        Assert.Equal($"{overlay}: line 1, column 2: invalid JSON", invalid.Message);
+        Assert.Equal(
+            $"{Path.Combine(temp.Path, "missing.json")}: could not read rates overlay.",
+            missing.Message);
+    }
+
+    [Fact]
+    public void LW4_BaseErrorsHaveNoPrefix()
+    {
+        InvalidDataException exception = Assert.Throws<InvalidDataException>(() =>
+            JsonRateCardCalculator.LoadWithOverlay("{", null));
+
+        Assert.Equal("line 1, column 2: invalid JSON", exception.Message);
+    }
+}
+```
+
+## Final step: architect audit (not a builder task)
+
+After Task 5 merges, `ledger-architect` audits the whole repository at the merge commit, as the user's plan offers ("optional final PR/diff audit across the full repository"). It changes no code and opens no pull request. It sends the orchestrator one findings report; the orchestrator decides what to fix and how.
+
+**Scope:** every file in `src/`, `tests/`, `action/`, `.github/workflows/`, `docs/`, and `README.md`, and the four sprint plans with their amendments.
+
+**Checks:**
+
+1. Build and test from a clean clone: `dotnet build CopilotLedger.slnx`, `dotnet test CopilotLedger.slnx`, and `pwsh -NoProfile -File action/tests/receipt.Tests.ps1`. Record the counts and the latest CI run on `main`.
+2. **Money:** no `double`, `float`, `GetDouble`, `TryGetDouble`, or `Math` double overloads in `src/`; no SQLite `REAL` columns or `SUM` over `TEXT`; rounding only for display, with an explicit `MidpointRounding`; costs follow `tokens × rate / 1,000,000`.
+3. **Domain invariants:** only inference spans are priced; `invoke_agent` totals are never priced or added; cache-read and cache-write tokens are subtracted from input; both cache-write attribute names are accepted.
+4. **Privacy:** no prompt or response content, working directory, or credential is stored, logged, written to a receipt, or posted; remote URLs are stripped; receipts and comments contain only slugs, branch and model names, counts, and amounts.
+5. **No `git` and no Docker:** no product code or test starts `git`; no container files or services.
+6. **Hermetic tests:** no network, real home directory, registry, user environment, or sockets; every database under a `TempDirectory`; reads of just-written files go through `FileRetry`.
+7. **Contracts:** each sprint's public contracts and copy-exactly code match the plans and their recorded amendments.
+8. **Docs:** `README.md`, `docs/guide.md`, `docs/cli.md`, `docs/configuration.md`, `docs/action.md`, and `docs/releasing.md` match `--help`, the messages in code, and the file layout; every command they show exists with those options.
+9. **Robustness:** exception filters name their types; a default `switch` arm can't be swallowed by a broad `catch`; files are written atomically where a reader may race; cancellation reaches long operations; Windows and Unix paths both work.
+10. **Security:** workflow permissions are the least needed; no `${{ }}` expression is interpolated into a `run` script; the action never edits others' comments; release assets are checksummed.
+11. **Deferred items:** each still has a rationale, and none is half-built.
+
+**Report** (sent to the orchestrator, not committed): a table of findings, each with an ID (`A1`, `A2`, …), severity (blocker, major, minor, or note), the file and line, what's wrong with evidence (a command and its output, or a quote), and the suggested fix. It ends with the counts from check 1 and the list of checks that found nothing. Findings the orchestrator accepts become tasks in the next sprint's plan.
 
 ## Deferred to later sprints
 
-- **Reconciliation with `nano_aiu`** (carried from Sprint 2). Store each `chat` span's `github.copilot.nano_aiu` and report drift per model, never the root `invoke_agent` total, which left out a subagent's spend. Protobuf carries it as an IEEE `double`, so this needs a decimal-only design.
-- **`gh ledger` on Windows without Git for Windows** (carried from Sprint 2). A precompiled gh extension needs a `gh-*` repository with per-platform release assets. Creating it is the user's decision, paired with Sprint 4's release work.
-- **A tool gate.** A user-level `preToolUse` hook that runs a small `gh-ledger` command and denies tools while the breaker is open would stop an agent even when it never calls a ledger tool. It needs the hook contract verified live.
-- **Webhooks** as another alert channel.
-- **Breaker state in `status`.** `status` doesn't show the breaker yet, so that its tested output stays unchanged.
-- **MCP registration in `install`.** `install` could run `copilot mcp add` or edit `~/.copilot/mcp-config.json`, with `uninstall` undoing it.
-- **`COPILOT_LEDGER_HOME` in sign-in items.** Pass the data directory to the sign-in item (a launchd `EnvironmentVariables` entry, an `env` prefix in the desktop entry, or a CLI option) instead of warning.
-- **Headless Linux.** A `systemd --user` unit for machines without a desktop session.
-- **Smarter retry churn.** Telling test and build commands from others needs the command text, which Copilot exports only with content capture. Revisit if Copilot adds a command attribute.
-- **Carried from Sprint 2:** the binary location, a custom port in `install`, rates follow-ups, BYOK, local, and VS Code Local captures, file-exporter ingestion, Native AOT, and overflow-safe rollups, as described in `.github/plans/archive/sprint-2.md`.
-- **Sprint 4,** per the roadmap: PR receipts, the GitHub Action, and the rates update command.
+- **Reconciliation with `nano_aiu`** (carried). Store each `chat` span's `github.copilot.nano_aiu` and report drift per model, never the root `invoke_agent` total. Protobuf carries it as an IEEE `double`, so it needs a decimal-only design.
+- **Breaker state in `status`** (carried). `status` still doesn't show open trips, so its tested output changes only where this sprint says.
+- **MCP registration in `install`** (carried). `install` could run `copilot mcp add` or edit `~/.copilot/mcp-config.json`, with `uninstall` undoing it.
+- **`COPILOT_LEDGER_HOME` in sign-in items** (carried). Pass the data directory to the sign-in item instead of warning.
+- **Headless Linux** (carried). A `systemd --user` unit for machines without a desktop session.
+- **A tool gate** (carried). A user-level `preToolUse` hook that denies tools while the breaker is open; it needs the hook contract verified live.
+- **Webhooks** (carried) as another alert channel.
+- **Smarter retry churn** (carried). Telling test and build commands apart needs the command text, which Copilot exports only with content capture.
+- **A Marketplace action** (carried). Marketplace needs a root `action.yml`, so it needs a separate `swigerb/copilot-ledger-action` repository: the user's decision.
+- **Signed receipts and a pre-push hook.** Deferred with the rationale in "Design decisions": a signature can't vouch for a local ledger, and a pre-push hook can't add to the push it runs in.
+- **`export-pr --since`**, for branch names that are reused.
+- **`gh ledger` in every message.** Breaker, MCP, alert, and sign-in messages still say `gh-ledger <command>`; only `status` and `rates update` name the command the way it was run. Changing the rest touches many Sprint 3 tests.
+- **Restarting the daemon around `gh extension upgrade`**, for example a `gh ledger upgrade` command, instead of documenting `daemon stop` first.
+- **Build provenance.** `actions/attest-build-provenance` (v4) for the release assets, verifiable with `gh attestation verify`.
+- **Arm64 smoke tests.** Run the `linux-arm64` and `win-arm64` binaries on Arm64 runners, and `osx-x64` under Rosetta.
+- **Checking for newer rates automatically**, for example a `status` hint when the latest release's rates are newer.
+- **Receipts for fork pull requests.** They'd need `pull_request_target` or a second workflow triggered by `workflow_run`, with care for untrusted input.
+- **Carried from Sprint 2:** a custom port in `install`, rates follow-ups, BYOK, local, and VS Code Local captures, file-exporter ingestion, Native AOT, and overflow-safe rollups, as described in `.github/plans/archive/sprint-2.md`.
