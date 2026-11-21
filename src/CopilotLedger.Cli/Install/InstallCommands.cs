@@ -1,5 +1,7 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
+using System.Security;
+using System.Text;
 using System.Text.Json;
 using CopilotLedger.Cli.Daemon;
 
@@ -187,6 +189,87 @@ internal static class InstallCommands
                 "Warning: GitHub CLI needs sh.exe from Git for Windows to run shell aliases, so gh ledger won't work until Git for Windows is installed. Run gh-ledger directly.");
         }
 
+        string? startupItem = previous?.StartupItem;
+        if (!string.IsNullOrWhiteSpace(
+                context.Platform.GetEnvironmentVariable("COPILOT_LEDGER_HOME")))
+        {
+            context.Out.WriteLine(
+                "Warning: COPILOT_LEDGER_HOME is set. The daemon that starts when you sign in uses it only if your sign-in environment sets it too.");
+        }
+
+        StartupItemPlan planned = StartupItem.Plan(context, executable!);
+        if (planned.SkipWarning is not null)
+        {
+            context.Out.WriteLine(planned.SkipWarning);
+        }
+        else
+        {
+            try
+            {
+                bool alreadyPresent;
+                if (context.Platform.IsWindows)
+                {
+                    alreadyPresent = string.Equals(
+                        context.Platform.GetStartupCommand("CopilotLedger"),
+                        planned.Content,
+                        StringComparison.Ordinal);
+                }
+                else
+                {
+                    alreadyPresent = File.Exists(planned.Identifier)
+                        && string.Equals(
+                            await File.ReadAllTextAsync(
+                                planned.Identifier,
+                                cancellationToken),
+                            planned.Content,
+                            StringComparison.Ordinal);
+                }
+
+                if (alreadyPresent)
+                {
+                    context.Out.WriteLine("gh-ledger already starts when you sign in.");
+                }
+                else if (dryRun)
+                {
+                    context.Out.WriteLine("Would start gh-ledger when you sign in.");
+                }
+                else
+                {
+                    if (context.Platform.IsWindows)
+                    {
+                        context.Platform.SetStartupCommand(
+                            "CopilotLedger",
+                            planned.Content);
+                    }
+                    else
+                    {
+                        Directory.CreateDirectory(
+                            Path.GetDirectoryName(planned.Identifier)!);
+                        await File.WriteAllTextAsync(
+                            planned.Identifier,
+                            planned.Content,
+                            new UTF8Encoding(false),
+                            cancellationToken);
+                    }
+
+                    context.Out.WriteLine("gh-ledger will start when you sign in.");
+                }
+
+                if (!dryRun)
+                {
+                    startupItem = planned.Identifier;
+                }
+            }
+            catch (Exception ex) when (
+                ex is IOException
+                or UnauthorizedAccessException
+                or SecurityException)
+            {
+                context.Out.WriteLine(
+                    $"Warning: could not register the sign-in item: {ex.Message}");
+            }
+        }
+
         if (!dryRun)
         {
             Directory.CreateDirectory(context.DataDirectory);
@@ -199,6 +282,7 @@ internal static class InstallCommands
                 WindowsUserVariablePreviousValue = previousVariableValue,
                 ProfileFiles = profiles.Order(StringComparer.Ordinal).ToArray(),
                 GhAliasSet = ghAliasSet,
+                StartupItem = startupItem,
             };
             await using FileStream stream = new(
                 manifestPath,
@@ -256,6 +340,48 @@ internal static class InstallCommands
             else
             {
                 await DaemonCommands.StopAsync(context, cancellationToken);
+            }
+        }
+
+        if (manifest.StartupItem is not null)
+        {
+            try
+            {
+                bool exists = context.Platform.IsWindows
+                    ? context.Platform.GetStartupCommand("CopilotLedger") is not null
+                    : File.Exists(manifest.StartupItem);
+                if (exists)
+                {
+                    if (dryRun)
+                    {
+                        context.Out.WriteLine(
+                            "Would stop starting gh-ledger when you sign in.");
+                    }
+                    else
+                    {
+                        if (context.Platform.IsWindows)
+                        {
+                            context.Platform.SetStartupCommand(
+                                "CopilotLedger",
+                                null);
+                        }
+                        else
+                        {
+                            File.Delete(manifest.StartupItem);
+                        }
+
+                        context.Out.WriteLine(
+                            "gh-ledger will no longer start when you sign in.");
+                    }
+                }
+            }
+            catch (Exception ex) when (
+                ex is IOException
+                or UnauthorizedAccessException
+                or SecurityException)
+            {
+                context.Out.WriteLine(
+                    $"Warning: could not remove the sign-in item: {ex.Message}");
             }
         }
 

@@ -16,9 +16,11 @@ Use `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `osx-x64`, or `osx-arm64
 
 ## Install
 
-Run `gh-ledger install`. It sets `COPILOT_OTEL_ENABLED=true` in the Windows user environment or in a marked block in your shell profile, sets the `gh ledger` alias, starts the daemon, and records the changes in `install.json`. It changes nothing else: in particular, it does not edit `PATH` or other OpenTelemetry variables.
+Run `gh-ledger install`. It sets `COPILOT_OTEL_ENABLED=true` in the Windows user environment or in a marked block in your shell profile, sets the `gh ledger` alias, registers the daemon to start when you sign in, starts the daemon, and records the changes in `install.json`. It changes nothing else: in particular, it does not edit `PATH` or other OpenTelemetry variables.
 
 Use `gh-ledger install --dry-run` to print the changes without making them. Restart the GitHub Copilot app, VS Code, and open terminals afterward.
+
+The sign-in item is the `CopilotLedger` value under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run` on Windows, `~/Library/LaunchAgents/io.github.swigerb.copilot-ledger.plist` on macOS, and `copilot-ledger.desktop` in `$XDG_CONFIG_HOME/autostart` (default `~/.config/autostart`) on Linux.
 
 `install` and `gh-ledger status` show these warnings:
 
@@ -34,7 +36,7 @@ On Windows, `gh ledger` needs `sh.exe` from Git for Windows. The `gh-ledger` exe
 
 `gh-ledger daemon run` runs the receiver in the foreground. `gh-ledger daemon start` starts it as a detached process, and `gh-ledger daemon stop` stops it. The daemon uses `daemon.json` for state, `daemon.lock` for single-instance locking, and `daemon.log` for detached-process logs.
 
-The daemon does not start at login yet. Run `gh-ledger daemon start` after you sign in. Copilot drops telemetry while the daemon is not running.
+After `install`, the daemon starts when you sign in. Copilot drops telemetry while the daemon is not running.
 
 ## Reports
 
@@ -99,7 +101,7 @@ Run `gh-ledger rates init` to create a starter overlay and `gh-ledger rates vali
 
 ## Uninstall
 
-`gh-ledger uninstall` reverses the environment variable, profile block, and `gh` alias changes recorded by `install`, restoring the previous environment value when applicable, and stops the daemon if it is running. `gh-ledger uninstall --dry-run` prints the changes without applying them. Ledger data is kept.
+`gh-ledger uninstall` stops the daemon if it is running, removes the sign-in item, and reverses the environment variable, profile block, and `gh` alias changes recorded by `install`, restoring the previous environment value when applicable. `gh-ledger uninstall --dry-run` prints the changes without applying them. Ledger data is kept.
 
 ## Privacy
 
@@ -111,3 +113,5 @@ CopilotLedger stores no prompt or response content, working directories, or remo
 - **Nothing recorded.** Run `gh-ledger status`, address its warnings, and restart Copilot.
 - **Desktop-launched apps may not read the profile.** Apps started outside a terminal, such as from the macOS Dock or a Linux desktop launcher, may not read shell profiles, so they may not see the `COPILOT_OTEL_ENABLED` that `install` put there. If no data is recorded after using such an app, start it from a terminal.
 - **Move the data directory.** Set `COPILOT_LEDGER_HOME` before running `gh-ledger`.
+- **A console window flashes at sign-in.** Windows 11 24H2 and later start `gh-ledger` without a window. Earlier versions of Windows show its window for about a second.
+- **The daemon started at sign-in uses the default data directory.** If you set `COPILOT_LEDGER_HOME`, set it where your sign-in session sees it, such as a Windows user environment variable.

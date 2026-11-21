@@ -9,4 +9,5 @@ internal sealed record InstallManifest
     public required string? WindowsUserVariablePreviousValue { get; init; }  // restored by uninstall
     public required IReadOnlyList<string> ProfileFiles { get; init; }        // shell profiles with the block
     public required bool GhAliasSet { get; init; }                           // alias was changed by install
+    public string? StartupItem { get; init; }                                // the registered sign-in item: the Run value's full name on Windows, the file path elsewhere; null when none
 }

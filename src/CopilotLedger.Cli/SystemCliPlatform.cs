@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using Microsoft.Win32;
 
 namespace CopilotLedger.Cli;
 
@@ -26,6 +27,41 @@ public sealed class SystemCliPlatform : ICliPlatform
         }
 
         Environment.SetEnvironmentVariable(name, value, EnvironmentVariableTarget.User);
+    }
+
+    public string? GetStartupCommand(string name)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Run",
+                writable: false);
+            return key?.GetValue(name) as string;
+        }
+
+        return null;
+    }
+
+    public void SetStartupCommand(string name, string? command)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            using RegistryKey key = Registry.CurrentUser.CreateSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Run",
+                writable: true);
+            if (command is null)
+            {
+                key.DeleteValue(name, throwOnMissingValue: false);
+            }
+            else
+            {
+                key.SetValue(name, command, RegistryValueKind.String);
+            }
+
+            return;
+        }
+
+        throw new PlatformNotSupportedException();
     }
 
     public bool FileExists(string path) => File.Exists(path);

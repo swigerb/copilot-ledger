@@ -19,6 +19,9 @@ public sealed class FakeCliPlatform : ICliPlatform
     public Dictionary<string, string> UserVariables { get; } =
         new(StringComparer.Ordinal);
     public List<(string Name, string? Value)> UserVariableWrites { get; } = [];
+    public Dictionary<string, string> StartupCommands { get; } = new(StringComparer.Ordinal);
+    public List<(string Name, string? Command)> StartupCommandWrites { get; } = [];
+    public Exception? StartupCommandException { get; set; }
     public Dictionary<string, string> PathExecutables { get; } =
         new(StringComparer.Ordinal);
     public HashSet<string> ExistingFiles { get; } = new(StringComparer.Ordinal);
@@ -45,6 +48,27 @@ public sealed class FakeCliPlatform : ICliPlatform
         else
         {
             UserVariables[name] = value;
+        }
+    }
+
+    public string? GetStartupCommand(string name) =>
+        StartupCommands.GetValueOrDefault(name);
+
+    public void SetStartupCommand(string name, string? command)
+    {
+        if (StartupCommandException is not null)
+        {
+            throw StartupCommandException;
+        }
+
+        StartupCommandWrites.Add((name, command));
+        if (command is null)
+        {
+            StartupCommands.Remove(name);
+        }
+        else
+        {
+            StartupCommands[name] = command;
         }
     }
 

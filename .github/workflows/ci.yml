@@ -39,8 +39,14 @@ jobs:
         env:
           COPILOT_LEDGER_HOME: ${{ runner.temp }}/copilot-ledger
         run: |
-          ./artifacts/gh-ledger/gh-ledger --version
+          test "$(./artifacts/gh-ledger/gh-ledger --version | tr -d '\r')" = "0.3.0"
           ./artifacts/gh-ledger/gh-ledger rates validate
           ./artifacts/gh-ledger/gh-ledger daemon start
           ./artifacts/gh-ledger/gh-ledger status
+          ./artifacts/gh-ledger/gh-ledger breaker status
+          ./artifacts/gh-ledger/gh-ledger budget list
+          request='{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+          response=$( { echo "$request"; sleep 10; } | ./artifacts/gh-ledger/gh-ledger mcp )
+          echo "$response"
+          grep -q '"get_branch_ledger"' <<< "$response"
           ./artifacts/gh-ledger/gh-ledger daemon stop
