@@ -12,7 +12,7 @@ public sealed class DaemonCommandTests
         await using var harness = new CliHarness(temp.Path);
         await harness.StartInProcessDaemonAsync();
         string statePath = Path.Combine(temp.Path, "data", "daemon.json");
-        using JsonDocument state = JsonDocument.Parse(await File.ReadAllTextAsync(statePath));
+        using JsonDocument state = JsonDocument.Parse(await FileRetry.ReadAllTextAsync(statePath));
         JsonElement root = state.RootElement;
         Assert.Equal(Environment.ProcessId, root.GetProperty("processId").GetInt32());
         Assert.Equal("http://localhost:4318", root.GetProperty("endpoint").GetString());
@@ -31,7 +31,7 @@ public sealed class DaemonCommandTests
         Assert.Contains("gh-ledger daemon is already running.", duplicate.Out);
         Assert.True(File.Exists(statePath));
         using JsonDocument stateAfterDuplicate = JsonDocument.Parse(
-            await File.ReadAllTextAsync(statePath));
+            await FileRetry.ReadAllTextAsync(statePath));
         Assert.Equal(
             Environment.ProcessId,
             stateAfterDuplicate.RootElement.GetProperty("processId").GetInt32());
@@ -138,5 +138,26 @@ public sealed class DaemonCommandTests
         CliRun stop = await harness.RunAsync("daemon", "stop");
         Assert.Equal(0, stop.ExitCode);
         Assert.Equal("gh-ledger daemon is not running.\n", stop.Out);
+    }
+
+    [Fact]
+    public async Task DM6_LockedStopFileIsDeletedOnceReleased()
+    {
+        using var temp = new TempDirectory();
+        await using var harness = new CliHarness(temp.Path);
+        await harness.StartInProcessDaemonAsync();
+        string stopPath = Path.Combine(temp.Path, "data", "daemon.stop");
+        string statePath = Path.Combine(temp.Path, "data", "daemon.json");
+
+        // Held without delete sharing, the stop file can't be deleted on Windows until it's released.
+        using (FileStream held = new(stopPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(200));
+        }
+
+        CliRun daemon = await harness.InProcessDaemon!.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(0, daemon.ExitCode);
+        Assert.False(File.Exists(stopPath));
+        Assert.False(File.Exists(statePath));
     }
 }
