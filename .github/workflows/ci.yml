@@ -36,12 +36,15 @@ jobs:
         run: dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release -r ${{ matrix.rid }} -o artifacts/gh-ledger
       - name: Smoke-test the published binary
         shell: bash
+        timeout-minutes: 5
         env:
           COPILOT_LEDGER_HOME: ${{ runner.temp }}/copilot-ledger
         run: |
           test "$(./artifacts/gh-ledger/gh-ledger --version | tr -d '\r')" = "0.3.0"
           ./artifacts/gh-ledger/gh-ledger rates validate
-          ./artifacts/gh-ledger/gh-ledger daemon start
+          started=$(./artifacts/gh-ledger/gh-ledger daemon start | tr -d '\r')
+          echo "$started"
+          grep -Eq '^gh-ledger daemon started \(pid [0-9]+\) on http://localhost:4318\.$' <<< "$started"
           ./artifacts/gh-ledger/gh-ledger status
           ./artifacts/gh-ledger/gh-ledger breaker status
           ./artifacts/gh-ledger/gh-ledger budget list
@@ -50,3 +53,13 @@ jobs:
           echo "$response"
           grep -q '"get_branch_ledger"' <<< "$response"
           ./artifacts/gh-ledger/gh-ledger daemon stop
+      - name: Smoke-test daemon start under PowerShell capture
+        shell: pwsh
+        timeout-minutes: 5
+        env:
+          COPILOT_LEDGER_HOME: ${{ runner.temp }}/copilot-ledger-pwsh
+        run: |
+          $started = & ./artifacts/gh-ledger/gh-ledger daemon start --port 4319
+          $started
+          if ($started -cnotmatch '^gh-ledger daemon started \(pid \d+\) on http://localhost:4319\.$') { exit 1 }
+          & ./artifacts/gh-ledger/gh-ledger daemon stop

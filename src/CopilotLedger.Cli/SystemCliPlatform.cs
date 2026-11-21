@@ -120,18 +120,40 @@ public sealed class SystemCliPlatform : ICliPlatform
         IReadOnlyList<string> arguments,
         string workingDirectory)
     {
-        using Process process = new();
-        process.StartInfo.FileName = fileName;
-        process.StartInfo.UseShellExecute = false;
-        process.StartInfo.CreateNoWindow = true;
-        process.StartInfo.WorkingDirectory = workingDirectory;
-        foreach (string argument in arguments)
+        if (OperatingSystem.IsWindows())
         {
-            process.StartInfo.ArgumentList.Add(argument);
+            return WindowsDetachedProcess.Start(fileName, arguments, workingDirectory);
         }
 
+        using Process process = new() { StartInfo = UnixDetachedStartInfo(fileName, arguments, workingDirectory) };
         process.Start();
         return process.Id;
+    }
+
+    // /bin/sh first checks that fileName can be executed: if not, it says so on the caller's standard error and exits
+    // with 126, because a failed exec would report to the null device. Otherwise exec keeps the process id, and the
+    // redirections replace the inherited standard handles before the daemon runs. printf, not echo: dash's echo
+    // interprets backslashes in the path.
+    public static ProcessStartInfo UnixDetachedStartInfo(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        string workingDirectory)
+    {
+        ProcessStartInfo startInfo = new("/bin/sh")
+        {
+            UseShellExecute = false,
+            WorkingDirectory = workingDirectory,
+        };
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add(
+            """[ -x "$0" ] || { printf 'gh-ledger: cannot execute %s\n' "$0" >&2; exit 126; }; exec "$0" "$@" </dev/null >/dev/null 2>&1""");
+        startInfo.ArgumentList.Add(fileName);
+        foreach (string argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        return startInfo;
     }
 
     public bool IsProcessRunning(int processId)

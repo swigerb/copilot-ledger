@@ -34,7 +34,7 @@ On Windows, `gh ledger` needs `sh.exe` from Git for Windows. The `gh-ledger` exe
 
 ## The daemon
 
-`gh-ledger daemon run` runs the receiver in the foreground. `gh-ledger daemon start` starts it as a detached process, and `gh-ledger daemon stop` stops it. The daemon uses `daemon.json` for state, `daemon.lock` for single-instance locking, and `daemon.log` for detached-process logs.
+`gh-ledger daemon run` runs the receiver in the foreground. `gh-ledger daemon start` starts it as a detached process, and `gh-ledger daemon stop` stops it. `daemon start` gives the daemon the null device as its standard input, output, and error, so a script can capture its output, for example `started=$(gh-ledger daemon start)`, and go on while the daemon runs. The daemon uses `daemon.json` for state, `daemon.lock` for single-instance locking, and `daemon.log` for detached-process logs.
 
 After `install`, the daemon starts when you sign in. Copilot drops telemetry while the daemon is not running.
 
