@@ -162,8 +162,23 @@ internal static class ReportCommands
         Func<string, string?> lookup = name =>
             context.Platform.GetUserEnvironmentVariable(name) ??
             context.Platform.GetEnvironmentVariable(name);
-        IReadOnlyList<string> warnings = CopilotOtelEnvironment.GetWarnings(lookup);
+        List<string> warnings = [.. CopilotOtelEnvironment.GetWarnings(lookup)];
         bool enabled = IsOtelEnabled(lookup);
+        bool extension = GhExtension.IsInstalled(context.Platform);
+        string command = GhExtension.CommandName(context.Platform);
+        InstallManifest? manifest = await InstallCommands.TryReadManifestAsync(
+            InstallCommands.ManifestPath(context),
+            cancellationToken);
+        if (manifest is not null
+            && context.Platform.ProcessPath is string executable
+            && !string.Equals(
+                manifest.ExecutablePath,
+                executable,
+                context.Platform.IsWindows ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+        {
+            warnings.Add(
+                $"CopilotLedger was installed from {manifest.ExecutablePath}; run {command} install to use this copy instead.");
+        }
 
         SqliteLedgerStore store = new(context.DatabasePath, context.TimeProvider);
         await store.InitializeAsync(cancellationToken);
@@ -193,19 +208,22 @@ internal static class ReportCommands
                 ratesError,
                 enabled,
                 warnings,
-                totals);
+                totals,
+                extension);
             return 0;
         }
 
-        context.Out.WriteLine($"gh-ledger {GhLedgerCli.Version}");
-        context.Out.WriteLine($"Daemon:  {DaemonLine(running, state, context)}");
+        context.Out.WriteLine(extension
+            ? $"gh-ledger {GhLedgerCli.Version} (GitHub CLI extension)"
+            : $"gh-ledger {GhLedgerCli.Version}");
+        context.Out.WriteLine($"Daemon:  {DaemonLine(running, state, context, command)}");
         context.Out.WriteLine($"Ledger:  {context.DatabasePath}");
         context.Out.WriteLine(
             $"Rates:   {(ratesError is null ? ratesVersion : $"invalid overlay: {ratesError}")}");
         context.Out.WriteLine(
             $"Copilot: {(enabled
                 ? CopilotEnabledLine(lookup)
-                : "OTel export not enabled; run: gh-ledger install")}");
+                : $"OTel export not enabled; run: {command} install")}");
         foreach (string warning in warnings)
         {
             context.Out.WriteLine($"Warning: {warning}");
@@ -397,12 +415,14 @@ internal static class ReportCommands
         string? ratesError,
         bool enabled,
         IReadOnlyList<string> warnings,
-        IReadOnlyList<(string Label, Period Period, LedgerRollupRow Total)> totals)
+        IReadOnlyList<(string Label, Period Period, LedgerRollupRow Total)> totals,
+        bool extension)
     {
         using MemoryStream stream = new();
         using Utf8JsonWriter writer = new(stream, JsonOptions);
         writer.WriteStartObject();
         writer.WriteString("version", GhLedgerCli.Version);
+        writer.WriteBoolean("ghExtension", extension);
         writer.WritePropertyName("daemon");
         writer.WriteStartObject();
         writer.WriteBoolean("running", running);
@@ -620,11 +640,12 @@ internal static class ReportCommands
     private static string DaemonLine(
         bool running,
         DaemonState? state,
-        CliContext context)
+        CliContext context,
+        string command)
     {
         if (!running)
         {
-            return "not running; start it with: gh-ledger daemon start";
+            return $"not running; start it with: {command} daemon start";
         }
 
         return state is null

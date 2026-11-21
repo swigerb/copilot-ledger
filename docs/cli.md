@@ -4,19 +4,25 @@
 
 CopilotLedger runs a local OTLP receiver at `http://localhost:4318`. It records spend from Copilot CLI, the GitHub Copilot app, and VS Code in `~/.copilot-ledger/ledger.db`. It needs no Docker and no cloud service.
 
-## Build the binary
+## Get gh-ledger
 
-Publish one single-file, self-contained binary for your runtime identifier:
+Install the GitHub CLI extension:
+
+```shell
+gh extension install swigerb/gh-ledger
+```
+
+It downloads the release binary for your platform, which then runs as `gh ledger <command>`. Or publish one single-file, self-contained binary for your runtime identifier:
 
 ```shell
 dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release -r <rid> -o artifacts/gh-ledger
 ```
 
-Use `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `osx-x64`, or `osx-arm64`. Keep the binary in a permanent folder because `install` points the `gh ledger` alias at that binary.
+Use `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `osx-x64`, or `osx-arm64`. Keep the binary in a permanent folder, because `install` points the sign-in item and the `gh ledger` alias at it.
 
 ## Install
 
-Run `gh-ledger install`. It sets `COPILOT_OTEL_ENABLED=true` in the Windows user environment or in a marked block in your shell profile, sets the `gh ledger` alias, registers the daemon to start when you sign in, starts the daemon, and records the changes in `install.json`. It changes nothing else: in particular, it does not edit `PATH` or other OpenTelemetry variables.
+Run `gh-ledger install`. It sets `COPILOT_OTEL_ENABLED=true` in the Windows user environment or in a marked block in your shell profile, sets the `gh ledger` alias (unless gh-ledger is running as the GitHub CLI extension, which provides `gh ledger` itself), registers the daemon to start when you sign in, starts the daemon, and records the changes in `install.json`. It changes nothing else: in particular, it does not edit `PATH` or other OpenTelemetry variables.
 
 Use `gh-ledger install --dry-run` to print the changes without making them. Restart the GitHub Copilot app, VS Code, and open terminals afterward.
 
@@ -30,7 +36,11 @@ The sign-in item is the `CopilotLedger` value under `HKEY_CURRENT_USER\Software\
 - Any of `OTEL_EXPORTER_OTLP_CERTIFICATE`, `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE`, `OTEL_EXPORTER_OTLP_CLIENT_KEY`, `OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE`, `OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE`, or `OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY` means Copilot turns off export to `http://` endpoints.
 - `OTEL_EXPORTER_OTLP_PROTOCOL` or `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` set to `grpc` is unsupported because CopilotLedger accepts only `http/protobuf` and `http/json`.
 
-On Windows, `gh ledger` needs `sh.exe` from Git for Windows. The `gh-ledger` executable works without it.
+On Windows, the `gh ledger` alias needs `sh.exe` from Git for Windows; the extension and the `gh-ledger` executable don't.
+
+As the extension, `status` shows `(GitHub CLI extension)` after the version and names `gh ledger` commands. `status` warns when `install.json` names a different executable, for example after switching from a downloaded binary to the extension; run `install` again from the copy you want the sign-in item to start.
+
+The sign-in item and the daemon run the extension's binary, and Windows can't replace a running program. Stop the daemon before you upgrade: `gh ledger daemon stop`, `gh extension upgrade ledger`, then `gh ledger daemon start`.
 
 ## The daemon
 
@@ -112,7 +122,7 @@ Run `gh-ledger rates init` to create a starter overlay and `gh-ledger rates vali
 
 ## Uninstall
 
-`gh-ledger uninstall` stops the daemon if it is running, removes the sign-in item, and reverses the environment variable, profile block, and `gh` alias changes recorded by `install`, restoring the previous environment value when applicable. `gh-ledger uninstall --dry-run` prints the changes without applying them. Ledger data is kept.
+`gh-ledger uninstall` stops the daemon if it is running, removes the sign-in item, and reverses the environment variable, profile block, and `gh` alias changes recorded by `install`, restoring the previous environment value when applicable. `gh-ledger uninstall --dry-run` prints the changes without applying them. Ledger data is kept. If you installed the GitHub CLI extension, run `gh extension remove ledger` afterward.
 
 ## Privacy
 
@@ -121,6 +131,7 @@ CopilotLedger stores no prompt or response content, working directories, or remo
 ## Troubleshooting
 
 - **Port 4318 in use.** Stop the other listener or the old daemon before starting CopilotLedger.
+- **`gh extension upgrade` or `remove` fails on Windows.** The daemon is running from the extension's binary. Run `gh ledger daemon stop` first.
 - **Nothing recorded.** Run `gh-ledger status`, address its warnings, and restart Copilot.
 - **Desktop-launched apps may not read the profile.** Apps started outside a terminal, such as from the macOS Dock or a Linux desktop launcher, may not read shell profiles, so they may not see the `COPILOT_OTEL_ENABLED` that `install` put there. If no data is recorded after using such an app, start it from a terminal.
 - **Move the data directory.** Set `COPILOT_LEDGER_HOME` before running `gh-ledger`.

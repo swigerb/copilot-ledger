@@ -379,6 +379,67 @@ public sealed class ReportCommandTests
             run.Out);
     }
 
+    [Fact]
+    public async Task RP12_StatusAsGhExtensionNamesGhLedgerCommands()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = await SeededHarnessAsync(
+            temp.Path,
+            platform =>
+            {
+                platform.ProcessPath = "/home/me/.local/share/gh/extensions/gh-ledger/gh-ledger";
+                platform.ExistingFiles.Add("/home/me/.local/share/gh/extensions/gh-ledger/manifest.yml");
+            });
+
+        CliRun text = await harness.RunAsync("status");
+        CliRun json = await harness.RunAsync("status", "--json");
+
+        Assert.Equal(0, text.ExitCode);
+        Assert.Equal(
+            StatusText(temp.Path)
+                .Replace($"gh-ledger {GhLedgerCli.Version}\n", $"gh-ledger {GhLedgerCli.Version} (GitHub CLI extension)\n", StringComparison.Ordinal)
+                .Replace("start it with: gh-ledger daemon start", "start it with: gh ledger daemon start", StringComparison.Ordinal)
+                .Replace("run: gh-ledger install", "run: gh ledger install", StringComparison.Ordinal),
+            text.Out);
+        Assert.Equal(0, json.ExitCode);
+        using JsonDocument document = JsonDocument.Parse(json.Out);
+        Assert.True(document.RootElement.GetProperty("ghExtension").GetBoolean());
+        Assert.Empty(document.RootElement.GetProperty("warnings").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task RP13_StatusWarnsWhenInstalledFromAnotherExecutable()
+    {
+        using TempDirectory temp = new();
+        await using CliHarness harness = await SeededHarnessAsync(temp.Path);
+        string manifest = Path.Combine(temp.Path, "data", "install.json");
+        await File.WriteAllTextAsync(
+            manifest,
+            """
+            {"schemaVersion":1,"installedAt":"2026-11-20T00:00:00+00:00","executablePath":"/opt/old/gh-ledger","windowsUserVariableSet":false,"windowsUserVariablePreviousValue":null,"profileFiles":[],"ghAliasSet":false}
+            """);
+        await FileRetry.ReadAllTextAsync(manifest);
+        const string Warning =
+            "CopilotLedger was installed from /opt/old/gh-ledger; run gh-ledger install to use this copy instead.";
+
+        CliRun text = await harness.RunAsync("status");
+        CliRun json = await harness.RunAsync("status", "--json");
+
+        Assert.Equal(0, text.ExitCode);
+        Assert.Equal(
+            StatusText(temp.Path).Replace(
+                "run: gh-ledger install\n",
+                $"run: gh-ledger install\nWarning: {Warning}\n",
+                StringComparison.Ordinal),
+            text.Out);
+        Assert.Equal(0, json.ExitCode);
+        using JsonDocument document = JsonDocument.Parse(json.Out);
+        Assert.False(document.RootElement.GetProperty("ghExtension").GetBoolean());
+        Assert.Equal(
+            [Warning],
+            document.RootElement.GetProperty("warnings").EnumerateArray().Select(item => item.GetString()));
+    }
+
     private static async Task<CliHarness> SeededHarnessAsync(
         string root,
         Action<FakeCliPlatform>? configure = null)
@@ -497,7 +558,7 @@ public sealed class ReportCommandTests
 
     private static string StatusText(string root) =>
         Normalize($"""
-        gh-ledger 0.3.0
+        gh-ledger 0.4.0
         Daemon:  not running; start it with: gh-ledger daemon start
         Ledger:  {Path.Combine(root, "data", "ledger.db")}
         Rates:   2026-11-20

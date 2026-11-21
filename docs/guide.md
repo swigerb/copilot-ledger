@@ -1,29 +1,29 @@
 # Getting the most from CopilotLedger
 
-Use CopilotLedger to see where AI spend goes, budget a branch, and notice runaway agent loops. This guide covers common tasks. See [Using gh-ledger](cli.md) for the full options and [Configuring CopilotLedger](configuration.md) for pricing. Commands are shown as `gh-ledger <command>`. After `install`, `gh ledger <command>` also works; otherwise run the binary by its full path or add its folder to your PATH.
+Use CopilotLedger to see where AI spend goes, budget a branch, and notice runaway agent loops. This guide covers common tasks. See [Using gh-ledger](cli.md) for the full options and [Configuring CopilotLedger](configuration.md) for pricing. Commands are shown as `gh-ledger <command>`. With the GitHub CLI extension, or after `install` sets the alias, run them as `gh ledger <command>`.
 
 ## Enable it
 
-### Build the binary
+### Install it
 
-Build a single-file binary for your platform:
+Install the GitHub CLI extension and run its `install` command:
+
+```shell
+gh extension install swigerb/gh-ledger
+gh ledger install
+```
+
+To build from source instead, publish a single-file binary for your platform, move it to a permanent folder, and run its `install`:
 
 ```shell
 dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release \
   -r <rid> -o artifacts/gh-ledger
-```
-
-Replace `<rid>` with `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `osx-x64`, or `osx-arm64`. Move the binary to a permanent folder because `install` points the `gh ledger` alias there.
-
-### Install it
-
-Run the binary directly:
-
-```shell
 /path/to/gh-ledger install
 ```
 
-`install` sets `COPILOT_OTEL_ENABLED=true` for your user, sets the `gh ledger` alias, starts the daemon, and records its changes in `install.json`. Use `--dry-run` to print the changes first.
+Replace `<rid>` with `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `osx-x64`, or `osx-arm64`.
+
+`install` sets `COPILOT_OTEL_ENABLED=true` for your user, starts the daemon, and records its changes in `install.json`. For a binary you built, it also sets the `gh ledger` alias; the extension doesn't need one. Use `--dry-run` to print the changes first.
 
 It also registers the daemon to start when you sign in:
 
@@ -90,6 +90,21 @@ gh-ledger branch --all-repos --since 7d --json
 ```
 
 Text tables round money to cents. JSON preserves exact decimal amounts.
+
+## Show spend on pull requests
+
+Give reviewers the AI spend behind a pull request. On the pull request's branch, write its receipt and commit it:
+
+```shell
+gh-ledger export-pr
+git add .github/copilot-ledger/receipts
+git commit -m "Add CopilotLedger receipt"
+git push
+```
+
+The receipt lists GitHub AI Credits by model, Foundry BYOK spend, local-model tokens with the cloud spend they avoided, circuit-breaker trips, and the most expensive prompt, with the data as JSON. Its totals match `gh-ledger branch --since all`. Run `export-pr` again before you push more work, so the receipt stays current.
+
+Add the CopilotLedger action to the repository once, and it posts the receipt on the pull request and updates that comment on later pushes. See [Posting PR receipts](action.md) for the workflow.
 
 ## Stop runaway loops
 
@@ -227,3 +242,5 @@ Stop the daemon, remove the sign-in item, and undo the install changes:
 gh-ledger uninstall
 ```
 Use `--dry-run` to print the changes first. Your ledger data remains in `~/.copilot-ledger/`.
+
+If you installed the GitHub CLI extension, remove it after `uninstall`, with `gh extension remove ledger`. On Windows, the daemon must be stopped first, because Windows can't replace or delete a running program; `uninstall` stops it.
