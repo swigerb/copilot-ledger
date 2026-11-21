@@ -12,6 +12,7 @@ CopilotLedger works with no configuration. This page explains how it prices usag
 | `~/.copilot-ledger/daemon.json` | Written while the daemon runs: process ID, endpoint, start time, and database path |
 | `~/.copilot-ledger/daemon.lock` | Held while the daemon runs, so only one daemon runs at a time |
 | `~/.copilot-ledger/daemon.log` | The daemon's log when it's started with `gh-ledger daemon start` |
+| `~/.copilot-ledger/install.json` | What `gh-ledger install` changed, so `gh-ledger uninstall` can undo it |
 
 Set the `COPILOT_LEDGER_HOME` environment variable to keep these files in another directory.
 
