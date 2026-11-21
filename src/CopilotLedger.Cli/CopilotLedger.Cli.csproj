@@ -3,7 +3,8 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>gh-ledger</AssemblyName>
     <RootNamespace>CopilotLedger.Cli</RootNamespace>
-    <Version>0.2.0</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>0.3.0</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <InvariantGlobalization>true</InvariantGlobalization>
     <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>

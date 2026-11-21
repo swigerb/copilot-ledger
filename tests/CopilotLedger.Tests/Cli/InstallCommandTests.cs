@@ -1,3 +1,4 @@
+using System.Security;
 using System.Text.Json;
 using CopilotLedger.Cli;
 using CopilotLedger.Tests.TestSupport;
@@ -37,11 +38,15 @@ public sealed class InstallCommandTests
             Set COPILOT_OTEL_ENABLED=true for your user account.
             Set gh alias: gh ledger runs C:\tools\gh-ledger.exe.
             Warning: GitHub CLI needs sh.exe from Git for Windows to run shell aliases, so gh ledger won't work until Git for Windows is installed. Run gh-ledger directly.
+            gh-ledger will start when you sign in.
             gh-ledger daemon started (pid {Environment.ProcessId}) on http://localhost:4318.
             CopilotLedger is installed. Restart the GitHub Copilot app, VS Code, and open terminals so they pick up COPILOT_OTEL_ENABLED.
 
             """),
             run.Out);
+        Assert.Equal(
+            [("CopilotLedger", "\"C:\\tools\\gh-ledger.exe\" daemon start")],
+            platform.StartupCommandWrites);
         using JsonDocument manifest = JsonDocument.Parse(
             await File.ReadAllTextAsync(ManifestPath(temp.Path)));
         Assert.Equal(
@@ -56,6 +61,9 @@ public sealed class InstallCommandTests
         Assert.Empty(
             manifest.RootElement.GetProperty("profileFiles").EnumerateArray());
         Assert.True(manifest.RootElement.GetProperty("ghAliasSet").GetBoolean());
+        Assert.Equal(
+            @"HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CopilotLedger",
+            manifest.RootElement.GetProperty("startupItem").GetString());
     }
 
     [Fact]
@@ -89,11 +97,15 @@ public sealed class InstallCommandTests
             Normalize($"""
             Set COPILOT_OTEL_ENABLED=true for your user account.
             Set gh alias: gh ledger runs C:\tools\gh-ledger.exe.
+            gh-ledger will start when you sign in.
             gh-ledger daemon started (pid {Environment.ProcessId}) on http://localhost:4318.
             CopilotLedger is installed. Restart the GitHub Copilot app, VS Code, and open terminals so they pick up COPILOT_OTEL_ENABLED.
 
             """),
             run.Out);
+        Assert.Equal(
+            [("CopilotLedger", "\"C:\\tools\\gh-ledger.exe\" daemon start")],
+            platform.StartupCommandWrites);
         using JsonDocument manifest = JsonDocument.Parse(
             await File.ReadAllTextAsync(ManifestPath(temp.Path)));
         Assert.Equal(
@@ -108,6 +120,9 @@ public sealed class InstallCommandTests
         Assert.Empty(
             manifest.RootElement.GetProperty("profileFiles").EnumerateArray());
         Assert.True(manifest.RootElement.GetProperty("ghAliasSet").GetBoolean());
+        Assert.Equal(
+            @"HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CopilotLedger",
+            manifest.RootElement.GetProperty("startupItem").GetString());
     }
 
     [Fact]
@@ -125,9 +140,11 @@ public sealed class InstallCommandTests
         Assert.StartsWith(
             "COPILOT_OTEL_ENABLED=true is already set for your user account.\n",
             second.Out);
+        Assert.Contains("gh-ledger already starts when you sign in.", second.Out);
         Assert.Contains(
             $"gh-ledger daemon is already running (pid {Environment.ProcessId}).",
             second.Out);
+        Assert.Single(platform.StartupCommandWrites);
         using JsonDocument manifest = JsonDocument.Parse(
             await File.ReadAllTextAsync(ManifestPath(temp.Path)));
         Assert.True(
@@ -304,12 +321,14 @@ public sealed class InstallCommandTests
         Assert.Empty(platform.UserVariableWrites);
         Assert.Empty(platform.ProcessRuns);
         Assert.Empty(platform.DetachedStarts);
+        Assert.Empty(platform.StartupCommandWrites);
         Assert.False(File.Exists(ManifestPath(temp.Path)));
         Assert.Equal(
             Normalize("""
             Would set COPILOT_OTEL_ENABLED=true for your user account.
             Would set gh alias: gh ledger runs C:\tools\gh-ledger.exe.
             Warning: GitHub CLI needs sh.exe from Git for Windows to run shell aliases, so gh ledger won't work until Git for Windows is installed. Run gh-ledger directly.
+            Would start gh-ledger when you sign in.
             Would start the gh-ledger daemon.
             Dry run: no changes made.
 
@@ -359,6 +378,12 @@ public sealed class InstallCommandTests
         if (caseName == "after-windows")
         {
             Assert.Contains("gh-ledger daemon stopped.", uninstall.Out);
+            Assert.Contains(
+                "gh-ledger will no longer start when you sign in.",
+                uninstall.Out);
+            Assert.Equal(
+                ("CopilotLedger", (string?)null),
+                platform.StartupCommandWrites[^1]);
             Assert.Equal(
                 ("COPILOT_OTEL_ENABLED", (string?)null),
                 platform.UserVariableWrites[^1]);
@@ -375,6 +400,16 @@ public sealed class InstallCommandTests
         }
         else if (caseName == "after-unix")
         {
+            Assert.Contains(
+                "gh-ledger will no longer start when you sign in.",
+                uninstall.Out);
+            Assert.False(File.Exists(
+                Path.Combine(
+                    temp.Path,
+                    "home",
+                    ".config",
+                    "autostart",
+                    "copilot-ledger.desktop")));
             Assert.Equal(
                 "export FOO=1\n",
                 (await File.ReadAllTextAsync(
@@ -396,6 +431,307 @@ public sealed class InstallCommandTests
                 "Left COPILOT_OTEL_ENABLED unchanged because it is no longer true.",
                 uninstall.Out);
             Assert.Single(platform.UserVariableWrites);
+        }
+    }
+
+    [Fact]
+    public async Task IN11_LinuxAutostart()
+    {
+        using TempDirectory temp = new();
+        FakeCliPlatform platform = UnixPlatform(temp.Path);
+        await using CliHarness harness = new(temp.Path, platform);
+        string autostart = Path.Combine(
+            temp.Path,
+            "home",
+            ".config",
+            "autostart",
+            "copilot-ledger.desktop");
+
+        CliRun install = await harness.RunAsync("install");
+
+        Assert.Contains(
+            "gh-ledger will start when you sign in.",
+            install.Out);
+        Assert.Equal(
+            """
+            [Desktop Entry]
+            Type=Application
+            Name=CopilotLedger
+            Comment=Starts the CopilotLedger daemon
+            Exec="/opt/bin/gh-ledger" daemon start
+            Terminal=false
+            """.ReplaceLineEndings("\n") + "\n",
+            await File.ReadAllTextAsync(autostart));
+        using (JsonDocument manifest = JsonDocument.Parse(
+                   await File.ReadAllTextAsync(ManifestPath(temp.Path))))
+        {
+            Assert.Equal(
+                autostart,
+                manifest.RootElement.GetProperty("startupItem").GetString());
+        }
+
+        CliRun second = await harness.RunAsync("install");
+        Assert.Contains("gh-ledger already starts when you sign in.", second.Out);
+
+        CliRun uninstall = await harness.RunAsync("uninstall");
+        Assert.Contains(
+            "gh-ledger will no longer start when you sign in.",
+            uninstall.Out);
+        Assert.False(File.Exists(autostart));
+    }
+
+    public static TheoryData<string> XdgConfigHomes => new()
+    {
+        "absolute",
+        "relative",
+    };
+
+    [Theory]
+    [MemberData(nameof(XdgConfigHomes))]
+    public async Task IN12_XdgConfigHome(string caseName)
+    {
+        using TempDirectory temp = new();
+        FakeCliPlatform platform = UnixPlatform(temp.Path);
+        string? xdg = caseName == "absolute"
+            ? Path.Combine(temp.Path, "xdg")
+            : Path.Combine("relative", "xdg");
+        platform.ProcessVariables["XDG_CONFIG_HOME"] = xdg;
+        string expected = Path.Combine(
+            caseName == "absolute"
+                ? xdg
+                : Path.Combine(temp.Path, "home", ".config"),
+            "autostart",
+            "copilot-ledger.desktop");
+        await using CliHarness harness = new(temp.Path, platform);
+
+        Assert.Equal(0, (await harness.RunAsync("install")).ExitCode);
+
+        Assert.True(File.Exists(expected));
+        if (caseName == "absolute")
+        {
+            Assert.False(Directory.Exists(
+                Path.Combine(temp.Path, "home", ".config")));
+        }
+    }
+
+    [Fact]
+    public async Task IN13_MacOSLaunchAgent()
+    {
+        using TempDirectory temp = new();
+        FakeCliPlatform platform = UnixPlatform(temp.Path);
+        platform.IsMacOS = true;
+        await using CliHarness harness = new(temp.Path, platform);
+        string agent = Path.Combine(
+            temp.Path,
+            "home",
+            "Library",
+            "LaunchAgents",
+            "io.github.swigerb.copilot-ledger.plist");
+
+        CliRun install = await harness.RunAsync("install");
+
+        Assert.Contains(
+            "gh-ledger will start when you sign in.",
+            install.Out);
+        Assert.Equal(
+            $$"""
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+              <key>Label</key>
+              <string>io.github.swigerb.copilot-ledger</string>
+              <key>ProgramArguments</key>
+              <array>
+                <string>/opt/bin/gh-ledger</string>
+                <string>daemon</string>
+                <string>run</string>
+                <string>--log-file</string>
+                <string>{{SecurityElement.Escape(Path.Combine(temp.Path, "data", "daemon.log"))}}</string>
+              </array>
+              <key>RunAtLoad</key>
+              <true/>
+            </dict>
+            </plist>
+            """.ReplaceLineEndings("\n") + "\n",
+            await File.ReadAllTextAsync(agent));
+        using (JsonDocument manifest = JsonDocument.Parse(
+                   await File.ReadAllTextAsync(ManifestPath(temp.Path))))
+        {
+            Assert.Equal(
+                agent,
+                manifest.RootElement.GetProperty("startupItem").GetString());
+        }
+
+        CliRun uninstall = await harness.RunAsync("uninstall");
+        Assert.Contains(
+            "gh-ledger will no longer start when you sign in.",
+            uninstall.Out);
+        Assert.False(File.Exists(agent));
+    }
+
+    public static TheoryData<string> UnregisterableItems => new()
+    {
+        "windows-too-long",
+        "linux-characters",
+    };
+
+    [Theory]
+    [MemberData(nameof(UnregisterableItems))]
+    public async Task IN14_ItemsThatCantBeRegistered(string caseName)
+    {
+        using TempDirectory temp = new();
+        FakeCliPlatform platform = caseName == "windows-too-long"
+            ? WindowsPlatform()
+            : UnixPlatform(temp.Path);
+        if (caseName == "windows-too-long")
+        {
+            platform.ProcessPath = @"C:\" + new string('a', 250) + @"\gh-ledger.exe";
+        }
+        else
+        {
+            platform.ProcessPath = "/opt/my$tools/gh-ledger";
+        }
+
+        await using CliHarness harness = new(temp.Path, platform);
+        CliRun run = await harness.RunAsync("install");
+
+        Assert.Equal(0, run.ExitCode);
+        if (caseName == "windows-too-long")
+        {
+            Assert.Contains(
+                "Warning: the gh-ledger path is too long for a sign-in command, so gh-ledger won't start when you sign in. Run gh-ledger daemon start after you sign in.",
+                run.Out);
+            Assert.Empty(platform.StartupCommandWrites);
+        }
+        else
+        {
+            Assert.Contains(
+                "Warning: the gh-ledger path has characters that a desktop autostart entry can't run, so gh-ledger won't start when you sign in. Run gh-ledger daemon start after you sign in.",
+                run.Out);
+            Assert.False(File.Exists(
+                Path.Combine(
+                    temp.Path,
+                    "home",
+                    ".config",
+                    "autostart",
+                    "copilot-ledger.desktop")));
+        }
+
+        using JsonDocument manifest = JsonDocument.Parse(
+            await File.ReadAllTextAsync(ManifestPath(temp.Path)));
+        Assert.Equal(
+            JsonValueKind.Null,
+            manifest.RootElement.GetProperty("startupItem").ValueKind);
+    }
+
+    [Fact]
+    public async Task IN15_CopilotLedgerHomeWarnsBeforeRegistration()
+    {
+        using TempDirectory temp = new();
+        FakeCliPlatform platform = WindowsPlatform();
+        platform.ProcessVariables["COPILOT_LEDGER_HOME"] =
+            Path.Combine(temp.Path, "data");
+        await using CliHarness harness = new(temp.Path, platform);
+
+        CliRun run = await harness.RunAsync("install");
+
+        Assert.Equal(0, run.ExitCode);
+        int warning = run.Out.IndexOf(
+            "Warning: COPILOT_LEDGER_HOME is set. The daemon that starts when you sign in uses it only if your sign-in environment sets it too.",
+            StringComparison.Ordinal);
+        int registration = run.Out.IndexOf(
+            "gh-ledger will start when you sign in.",
+            StringComparison.Ordinal);
+        Assert.True(warning >= 0);
+        Assert.True(registration > warning);
+    }
+
+    public static TheoryData<string> StartupFailures => new()
+    {
+        "windows-register-fails",
+        "linux-register-fails",
+        "windows-remove-fails",
+    };
+
+    [Theory]
+    [MemberData(nameof(StartupFailures))]
+    public async Task IN16_SignInItemsThatFail(string caseName)
+    {
+        using TempDirectory temp = new();
+        FakeCliPlatform platform = caseName == "linux-register-fails"
+            ? UnixPlatform(temp.Path)
+            : WindowsPlatform();
+        if (caseName == "windows-register-fails")
+        {
+            platform.StartupCommandException =
+                new UnauthorizedAccessException("Access to the registry key is denied.");
+        }
+        else if (caseName == "linux-register-fails")
+        {
+            string config = Path.Combine(temp.Path, "home", ".config");
+            Directory.CreateDirectory(config);
+            await File.WriteAllTextAsync(
+                Path.Combine(config, "autostart"),
+                string.Empty);
+        }
+
+        await using CliHarness harness = new(temp.Path, platform);
+
+        if (caseName == "windows-remove-fails")
+        {
+            Assert.Equal(0, (await harness.RunAsync("install")).ExitCode);
+            platform.StartupCommandException =
+                new System.Security.SecurityException(
+                    "Requested registry access is not allowed.");
+
+            CliRun uninstall = await harness.RunAsync("uninstall");
+
+            Assert.Equal(0, uninstall.ExitCode);
+            Assert.Contains(
+                "Warning: could not remove the sign-in item: Requested registry access is not allowed.",
+                uninstall.Out);
+            Assert.True(platform.StartupCommands.ContainsKey("CopilotLedger"));
+            Assert.EndsWith(
+                $"CopilotLedger is uninstalled. Your ledger data is still in {Path.Combine(temp.Path, "data")}.\n",
+                uninstall.Out);
+            return;
+        }
+
+        CliRun install = await harness.RunAsync("install");
+
+        Assert.Equal(0, install.ExitCode);
+        if (caseName == "windows-register-fails")
+        {
+            Assert.Contains(
+                "Warning: could not register the sign-in item: Access to the registry key is denied.",
+                install.Out);
+            Assert.Contains(
+                $"gh-ledger daemon started (pid {Environment.ProcessId}) on http://localhost:4318.",
+                install.Out);
+            Assert.DoesNotContain(
+                "gh-ledger will start when you sign in.",
+                install.Out);
+            Assert.Empty(platform.StartupCommandWrites);
+        }
+        else
+        {
+            Assert.Contains(
+                install.Out.Split('\n'),
+                line => line.StartsWith(
+                    "Warning: could not register the sign-in item: ",
+                    StringComparison.Ordinal));
+        }
+
+        using JsonDocument manifest = JsonDocument.Parse(
+            await File.ReadAllTextAsync(ManifestPath(temp.Path)));
+        Assert.Equal(
+            JsonValueKind.Null,
+            manifest.RootElement.GetProperty("startupItem").ValueKind);
+        if (caseName == "linux-register-fails")
+        {
+            Assert.True(File.Exists(
+                Path.Combine(temp.Path, "home", ".config", "autostart")));
         }
     }
 

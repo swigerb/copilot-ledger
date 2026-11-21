@@ -13,6 +13,8 @@ public interface ICliPlatform
     string? GetEnvironmentVariable(string name);                           // current process
     string? GetUserEnvironmentVariable(string name);                       // Windows user scope; null on other platforms
     void SetUserEnvironmentVariable(string name, string? value);           // Windows user scope; null deletes; other platforms throw PlatformNotSupportedException
+    string? GetStartupCommand(string name);                                // Windows: the HKCU\Software\Microsoft\Windows\CurrentVersion\Run value; null when absent and on other platforms
+    void SetStartupCommand(string name, string? command);                  // Windows: sets that value (REG_SZ), or deletes it when command is null; other platforms throw PlatformNotSupportedException
     bool FileExists(string path);
     string? FindOnPath(string fileName);                                   // full path of an executable on PATH, or null
     Task<ProcessRunResult> RunAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken);

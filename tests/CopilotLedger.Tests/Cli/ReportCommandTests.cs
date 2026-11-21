@@ -497,7 +497,7 @@ public sealed class ReportCommandTests
 
     private static string StatusText(string root) =>
         Normalize($"""
-        gh-ledger 0.2.0
+        gh-ledger 0.3.0
         Daemon:  not running; start it with: gh-ledger daemon start
         Ledger:  {Path.Combine(root, "data", "ledger.db")}
         Rates:   2026-11-20
