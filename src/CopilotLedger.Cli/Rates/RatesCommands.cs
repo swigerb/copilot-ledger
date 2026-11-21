@@ -23,7 +23,7 @@ internal static class RatesCommands
 
     public static Command Create(CliContext context)
     {
-        Command rates = new("rates", "Create and validate rates overlays.");
+        Command rates = new("rates", "Create, validate, and update rates.");
         Command init = new("init", "Create a starter rates overlay.");
         Option<bool> force = new("--force")
         {
@@ -45,6 +45,12 @@ internal static class RatesCommands
             (ParseResult result, CancellationToken _) =>
                 Task.FromResult(Validate(context, result.GetValue(file))));
         rates.Add(validate);
+
+        Command update = new("update", "Download the latest published rates.");
+        update.SetAction(
+            (ParseResult _, CancellationToken cancellationToken) =>
+                RatesUpdate.RunAsync(context, cancellationToken));
+        rates.Add(update);
         return rates;
     }
 
@@ -77,6 +83,12 @@ internal static class RatesCommands
         string path = explicitFile
             ? Path.GetFullPath(file!, context.WorkingDirectory)
             : context.RatesOverlayPath;
+        RatesBase rates = RateCardFiles.LoadBase(context);
+        if (rates.Warning is not null)
+        {
+            context.Out.WriteLine($"Warning: {rates.Warning}");
+        }
+
         if (!File.Exists(path))
         {
             if (explicitFile)
@@ -86,14 +98,13 @@ internal static class RatesCommands
             }
 
             context.Out.WriteLine(
-                $"No rates overlay at {path}; using the built-in rates ({JsonRateCardCalculator.LoadEmbedded().RatesVersion}).");
+                $"No rates overlay at {path}; using the {(rates.DownloadedJson is null ? "built-in" : "downloaded")} rates ({rates.Version}).");
             return 0;
         }
 
         try
         {
-            JsonRateCardCalculator calculator =
-                JsonRateCardCalculator.LoadEmbeddedWithOverlay(path);
+            JsonRateCardCalculator calculator = RateCardFiles.Load(rates, path);
             context.Out.WriteLine(
                 $"{path} is valid. Rates version: {calculator.RatesVersion}.");
             return 0;

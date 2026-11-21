@@ -77,6 +77,29 @@ public sealed class JsonRateCardCalculator : ICreditCalculator
             : LoadEmbedded();
     }
 
+    // baseJson is a complete rates document, such as a downloaded rates.json; its errors have no prefix. When overlayPath
+    // isn't null, that overlay is merged as LoadEmbeddedWithOverlay merges it, and its errors start with overlayPath.
+    public static JsonRateCardCalculator LoadWithOverlay(string baseJson, string? overlayPath)
+    {
+        ArgumentNullException.ThrowIfNull(baseJson);
+        if (overlayPath is null)
+        {
+            return Create(baseJson, null, null);
+        }
+
+        string overlayJson;
+        try
+        {
+            overlayJson = File.ReadAllText(overlayPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidDataException($"{overlayPath}: could not read rates overlay.", ex);
+        }
+
+        return Create(baseJson, overlayJson, overlayPath);
+    }
+
     public static JsonRateCardCalculator Parse(string json, string? overlayJson = null)
     {
         ArgumentNullException.ThrowIfNull(json);
