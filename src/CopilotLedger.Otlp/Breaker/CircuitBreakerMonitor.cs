@@ -23,7 +23,6 @@ public sealed class CircuitBreakerMonitor
         IEnumerable<string> traceIds,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(traceIds);
         string[] orderedTraceIds = traceIds
             .Distinct(StringComparer.Ordinal)
             .OrderBy(traceId => traceId, StringComparer.Ordinal)
@@ -159,8 +158,7 @@ public sealed class CircuitBreakerMonitor
         {
             await CircuitFlagFile.SyncAsync(
                 _store,
-                trip.RepositoryRoot,
-                cancellationToken);
+                trip.RepositoryRoot);
         }
         catch (Exception ex) when (
             ex is IOException or UnauthorizedAccessException)

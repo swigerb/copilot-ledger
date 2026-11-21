@@ -240,12 +240,11 @@ public sealed class CircuitBreakerMonitorTests
             """;
         Assert.Equal(
             expected.ReplaceLineEndings("\n"),
-            File.ReadAllText(flag).ReplaceLineEndings("\n"));
+            File.ReadAllText(flag));
         Assert.Equal(
             "*\n",
             File.ReadAllText(
-                Path.Combine(harness.Repo, ".copilot-ledger", ".gitignore"))
-                .ReplaceLineEndings("\n"));
+                Path.Combine(harness.Repo, ".copilot-ledger", ".gitignore")));
 
         await harness.Store.ResetBreakerTripsAsync(BreakerTripFilter.All);
         await CircuitFlagFile.SyncAsync(harness.Store, harness.Repo);
@@ -274,7 +273,9 @@ public sealed class CircuitBreakerMonitorTests
         AssertTripH(Assert.Single(
             await harness.Store.GetOpenBreakerTripsAsync(BreakerTripFilter.All)),
             harness.Repo);
-        Assert.Single(harness.Sink.Alerts);
+        Assert.Equal(
+            BreakerAlertKind.Trip,
+            Assert.Single(harness.Sink.Alerts).Kind);
         string warning = Assert.Single(harness.Sink.Warnings);
         Assert.StartsWith(
             $"could not update {Path.Combine(directory, "CIRCUIT_OPEN")}: ",

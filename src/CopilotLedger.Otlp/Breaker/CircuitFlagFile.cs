@@ -74,8 +74,6 @@ public static class CircuitFlagFile
         string repositoryRoot,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(store);
-        ArgumentNullException.ThrowIfNull(repositoryRoot);
         if (!Directory.Exists(repositoryRoot))
         {
             return;
