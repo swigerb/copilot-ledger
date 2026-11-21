@@ -120,6 +120,8 @@ The first three are read-only. `set_branch_budget` changes only the budget, so C
 
 Run `gh-ledger rates init` to create a starter overlay and `gh-ledger rates validate` to validate it. See [configuration.md](configuration.md) for the rates format and pricing channels.
 
+`gh-ledger rates update` downloads `rates.json` from the latest gh-ledger release and keeps it when it's newer than the rates in use and your overlay still applies to it. It uses your system proxy. Restart the daemon afterward; it reads rates when it starts.
+
 ## Uninstall
 
 `gh-ledger uninstall` stops the daemon if it is running, removes the sign-in item, and reverses the environment variable, profile block, and `gh` alias changes recorded by `install`, restoring the previous environment value when applicable. `gh-ledger uninstall --dry-run` prints the changes without applying them. Ledger data is kept. If you installed the GitHub CLI extension, run `gh extension remove ledger` afterward.

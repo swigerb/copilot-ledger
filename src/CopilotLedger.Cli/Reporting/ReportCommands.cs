@@ -5,6 +5,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using CopilotLedger.Cli.Daemon;
 using CopilotLedger.Cli.Install;
+using CopilotLedger.Cli.Rates;
 using CopilotLedger.Core.Git;
 using CopilotLedger.Core.Pricing;
 using CopilotLedger.Storage;
@@ -144,14 +145,12 @@ internal static class ReportCommands
     {
         bool running = DaemonFiles.IsHeld(context);
         DaemonState? state = running ? DaemonFiles.TryReadState(context) : null;
+        RatesBase rates = RateCardFiles.LoadBase(context);
         string? ratesVersion;
         string? ratesError = null;
         try
         {
-            ratesVersion = File.Exists(context.RatesOverlayPath)
-                ? JsonRateCardCalculator.LoadEmbeddedWithOverlay(
-                    context.RatesOverlayPath).RatesVersion
-                : JsonRateCardCalculator.LoadEmbedded().RatesVersion;
+            ratesVersion = RateCardFiles.Load(rates, RateCardFiles.OverlayPath(context)).RatesVersion;
         }
         catch (InvalidDataException ex)
         {
@@ -178,6 +177,11 @@ internal static class ReportCommands
         {
             warnings.Add(
                 $"CopilotLedger was installed from {manifest.ExecutablePath}; run {command} install to use this copy instead.");
+        }
+
+        if (rates.Warning is not null)
+        {
+            warnings.Add(rates.Warning);
         }
 
         SqliteLedgerStore store = new(context.DatabasePath, context.TimeProvider);
@@ -209,7 +213,8 @@ internal static class ReportCommands
                 enabled,
                 warnings,
                 totals,
-                extension);
+                extension,
+                rates.DownloadedJson is not null);
             return 0;
         }
 
@@ -219,7 +224,7 @@ internal static class ReportCommands
         context.Out.WriteLine($"Daemon:  {DaemonLine(running, state, context, command)}");
         context.Out.WriteLine($"Ledger:  {context.DatabasePath}");
         context.Out.WriteLine(
-            $"Rates:   {(ratesError is null ? ratesVersion : $"invalid overlay: {ratesError}")}");
+            $"Rates:   {(ratesError is not null ? $"invalid overlay: {ratesError}" : rates.DownloadedJson is null ? ratesVersion : $"{ratesVersion} (downloaded)")}");
         context.Out.WriteLine(
             $"Copilot: {(enabled
                 ? CopilotEnabledLine(lookup)
@@ -416,7 +421,8 @@ internal static class ReportCommands
         bool enabled,
         IReadOnlyList<string> warnings,
         IReadOnlyList<(string Label, Period Period, LedgerRollupRow Total)> totals,
-        bool extension)
+        bool extension,
+        bool downloadedRates)
     {
         using MemoryStream stream = new();
         using Utf8JsonWriter writer = new(stream, JsonOptions);
@@ -450,6 +456,7 @@ internal static class ReportCommands
             writer.WriteString("ratesVersion", ratesVersion);
         }
 
+        writer.WriteString("ratesSource", downloadedRates ? "downloaded" : "built-in");
         if (ratesError is null)
         {
             writer.WriteNull("ratesError");

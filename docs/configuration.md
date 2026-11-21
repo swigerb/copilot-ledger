@@ -9,6 +9,7 @@ CopilotLedger works with no configuration. This page explains how it prices usag
 | `~/.copilot-ledger/` | Data directory (`%USERPROFILE%\.copilot-ledger\` on Windows) |
 | `~/.copilot-ledger/ledger.db` | The local SQLite ledger (WAL mode) |
 | `~/.copilot-ledger/rates.json` | Optional rates overlay, which you create |
+| `~/.copilot-ledger/rates.downloaded.json` | Newer built-in rates saved by `gh-ledger rates update` |
 | `~/.copilot-ledger/daemon.json` | Written while the daemon runs: process ID, endpoint, start time, and database path |
 | `~/.copilot-ledger/daemon.lock` | Held while the daemon runs, so only one daemon runs at a time |
 | `~/.copilot-ledger/daemon.log` | The daemon's log when it's started with `gh-ledger daemon start` |
@@ -51,6 +52,16 @@ The built-in prices are GitHub's rates for every text model on [Models and prici
 With bring-your-own-key (BYOK), Microsoft Foundry bills you directly, not GitHub. Azure prices depend on region, deployment type, and your agreement, so CopilotLedger can't know yours.
 
 Until you add prices, BYOK requests are still counted and attributed to repository, branch, model, and agent, with status `byok_unpriced` and $0.00 cost.
+
+## Newer rates between releases: `gh-ledger rates update`
+
+Each gh-ledger release attaches the `rates.json` it was built with. `gh-ledger rates update` downloads the latest release's copy from `https://github.com/swigerb/gh-ledger/releases/latest/download/rates.json`, through your system proxy, and checks it with the same rules as the built-in rates.
+
+Rates versions are dates. When the download is newer than the rates in use, `rates update` saves it as `rates.downloaded.json`; when it's the same or older, nothing changes. If your overlay doesn't merge with the newer rates, nothing is saved, and the error names the problem in your overlay.
+
+CopilotLedger's base rates are `rates.downloaded.json` when that file is valid and newer than the built-in rates, and the built-in rates otherwise. So after you upgrade gh-ledger to newer built-in rates, an older download is ignored. A download that can't be read is ignored with a warning in `gh-ledger status`, `gh-ledger rates validate`, and the daemon log. Your overlay applies on top of either. `gh-ledger status` shows `(downloaded)` after the rates version when the download is in use.
+
+The daemon reads rates when it starts, so restart it after an update. Spans already recorded keep the prices they were recorded with.
 
 ## The rates overlay: `~/.copilot-ledger/rates.json`
 

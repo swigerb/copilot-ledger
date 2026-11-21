@@ -16,7 +16,7 @@ you catch runaway loops.
 - A circuit breaker for spend velocity and retry churn
 - Soft AI-credit budgets for each branch
 - An MCP server that lets Copilot agents inspect the ledger
-- Attribution for Foundry BYOK and local models
+- Attribution for Foundry BYOK and local models, and `rates update` for newer prices between releases
 - Local SQLite storage and JSON output for scripts
 
 ## Requirements

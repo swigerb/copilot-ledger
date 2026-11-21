@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using CopilotLedger.Cli.Alerts;
+using CopilotLedger.Cli.Rates;
 using CopilotLedger.Core.Git;
 using CopilotLedger.Core.Pricing;
 using CopilotLedger.Otlp.Attribution;
@@ -55,12 +56,16 @@ internal static class DaemonHost
         {
             DaemonFiles.DeleteIfExists(DaemonFiles.StopPath(context));
 
+            RatesBase rates = RateCardFiles.LoadBase(context);
+            if (rates.Warning is not null)
+            {
+                WriteLog(writer, context, $"Warning: {rates.Warning}");
+            }
+
             JsonRateCardCalculator calculator;
             try
             {
-                calculator = File.Exists(context.RatesOverlayPath)
-                    ? JsonRateCardCalculator.LoadEmbeddedWithOverlay(context.RatesOverlayPath)
-                    : JsonRateCardCalculator.LoadEmbedded();
+                calculator = RateCardFiles.Load(rates, RateCardFiles.OverlayPath(context));
             }
             catch (InvalidDataException ex)
             {

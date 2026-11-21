@@ -81,6 +81,9 @@ public sealed class CliHarness : IAsyncDisposable
     public Task<CliRun> RunInAsync(string workingDirectory, params string[] args) =>
         InvokeAsync(Context with { WorkingDirectory = workingDirectory }, args);
 
+    public Task<CliRun> RunWithHttpAsync(HttpMessageHandler handler, params string[] args) =>
+        InvokeAsync(Context with { CreateHttpHandler = () => handler }, args);
+
     public async Task<CliRun> StartInProcessDaemonAsync()
     {
         _daemon = InvokeAsync(Context with
