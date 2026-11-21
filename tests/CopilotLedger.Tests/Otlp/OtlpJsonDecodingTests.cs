@@ -195,6 +195,37 @@ public sealed class OtlpJsonDecodingTests
             "chat");
     }
 
+    public static TheoryData<string, string, int> JS10Statuses => new()
+    {
+        { "error", ",\"status\":{\"code\":2,\"message\":\"Tool failed\"}", 2 },
+        { "unset", ",\"status\":{\"message\":\"\",\"code\":0}", 0 },
+        { "ok", ",\"status\":{\"code\":1}", 1 },
+        { "string-number", ",\"status\":{\"code\":\"2\"}", 0 },
+        { "string-name", ",\"status\":{\"code\":\"STATUS_CODE_ERROR\"}", 0 },
+        { "unknown-code", ",\"status\":{\"code\":3}", 0 },
+        { "decimal-code", ",\"status\":{\"code\":2.5}", 0 },
+        { "last-wins", ",\"status\":{\"code\":1,\"code\":2}", 2 },
+        { "null", ",\"status\":null", 0 },
+        { "string-status", ",\"status\":\"error\"", 0 },
+        { "missing", "", 0 },
+    };
+
+    [Theory]
+    [MemberData(nameof(JS10Statuses))]
+    public void JS10_Status_IsDecodedInEverySupportedShape(
+        string caseName,
+        string status,
+        int expectedStatusCode)
+    {
+        _ = caseName;
+        string json = $$"""{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"5b8efff798038103d269b633813fc60c","spanId":"eee19b7ec3c1b174","name":"execute_tool powershell pwsh.exe","startTimeUnixNano":"1795220217552000000"{{status}}}]}]}]}""";
+
+        OtlpSpan span = SingleSpan(json);
+
+        Assert.Equal("eee19b7ec3c1b174", span.SpanId);
+        Assert.Equal(expectedStatusCode, span.StatusCode);
+    }
+
     private static OtlpSpan SingleSpan(string json) =>
         Assert.Single(Assert.Single(
             OtlpTraceDecoder.DecodeJson(OtlpFixtures.Utf8(json)).ResourceSpans).Spans);

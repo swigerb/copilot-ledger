@@ -31,6 +31,7 @@ public sealed record OtlpSpan
     public string Name { get; init; } = "";
     public ulong StartTimeUnixNano { get; init; }          // 0 when missing or invalid
     public ulong EndTimeUnixNano { get; init; }            // 0 when missing or invalid
+    public int StatusCode { get; init; }                   // Status.code: 1 ok, 2 error; 0 when unset, missing, or any other value
     public IReadOnlyList<OtlpAttribute> Attributes { get; init; } = [];
 }
 

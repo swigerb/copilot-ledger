@@ -382,6 +382,105 @@ public sealed class GenAiSpanNormalizerTests
         }
     }
 
+    [Fact]
+    public void NZ12_ToolCallSignals_AreNormalizedOntoLinks()
+    {
+        const string hash =
+            "c3d1fe831856c77818bb8c1242d32d6efa6c37366eb902e56c5fd0054c1dcbc3/918a44e755cc5eee09b08d214831e8339a645158ef1f831a0fa02bd43999700f";
+        OtlpAttribute executeTool = Str("gen_ai.operation.name", "execute_tool");
+        NormalizedTraceBatch batch = GenAiSpanNormalizer.Normalize(Request(
+            CopilotResource,
+            Span(
+                spanId: "00000000000000a1",
+                attributes:
+                [
+                    executeTool,
+                    Str("gen_ai.tool.name", "powershell"),
+                    Int("process.exit.code", 1),
+                ]),
+            Span(
+                spanId: "00000000000000a2",
+                attributes:
+                [
+                    executeTool,
+                    Str("gen_ai.tool.name", "apply_patch"),
+                ]),
+            Span(
+                spanId: "00000000000000a3",
+                attributes:
+                [
+                    executeTool,
+                    Str("gen_ai.tool.name", hash),
+                ]) with
+            {
+                StatusCode = 2,
+            },
+            Span(
+                spanId: "00000000000000a4",
+                attributes:
+                [
+                    executeTool,
+                    Str("gen_ai.tool.name", "powershell"),
+                    Int("process.exit.code", -1073741510),
+                ]),
+            Span(
+                spanId: "00000000000000a5",
+                attributes:
+                [
+                    executeTool,
+                    Str("gen_ai.tool.name", "powershell"),
+                    Str("process.exit.code", "1"),
+                ]),
+            Span(
+                spanId: "00000000000000a6",
+                attributes:
+                [
+                    executeTool,
+                    Int("gen_ai.tool.name", 7),
+                ]),
+            Span(
+                spanId: "00000000000000c1",
+                attributes:
+                [
+                    Str("gen_ai.operation.name", "chat"),
+                    Str("gen_ai.request.model", "mai-code-2"),
+                    Int("gen_ai.usage.input_tokens", 10),
+                    Str("gen_ai.tool.name", "x"),
+                    Int("process.exit.code", 3),
+                ]) with
+            {
+                StatusCode = 1,
+            },
+            Span(spanId: "00000000000000b1", attributes: [])));
+
+        Assert.Equal(8, batch.ReceivedSpanCount);
+        Assert.Equal(0, batch.RejectedSpanCount);
+        Assert.Equal("00000000000000c1", Assert.Single(batch.InferenceSpans).SpanId);
+        Assert.Collection(
+            batch.Links,
+            link => AssertLink(link, "execute_tool", "powershell", 1, 0),
+            link => AssertLink(link, "execute_tool", "apply_patch", null, 0),
+            link => AssertLink(link, "execute_tool", hash, null, 2),
+            link => AssertLink(link, "execute_tool", "powershell", -1073741510, 0),
+            link => AssertLink(link, "execute_tool", "powershell", null, 0),
+            link => AssertLink(link, "execute_tool", null, null, 0),
+            link => AssertLink(link, "chat", null, null, 1),
+            link => AssertLink(link, null, null, null, 0));
+    }
+
+    private static void AssertLink(
+        GenAiSpanLink link,
+        string? operationName,
+        string? toolName,
+        long? toolExitCode,
+        int statusCode)
+    {
+        Assert.Equal(operationName, link.OperationName);
+        Assert.Equal(toolName, link.ToolName);
+        Assert.Equal(toolExitCode, link.ToolExitCode);
+        Assert.Equal(statusCode, link.StatusCode);
+    }
+
     private static void AssertGitNull(GenAiSpanLink link)
     {
         Assert.Null(link.GitRepositorySlug);

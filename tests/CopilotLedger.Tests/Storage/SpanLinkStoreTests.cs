@@ -24,13 +24,16 @@ public sealed class SpanLinkStoreTests
             await ExecuteAsync(connection, """
                 DROP INDEX ix_spans_trace;
                 DROP TABLE span_links;
+                DROP TABLE breaker_trips;
+                DROP TABLE branch_budgets;
+                DROP TABLE breaker_settings;
                 PRAGMA user_version = 1;
                 """);
         }
 
         await new SqliteLedgerStore(DatabasePath(temp)).InitializeAsync();
         await using SqliteConnection check = await OpenAsync(DatabasePath(temp));
-        Assert.Equal(2L, await ScalarAsync(check, "PRAGMA user_version;"));
+        Assert.Equal(3L, await ScalarAsync(check, "PRAGMA user_version;"));
         Assert.Equal(
             "span_links",
             await ScalarAsync(
@@ -335,6 +338,164 @@ public sealed class SpanLinkStoreTests
             () => store.GetTopPromptChainsAsync(LedgerFilter.All, 0));
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
             () => store.GetTopPromptChainsAsync(LedgerFilter.All, 1001));
+    }
+
+    [Fact]
+    public async Task SL8_Migration3_UpgradesVersion2AndKeepsRows()
+    {
+        using TempDirectory temp = new();
+        SqliteLedgerStore first = await StoreAsync(temp);
+        await first.RecordAsync([Entry("mai-code-2", 1000, 100)]);
+        await first.RecordSpanLinksAsync(
+        [
+            Link("8", "8888888888888881", null, "execute_tool") with
+            {
+                ToolName = "powershell",
+                ToolExitCode = 1,
+                StatusCode = 2,
+            },
+        ]);
+        await using (SqliteConnection connection = await OpenAsync(DatabasePath(temp)))
+        {
+            await ExecuteAsync(connection, """
+                DROP TABLE breaker_trips;
+                DROP TABLE branch_budgets;
+                DROP TABLE breaker_settings;
+                ALTER TABLE span_links DROP COLUMN tool_name;
+                ALTER TABLE span_links DROP COLUMN tool_exit_code;
+                ALTER TABLE span_links DROP COLUMN status_code;
+                PRAGMA user_version = 2;
+                """);
+        }
+
+        await new SqliteLedgerStore(DatabasePath(temp)).InitializeAsync();
+
+        await using SqliteConnection check = await OpenAsync(DatabasePath(temp));
+        Assert.Equal(3L, await ScalarAsync(check, "PRAGMA user_version;"));
+        Assert.Equal(1L, await ScalarAsync(check, "SELECT COUNT(*) FROM spans;"));
+        Assert.Equal(1L, await ScalarAsync(check, "SELECT COUNT(*) FROM span_links;"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync(
+                check,
+                "SELECT tool_name IS NULL AND tool_exit_code IS NULL AND status_code = 0 FROM span_links;"));
+        Assert.Equal(
+            1500000000000L,
+            await ScalarAsync(
+                check,
+                "SELECT velocity_threshold_usd_pico FROM breaker_settings WHERE id = 1;"));
+        Assert.Equal(0L, await ScalarAsync(check, "SELECT COUNT(*) FROM breaker_trips;"));
+        Assert.Equal(0L, await ScalarAsync(check, "SELECT COUNT(*) FROM branch_budgets;"));
+    }
+
+    [Fact]
+    public async Task SL9_RecordSpanLinksAsync_PersistsToolSignals()
+    {
+        using TempDirectory temp = new();
+        SqliteLedgerStore store = await StoreAsync(temp);
+        const string hash =
+            "c3d1fe831856c77818bb8c1242d32d6efa6c37366eb902e56c5fd0054c1dcbc3/918a44e755cc5eee09b08d214831e8339a645158ef1f831a0fa02bd43999700f";
+        GenAiSpanLink first = Link(
+            "9",
+            "9999999999999991",
+            null,
+            "execute_tool") with
+        {
+            ToolName = "powershell",
+            ToolExitCode = 1,
+            StatusCode = 0,
+        };
+
+        Assert.Equal(
+            4,
+            await store.RecordSpanLinksAsync(
+            [
+                first,
+                Link("9", "9999999999999992", null, "execute_tool") with
+                {
+                    ToolName = "apply_patch",
+                    ToolExitCode = null,
+                    StatusCode = 0,
+                },
+                Link("9", "9999999999999993", null, "execute_tool") with
+                {
+                    ToolName = hash,
+                    ToolExitCode = null,
+                    StatusCode = 2,
+                },
+                Link("9", "9999999999999994", null, "chat") with
+                {
+                    ToolName = null,
+                    ToolExitCode = null,
+                    StatusCode = 1,
+                },
+            ]));
+        Assert.Equal(0, await store.RecordSpanLinksAsync(
+            [first with { ToolName = "bash" }]));
+
+        await using SqliteConnection connection = await OpenAsync(DatabasePath(temp));
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT span_id, tool_name, tool_exit_code, status_code FROM span_links ORDER BY span_id;";
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("9999999999999991", reader.GetString(0));
+        Assert.Equal("powershell", reader.GetString(1));
+        Assert.Equal(1L, reader.GetInt64(2));
+        Assert.Equal(0, reader.GetInt32(3));
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("9999999999999992", reader.GetString(0));
+        Assert.Equal("apply_patch", reader.GetString(1));
+        Assert.True(reader.IsDBNull(2));
+        Assert.Equal(0, reader.GetInt32(3));
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("9999999999999993", reader.GetString(0));
+        Assert.Equal(hash, reader.GetString(1));
+        Assert.True(reader.IsDBNull(2));
+        Assert.Equal(2, reader.GetInt32(3));
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("9999999999999994", reader.GetString(0));
+        Assert.True(reader.IsDBNull(1));
+        Assert.True(reader.IsDBNull(2));
+        Assert.Equal(1, reader.GetInt32(3));
+        Assert.False(await reader.ReadAsync());
+    }
+
+    [Fact]
+    public async Task SL10_AnotherProcessAppliesMigrationFirst()
+    {
+        using TempDirectory temp = new();
+        await StoreAsync(temp);
+        await using (SqliteConnection connection = await OpenAsync(DatabasePath(temp)))
+        {
+            await ExecuteAsync(connection, "PRAGMA user_version = 2;");
+        }
+
+        await using SqliteConnection holder = await OpenAsync(DatabasePath(temp));
+        SqliteTransaction held = holder.BeginTransaction(deferred: false);
+        Task init = Task.Run(
+            () => new SqliteLedgerStore(DatabasePath(temp)).InitializeAsync());
+
+        await Task.Delay(TimeSpan.FromSeconds(1));
+        Assert.False(init.IsCompleted);
+        await using (SqliteCommand version = holder.CreateCommand())
+        {
+            version.Transaction = held;
+            version.CommandText = "PRAGMA user_version = 3;";
+            await version.ExecuteNonQueryAsync();
+        }
+
+        await held.CommitAsync();
+        await init;
+
+        await using SqliteConnection check = await OpenAsync(DatabasePath(temp));
+        Assert.Equal(3L, await ScalarAsync(check, "PRAGMA user_version;"));
+        Assert.Equal(1L, await ScalarAsync(check, "SELECT COUNT(*) FROM breaker_settings;"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync(
+                check,
+                "SELECT COUNT(*) FROM pragma_table_info('span_links') WHERE name = 'tool_name';"));
     }
 
     private static void AssertChain(

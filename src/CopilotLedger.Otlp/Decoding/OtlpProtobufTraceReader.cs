@@ -100,11 +100,12 @@ internal static class OtlpProtobufTraceReader
         string name = "";
         ulong start = 0;
         ulong end = 0;
+        int statusCode = 0;
         List<OtlpAttribute> attributes = [];
         ProtoReader reader = new(payload);
         while (reader.TryReadTag(out int field, out int wireType))
         {
-            if ((field == 1 || field == 2 || field == 4 || field == 5 || field == 9) && wireType == 2)
+            if ((field == 1 || field == 2 || field == 4 || field == 5 || field == 9 || field == 15) && wireType == 2)
             {
                 ReadOnlySpan<byte> value = reader.ReadLengthDelimited();
                 switch (field)
@@ -128,6 +129,9 @@ internal static class OtlpProtobufTraceReader
                             attributes.Add(attribute);
                         }
 
+                        break;
+                    case 15:
+                        statusCode = ReadStatus(value);
                         break;
                 }
             }
@@ -157,8 +161,29 @@ internal static class OtlpProtobufTraceReader
             Name = name,
             StartTimeUnixNano = start,
             EndTimeUnixNano = end,
+            StatusCode = statusCode,
             Attributes = attributes,
         };
+    }
+
+    private static int ReadStatus(ReadOnlySpan<byte> payload)
+    {
+        int statusCode = 0;
+        ProtoReader reader = new(payload);
+        while (reader.TryReadTag(out int field, out int wireType))
+        {
+            if (field == 3 && wireType == 0)
+            {
+                ulong value = reader.ReadVarint();
+                statusCode = value is 1 or 2 ? (int)value : 0;
+            }
+            else
+            {
+                reader.Skip(wireType);
+            }
+        }
+
+        return statusCode;
     }
 
     private static OtlpAttribute? ReadAttribute(ReadOnlySpan<byte> payload)

@@ -13,4 +13,7 @@ public sealed record GenAiSpanLink
     public string? GitBranch { get; init; }                   // github.copilot.git.branch (legacy copilot_chat.repo.head_branch_name)
     public string? GitCommitSha { get; init; }                // github.copilot.git.commit_sha (legacy copilot_chat.repo.head_commit_hash); lowercase 40 or 64 hex
     public required DateTimeOffset StartTime { get; init; }
+    public string? ToolName { get; init; }                 // gen_ai.tool.name on an execute_tool span; null otherwise
+    public long? ToolExitCode { get; init; }               // process.exit.code (an int attribute) on an execute_tool span; null otherwise
+    public int StatusCode { get; init; }                   // OtlpSpan.StatusCode
 }

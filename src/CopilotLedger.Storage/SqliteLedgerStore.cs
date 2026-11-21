@@ -1,3 +1,4 @@
+using CopilotLedger.Core.Breaker;
 using CopilotLedger.Core.Pricing;
 using CopilotLedger.Core.Telemetry;
 using Microsoft.Data.Sqlite;
@@ -77,8 +78,23 @@ public sealed class SqliteLedgerStore
                 continue;
             }
 
-            await using SqliteTransaction transaction =
-                (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+            // BEGIN IMMEDIATE takes the write lock before the version is read again, so a second process waits here
+            // and then skips the migrations the first one committed. Disposing an uncommitted transaction rolls it back.
+            await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+            await using (SqliteCommand versionQuery = connection.CreateCommand())
+            {
+                versionQuery.Transaction = transaction;
+                versionQuery.CommandText = "PRAGMA user_version;";
+                userVersion = Convert.ToInt32(
+                    await versionQuery.ExecuteScalarAsync(cancellationToken),
+                    System.Globalization.CultureInfo.InvariantCulture);
+            }
+
+            if (version <= userVersion)
+            {
+                continue;
+            }
+
             await using (SqliteCommand migrationCommand = connection.CreateCommand())
             {
                 migrationCommand.Transaction = transaction;
@@ -217,11 +233,11 @@ public sealed class SqliteLedgerStore
                 INSERT INTO span_links (
                     trace_id, span_id, parent_span_id, operation_name, agent_name,
                     conversation_id, git_repository_slug, git_branch, git_commit_sha,
-                    start_time_unix_ms, recorded_at_unix_ms
+                    start_time_unix_ms, tool_name, tool_exit_code, status_code, recorded_at_unix_ms
                 ) VALUES (
                     @trace_id, @span_id, @parent_span_id, @operation_name, @agent_name,
                     @conversation_id, @git_repository_slug, @git_branch, @git_commit_sha,
-                    @start_time_unix_ms, @recorded_at_unix_ms
+                    @start_time_unix_ms, @tool_name, @tool_exit_code, @status_code, @recorded_at_unix_ms
                 ) ON CONFLICT (trace_id, span_id) DO NOTHING;
                 """;
             command.Parameters.AddWithValue("@trace_id", link.TraceId);
@@ -240,12 +256,446 @@ public sealed class SqliteLedgerStore
             command.Parameters.AddWithValue(
                 "@start_time_unix_ms",
                 link.StartTime.ToUnixTimeMilliseconds());
+            command.Parameters.AddWithValue("@tool_name", OrDbNull(link.ToolName));
+            command.Parameters.AddWithValue("@tool_exit_code", OrDbNull(link.ToolExitCode));
+            command.Parameters.AddWithValue("@status_code", link.StatusCode);
             command.Parameters.AddWithValue("@recorded_at_unix_ms", recordedAtUnixMs);
             inserted += await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
         await transaction.CommitAsync(cancellationToken);
         return inserted;
+    }
+
+    public async Task<TraceActivity> GetTraceActivityAsync(
+        string traceId,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        if (string.IsNullOrWhiteSpace(traceId))
+        {
+            throw new ArgumentException("Trace ID cannot be blank.", nameof(traceId));
+        }
+
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        string? conversationId = null;
+        string repository = "(none)";
+        string branch = "(none)";
+        string? repositoryRoot = null;
+        long spanCount = 0;
+        await using (SqliteCommand summary = connection.CreateCommand())
+        {
+            summary.CommandText = """
+                SELECT MAX(conversation_id), MAX(COALESCE(repo_slug, repo_root, '(none)')), MAX(COALESCE(branch_name, '(none)')), MAX(repo_root), COUNT(*) FROM spans WHERE trace_id = @trace;
+                """;
+            summary.Parameters.AddWithValue("@trace", traceId);
+            await using SqliteDataReader reader = await summary.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                conversationId = reader.IsDBNull(0) ? null : reader.GetString(0);
+                spanCount = reader.GetInt64(4);
+                if (spanCount > 0)
+                {
+                    repository = reader.GetString(1);
+                    branch = reader.GetString(2);
+                }
+
+                repositoryRoot = reader.IsDBNull(3) ? null : reader.GetString(3);
+            }
+        }
+
+        if (conversationId is null)
+        {
+            await using SqliteCommand query = connection.CreateCommand();
+            query.CommandText = """
+                SELECT MAX(conversation_id) FROM span_links WHERE trace_id = @trace;
+                """;
+            query.Parameters.AddWithValue("@trace", traceId);
+            object? value = await query.ExecuteScalarAsync(cancellationToken);
+            conversationId = value is null or DBNull ? null : (string)value;
+        }
+
+        List<CostEvent> costs = [];
+        await using (SqliteCommand query = connection.CreateCommand())
+        {
+            query.CommandText = """
+                SELECT span_id, end_time_unix_ms, cost_usd_pico FROM spans WHERE trace_id = @trace AND cost_usd_pico > 0 ORDER BY end_time_unix_ms, span_id;
+                """;
+            query.Parameters.AddWithValue("@trace", traceId);
+            await using SqliteDataReader reader = await query.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                costs.Add(new CostEvent(
+                    reader.GetString(0),
+                    DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(1)),
+                    PicoUsd.ToUsd(reader.GetInt64(2))));
+            }
+        }
+
+        List<ToolCallEvent> toolCalls = [];
+        await using (SqliteCommand query = connection.CreateCommand())
+        {
+            query.CommandText = """
+                SELECT span_id, start_time_unix_ms, tool_name, tool_exit_code, status_code FROM span_links WHERE trace_id = @trace AND operation_name = 'execute_tool' ORDER BY start_time_unix_ms, span_id;
+                """;
+            query.Parameters.AddWithValue("@trace", traceId);
+            await using SqliteDataReader reader = await query.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                toolCalls.Add(new ToolCallEvent(
+                    reader.GetString(0),
+                    DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(1)),
+                    reader.IsDBNull(2) ? null : reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetInt64(3),
+                    reader.GetInt32(4)));
+            }
+        }
+
+        List<CommitObservation> commits = [];
+        await using (SqliteCommand query = connection.CreateCommand())
+        {
+            query.CommandText = """
+                SELECT span_id, start_time_unix_ms, head_commit_sha FROM spans WHERE trace_id = @trace AND head_commit_sha IS NOT NULL ORDER BY start_time_unix_ms, span_id;
+                """;
+            query.Parameters.AddWithValue("@trace", traceId);
+            await using SqliteDataReader reader = await query.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                commits.Add(new CommitObservation(
+                    reader.GetString(0),
+                    DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(1)),
+                    reader.GetString(2)));
+            }
+        }
+
+        return new TraceActivity
+        {
+            TraceId = traceId,
+            ConversationId = conversationId,
+            Repository = repository,
+            Branch = branch,
+            RepositoryRoot = repositoryRoot,
+            SpanCount = spanCount,
+            Costs = costs,
+            ToolCalls = toolCalls,
+            Commits = commits,
+        };
+    }
+
+    public async Task<long?> RecordBreakerTripAsync(
+        NewBreakerTrip trip,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        ArgumentNullException.ThrowIfNull(trip);
+        if (string.IsNullOrWhiteSpace(trip.TraceId))
+        {
+            throw new ArgumentException("Trace ID cannot be blank.", nameof(trip));
+        }
+
+        if (string.IsNullOrWhiteSpace(trip.Repository))
+        {
+            throw new ArgumentException("Repository cannot be blank.", nameof(trip));
+        }
+
+        if (string.IsNullOrWhiteSpace(trip.Branch))
+        {
+            throw new ArgumentException("Branch cannot be blank.", nameof(trip));
+        }
+
+        if (string.IsNullOrWhiteSpace(trip.Detail))
+        {
+            throw new ArgumentException("Detail cannot be blank.", nameof(trip));
+        }
+
+        if (trip.WindowCostUsd < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(trip));
+        }
+
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO breaker_trips (rule, trace_id, conversation_id, repository, branch, repo_root, tripped_at_unix_ms, detail, window_cost_usd_pico, window_minutes, failure_count, recorded_at_unix_ms) VALUES (@rule, @trace_id, @conversation_id, @repository, @branch, @repo_root, @tripped_at_unix_ms, @detail, @window_cost_usd_pico, @window_minutes, @failure_count, @now) ON CONFLICT (rule, trace_id) DO NOTHING RETURNING id;
+            """;
+        command.Parameters.AddWithValue("@rule", BreakerRuleNames.ToName(trip.Rule));
+        command.Parameters.AddWithValue("@trace_id", trip.TraceId);
+        command.Parameters.AddWithValue("@conversation_id", OrDbNull(trip.ConversationId));
+        command.Parameters.AddWithValue("@repository", trip.Repository);
+        command.Parameters.AddWithValue("@branch", trip.Branch);
+        command.Parameters.AddWithValue("@repo_root", OrDbNull(trip.RepositoryRoot));
+        command.Parameters.AddWithValue("@tripped_at_unix_ms", trip.TrippedAt.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("@detail", trip.Detail);
+        object windowCostUsdPico = trip.WindowCostUsd.HasValue
+            ? PicoUsd.FromUsd(trip.WindowCostUsd.Value)
+            : DBNull.Value;
+        command.Parameters.AddWithValue("@window_cost_usd_pico", windowCostUsdPico);
+        command.Parameters.AddWithValue("@window_minutes", OrDbNull(trip.WindowMinutes));
+        command.Parameters.AddWithValue("@failure_count", OrDbNull(trip.FailureCount));
+        command.Parameters.AddWithValue("@now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        object? value = await command.ExecuteScalarAsync(cancellationToken);
+        return value is null or DBNull ? null : (long)value;
+    }
+
+    public async Task<IReadOnlyList<BreakerTrip>> GetOpenBreakerTripsAsync(
+        BreakerTripFilter filter,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, rule, trace_id, conversation_id, repository, branch, repo_root, tripped_at_unix_ms, detail, window_cost_usd_pico, window_minutes, failure_count, recorded_at_unix_ms, notified_at_unix_ms, reset_at_unix_ms FROM breaker_trips WHERE reset_at_unix_ms IS NULL AND (@id IS NULL OR id = @id) AND (@repository IS NULL OR repository = @repository) AND (@branch IS NULL OR branch = @branch) AND (@repo_root IS NULL OR repo_root = @repo_root) ORDER BY tripped_at_unix_ms DESC, id DESC;
+            """;
+        AddTripFilterParameters(command, filter);
+        return await ReadTripsAsync(command, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<BreakerTrip>> ResetBreakerTripsAsync(
+        BreakerTripFilter filter,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE breaker_trips SET reset_at_unix_ms = @now WHERE reset_at_unix_ms IS NULL AND (@id IS NULL OR id = @id) AND (@repository IS NULL OR repository = @repository) AND (@branch IS NULL OR branch = @branch) AND (@repo_root IS NULL OR repo_root = @repo_root) RETURNING id, rule, trace_id, conversation_id, repository, branch, repo_root, tripped_at_unix_ms, detail, window_cost_usd_pico, window_minutes, failure_count, recorded_at_unix_ms, notified_at_unix_ms, reset_at_unix_ms;
+            """;
+        AddTripFilterParameters(command, filter);
+        command.Parameters.AddWithValue("@now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        List<BreakerTrip> trips = [.. await ReadTripsAsync(command, cancellationToken)];
+        trips.Sort((left, right) => left.Id.CompareTo(right.Id));
+        return trips;
+    }
+
+    public async Task<bool> MarkBreakerTripNotifiedAsync(
+        long id,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE breaker_trips SET notified_at_unix_ms = @now WHERE id = @id AND notified_at_unix_ms IS NULL;
+            """;
+        command.Parameters.AddWithValue("@id", id);
+        command.Parameters.AddWithValue("@now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task<IReadOnlyList<BreakerTrip>> GetUnnotifiedBreakerTripsAsync(
+        DateTimeOffset recordedSince,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, rule, trace_id, conversation_id, repository, branch, repo_root, tripped_at_unix_ms, detail, window_cost_usd_pico, window_minutes, failure_count, recorded_at_unix_ms, notified_at_unix_ms, reset_at_unix_ms FROM breaker_trips WHERE reset_at_unix_ms IS NULL AND notified_at_unix_ms IS NULL AND recorded_at_unix_ms >= @since ORDER BY recorded_at_unix_ms, id;
+            """;
+        command.Parameters.AddWithValue("@since", recordedSince.ToUnixTimeMilliseconds());
+        return await ReadTripsAsync(command, cancellationToken);
+    }
+
+    public async Task<BreakerSettings> GetBreakerSettingsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT velocity_threshold_usd_pico, velocity_window_minutes, churn_failures, flag_file, notifications FROM breaker_settings WHERE id = 1;
+            """;
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return BreakerSettings.Default;
+        }
+
+        return new BreakerSettings
+        {
+            VelocityCredits = PicoUsd.ToUsd(reader.GetInt64(0)) / AiCreditMath.UsdPerAiCredit,
+            VelocityWindowMinutes = reader.GetInt32(1),
+            ChurnFailures = reader.GetInt32(2),
+            FlagFile = reader.GetInt64(3) != 0,
+            Notifications = reader.GetInt64(4) != 0,
+        };
+    }
+
+    public async Task UpdateBreakerSettingsAsync(
+        BreakerSettings settings,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        ArgumentNullException.ThrowIfNull(settings);
+        if (!settings.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(settings));
+        }
+
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO breaker_settings (id, velocity_threshold_usd_pico, velocity_window_minutes, churn_failures, flag_file, notifications, updated_at_unix_ms) VALUES (1, @threshold, @minutes, @failures, @flag_file, @notifications, @now) ON CONFLICT (id) DO UPDATE SET velocity_threshold_usd_pico = excluded.velocity_threshold_usd_pico, velocity_window_minutes = excluded.velocity_window_minutes, churn_failures = excluded.churn_failures, flag_file = excluded.flag_file, notifications = excluded.notifications, updated_at_unix_ms = excluded.updated_at_unix_ms;
+            """;
+        command.Parameters.AddWithValue("@threshold", PicoUsd.FromUsd(settings.VelocityThresholdUsd));
+        command.Parameters.AddWithValue("@minutes", settings.VelocityWindowMinutes);
+        command.Parameters.AddWithValue("@failures", settings.ChurnFailures);
+        command.Parameters.AddWithValue("@flag_file", settings.FlagFile ? 1 : 0);
+        command.Parameters.AddWithValue("@notifications", settings.Notifications ? 1 : 0);
+        command.Parameters.AddWithValue("@now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task SetBranchBudgetAsync(
+        string repository,
+        string branch,
+        decimal aiCredits,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        ValidateBranchBudgetKey(repository, branch);
+        if (aiCredits <= 0 || aiCredits > 1_000_000m || aiCredits % 0.01m != 0m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(aiCredits));
+        }
+
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO branch_budgets (repository, branch, budget_usd_pico, set_at_unix_ms, alerted_at_unix_ms, notified_at_unix_ms) VALUES (@repository, @branch, @budget_usd_pico, @now, NULL, NULL) ON CONFLICT (repository, branch) DO UPDATE SET budget_usd_pico = excluded.budget_usd_pico, set_at_unix_ms = excluded.set_at_unix_ms, alerted_at_unix_ms = NULL, notified_at_unix_ms = NULL;
+            """;
+        command.Parameters.AddWithValue("@repository", repository);
+        command.Parameters.AddWithValue("@branch", branch);
+        command.Parameters.AddWithValue(
+            "@budget_usd_pico",
+            PicoUsd.FromUsd(aiCredits * AiCreditMath.UsdPerAiCredit));
+        command.Parameters.AddWithValue("@now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<bool> ClearBranchBudgetAsync(
+        string repository,
+        string branch,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            DELETE FROM branch_budgets WHERE repository = @repository AND branch = @branch;
+            """;
+        command.Parameters.AddWithValue("@repository", repository);
+        command.Parameters.AddWithValue("@branch", branch);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task<IReadOnlyList<BranchBudgetRow>> GetBranchBudgetsAsync(
+        string? repository = null,
+        string? branch = null,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT b.repository, b.branch, b.budget_usd_pico, b.set_at_unix_ms, b.alerted_at_unix_ms, b.notified_at_unix_ms,
+                   (SELECT COALESCE(SUM(s.cost_usd_pico), 0) FROM spans AS s
+                     WHERE COALESCE(s.repo_slug, s.repo_root, '(none)') = b.repository
+                       AND COALESCE(s.branch_name, '(none)') = b.branch) AS spent_usd_pico
+            FROM branch_budgets AS b
+            WHERE (@repository IS NULL OR b.repository = @repository) AND (@branch IS NULL OR b.branch = @branch) ORDER BY b.repository, b.branch;
+            """;
+        command.Parameters.AddWithValue("@repository", OrDbNull(repository));
+        command.Parameters.AddWithValue("@branch", OrDbNull(branch));
+        return await ReadBranchBudgetsAsync(command, cancellationToken);
+    }
+
+    public async Task<bool> MarkBranchBudgetAlertedAsync(
+        string repository,
+        string branch,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE branch_budgets SET alerted_at_unix_ms = @now WHERE repository = @repository AND branch = @branch AND alerted_at_unix_ms IS NULL AND budget_usd_pico < (SELECT COALESCE(SUM(cost_usd_pico), 0) FROM spans WHERE COALESCE(repo_slug, repo_root, '(none)') = @repository AND COALESCE(branch_name, '(none)') = @branch);
+            """;
+        command.Parameters.AddWithValue("@repository", repository);
+        command.Parameters.AddWithValue("@branch", branch);
+        command.Parameters.AddWithValue("@now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task<bool> MarkBranchBudgetNotifiedAsync(
+        string repository,
+        string branch,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE branch_budgets SET notified_at_unix_ms = @now WHERE repository = @repository AND branch = @branch AND alerted_at_unix_ms IS NOT NULL AND notified_at_unix_ms IS NULL;
+            """;
+        command.Parameters.AddWithValue("@repository", repository);
+        command.Parameters.AddWithValue("@branch", branch);
+        command.Parameters.AddWithValue("@now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task<IReadOnlyList<BranchBudgetRow>> GetUnnotifiedBudgetAlertsAsync(
+        DateTimeOffset alertedSince,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT b.repository, b.branch, b.budget_usd_pico, b.set_at_unix_ms, b.alerted_at_unix_ms, b.notified_at_unix_ms,
+                   (SELECT COALESCE(SUM(s.cost_usd_pico), 0) FROM spans AS s
+                     WHERE COALESCE(s.repo_slug, s.repo_root, '(none)') = b.repository
+                       AND COALESCE(s.branch_name, '(none)') = b.branch) AS spent_usd_pico
+            FROM branch_budgets AS b
+            WHERE b.alerted_at_unix_ms IS NOT NULL AND b.alerted_at_unix_ms >= @since AND b.notified_at_unix_ms IS NULL ORDER BY b.alerted_at_unix_ms, b.repository, b.branch;
+            """;
+        command.Parameters.AddWithValue("@since", alertedSince.ToUnixTimeMilliseconds());
+        return await ReadBranchBudgetsAsync(command, cancellationToken);
+    }
+
+    public async Task<IReadOnlyDictionary<string, long>> GetFailedToolCallCountsAsync(
+        IEnumerable<string> traceIds,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+        string[] traces = traceIds.Distinct(StringComparer.Ordinal).ToArray();
+        if (traces.Length == 0)
+        {
+            return new Dictionary<string, long>(StringComparer.Ordinal);
+        }
+
+        await using SqliteConnection connection = await OpenConnectionAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        string parameters = string.Join(
+            ", ",
+            Enumerable.Range(0, traces.Length).Select(index => $"@t{index}"));
+        command.CommandText = $"""
+            SELECT trace_id, COUNT(*) FROM span_links WHERE trace_id IN ({parameters}) AND operation_name = 'execute_tool' AND ((tool_exit_code IS NOT NULL AND tool_exit_code <> 0) OR status_code = 2) GROUP BY trace_id;
+            """;
+        for (int index = 0; index < traces.Length; index++)
+        {
+            command.Parameters.AddWithValue($"@t{index}", traces[index]);
+        }
+
+        Dictionary<string, long> counts = new(StringComparer.Ordinal);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            counts.Add(reader.GetString(0), reader.GetInt64(1));
+        }
+
+        return counts;
     }
 
     // For each trace, copies each invoke_agent link's agent name, conversation id, and Git slug/branch/sha onto spans rows below it,
@@ -557,6 +1007,94 @@ public sealed class SqliteLedgerStore
         command.CommandText = "PRAGMA user_version;";
         object? value = await command.ExecuteScalarAsync(cancellationToken);
         return Convert.ToInt32(value, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static void AddTripFilterParameters(
+        SqliteCommand command,
+        BreakerTripFilter filter)
+    {
+        command.Parameters.AddWithValue("@id", OrDbNull(filter.Id));
+        command.Parameters.AddWithValue("@repository", OrDbNull(filter.Repository));
+        command.Parameters.AddWithValue("@branch", OrDbNull(filter.Branch));
+        command.Parameters.AddWithValue("@repo_root", OrDbNull(filter.RepositoryRoot));
+    }
+
+    private static async Task<IReadOnlyList<BreakerTrip>> ReadTripsAsync(
+        SqliteCommand command,
+        CancellationToken cancellationToken)
+    {
+        List<BreakerTrip> trips = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            string ruleName = reader.GetString(1);
+            if (!BreakerRuleNames.TryParse(ruleName, out BreakerRule rule))
+            {
+                throw new InvalidDataException($"Unknown breaker rule '{ruleName}'.");
+            }
+
+            trips.Add(new BreakerTrip
+            {
+                Id = reader.GetInt64(0),
+                Rule = rule,
+                TraceId = reader.GetString(2),
+                ConversationId = reader.IsDBNull(3) ? null : reader.GetString(3),
+                Repository = reader.GetString(4),
+                Branch = reader.GetString(5),
+                RepositoryRoot = reader.IsDBNull(6) ? null : reader.GetString(6),
+                TrippedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7)),
+                Detail = reader.GetString(8),
+                WindowCostUsd = reader.IsDBNull(9) ? null : PicoUsd.ToUsd(reader.GetInt64(9)),
+                WindowMinutes = reader.IsDBNull(10) ? null : reader.GetInt32(10),
+                FailureCount = reader.IsDBNull(11) ? null : reader.GetInt32(11),
+                RecordedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(12)),
+                NotifiedAt = reader.IsDBNull(13)
+                    ? null
+                    : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(13)),
+                ResetAt = reader.IsDBNull(14)
+                    ? null
+                    : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(14)),
+            });
+        }
+
+        return trips;
+    }
+
+    private static async Task<IReadOnlyList<BranchBudgetRow>> ReadBranchBudgetsAsync(
+        SqliteCommand command,
+        CancellationToken cancellationToken)
+    {
+        List<BranchBudgetRow> rows = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new BranchBudgetRow
+            {
+                Repository = reader.GetString(0),
+                Branch = reader.GetString(1),
+                BudgetAiCredits =
+                    PicoUsd.ToUsd(reader.GetInt64(2)) / AiCreditMath.UsdPerAiCredit,
+                SetAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
+                AlertedAt = reader.IsDBNull(4)
+                    ? null
+                    : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)),
+                NotifiedAt = reader.IsDBNull(5)
+                    ? null
+                    : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5)),
+                SpentAiCredits =
+                    PicoUsd.ToUsd(reader.GetInt64(6)) / AiCreditMath.UsdPerAiCredit,
+            });
+        }
+
+        return rows;
+    }
+
+    private static void ValidateBranchBudgetKey(string repository, string branch)
+    {
+        if (string.IsNullOrWhiteSpace(repository) || string.IsNullOrWhiteSpace(branch))
+        {
+            throw new ArgumentException("Repository and branch cannot be blank.");
+        }
     }
 
     private void EnsureInitialized()
