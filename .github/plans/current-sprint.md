@@ -14,7 +14,7 @@
 
 Every task ships with its tests, listed under "Test specifications". A task is done only when `dotnet test` runs the whole suite, including its new cases, with 0 failed and 0 skipped. Task 3 also adds PowerShell tests for the action, and its verification runs them.
 
-Most new code in this plan is marked **copy exactly**. The architect built every task in a scratch copy of `main`, and that code compiled with `TreatWarningsAsErrors` and passed the tests below: 647 tests in `dotnet test`, plus the action's 15 PowerShell cases. Copy it character for character, including every comment line, `using` directive, and blank line. Don't add argument checks (`ThrowIfNull` and the like), cancellation tokens, `ConfigureAwait`, logging, caching, or fast paths that the code doesn't show, and don't "tidy" it.
+Most new code in this plan is marked **copy exactly**. The architect built every task in a scratch copy of `main`, and that code compiled with `TreatWarningsAsErrors` and passed the tests below: 649 tests in `dotnet test`, plus the action's 18 PowerShell cases. Copy it character for character, including every comment line, `using` directive, and blank line. Don't add argument checks (`ThrowIfNull` and the like), cancellation tokens, `ConfigureAwait`, logging, caching, or fast paths that the code doesn't show, and don't "tidy" it.
 
 Each test case lists every assertion it makes; most are given as code. Write all of them, in the order given; don't drop one because it looks redundant, and don't turn an exact comparison into `Contains` or `StartsWith`. Never normalize the product's output in a test (no `ReplaceLineEndings`, `Replace("\r\n", …)`, or `Trim` on an actual value); `CliHarness` already turns `\r\n` into `\n` in `Out` and `Error`.
 
@@ -22,8 +22,8 @@ The final section, "Final step: architect audit", isn't a builder task. It has n
 
 ## Tasks
 
-- [ ] Task 1: Detached Daemon Start (CopilotLedger.Cli & CI). `daemon start` gives the daemon its own null standard handles and, on Windows, lets it inherit no other handle, so `x=$(gh-ledger daemon start)` and PowerShell captures return at once instead of waiting for the daemon to exit. Tests cover Windows command-line quoting, and CI captures `daemon start` in bash and PowerShell on Ubuntu and Windows.
-- [ ] Task 2: PR Receipts: `export-pr` (CopilotLedger.Storage & Cli). Add a channel-and-model rollup, a prompt count, and a breaker-trip count to the store, and `gh-ledger export-pr`, which writes the branch's receipt to `.github/copilot-ledger/receipts/<branch>-<hash>.md`: collapsible Markdown with GitHub AI Credits, Foundry BYOK, local offload, breaker trips, and the most expensive prompt, plus its JSON data. Tests compare whole receipts and reconcile them with `branch --json` in decimal.
+- [ ] Task 1: Detached Daemon Start (CopilotLedger.Cli & CI). `daemon start` gives the daemon its own null standard handles and, on Windows, lets it inherit no other handle, so `x=$(gh-ledger daemon start)` and PowerShell captures return at once instead of waiting for the daemon to exit; a daemon binary that can't run is reported on standard error. Tests cover Windows command-line quoting and that failure, and CI captures `daemon start` in bash and PowerShell on Ubuntu and Windows.
+- [ ] Task 2: PR Receipts: `export-pr` (CopilotLedger.Storage & Cli). Add a channel-and-model rollup, a prompt count, and a breaker-trip count to the store, and `gh-ledger export-pr`, which writes the branch's receipt to `.github/copilot-ledger/receipts/<branch>-<hash>.md`: collapsible Markdown with GitHub AI Credits, Foundry BYOK, local offload, breaker trips, and the most expensive prompt, plus its JSON data, at most 65,536 bytes. Tests compare whole receipts and reconcile them with `branch --json` in decimal.
 - [ ] Task 3: The Receipt Action (action/ & CI). Add `action/action.yml`, a composite action that runs `action/receipt.ps1` on GitHub's PowerShell 7 to find the receipt a pull request commits, validate it, and post or update one comment, with only `contents: read` and `pull-requests: write`. PowerShell tests replay the GitHub REST API offline, CI runs them, and this repository uses the action on its own pull requests.
 - [ ] Task 4: gh Extension Release, Version 0.4.0 & Quickstart (CopilotLedger.Cli, workflows & docs). Add a tag-triggered release workflow that publishes the six binaries under GitHub CLI's precompiled-extension names, `rates.json`, and checksums. When `gh-ledger` runs as the installed extension, `install` skips the alias and `status` says so and names `gh ledger` commands. Bump the version to 0.4.0 and rewrite the README quickstart around `gh extension install`, `export-pr`, and the action.
 - [ ] Task 5: `rates update` (CopilotLedger.Core & Cli). `gh-ledger rates update` downloads `rates.json` from the latest release through the system proxy, validates it, and saves it as `rates.downloaded.json` when it's newer than the rates in use. The daemon, `status`, and `rates validate` use the newer of the built-in and downloaded rates, with the overlay on top. Tests use a fake `HttpMessageHandler`, never the network.
@@ -45,25 +45,27 @@ The final section, "Final step: architect audit", isn't a builder task. It has n
   - `CliHarness` runs commands in-process with `FakeCliPlatform`; `RunAsync`, `RunInAsync(workingDirectory, …)`, `StartInProcessDaemonAsync`, `CreateDaemonClient`, `InProcessDaemon`, and `DaemonOutput` exist. `FakeCliPlatform.ProcessPath` defaults to `/opt/gh-ledger/gh-ledger`; `FileExists` answers from `ExistingFiles`. `TempDirectory.Dispose` calls `SqliteConnection.ClearAllPools()` first. `FileRetry.ReadAllTextAsync` retries reads that Windows reports in use. `GitFixture.Create(root)` makes `<root>/repo` on branch `feature/ledger` at `Sha1` with origin `https://github.com/swigerb/copilot-ledger.git`.
   - `GhLedgerCli.Version` is `0.3.0`. The CI smoke test checks it, starts the daemon, runs `status`, `breaker status`, `budget list`, and one MCP `tools/list`, and stops the daemon.
 - Sprint 3's public contracts are fixed. Sprint 4 adds types and members, and it changes only these existing artifacts, each called out in its task:
-  - Task 1: `SystemCliPlatform.StartDetached`, the `StartDetached` comment in `ICliPlatform`, `.github/workflows/ci.yml`, and `docs/cli.md`;
+  - Task 1: `SystemCliPlatform.StartDetached` (plus one new method), the `StartDetached` comment in `ICliPlatform`, `.github/workflows/ci.yml`, and `docs/cli.md`;
   - Task 2: `LedgerGrouping` (one member), `LedgerRollupRow` (one property), `SqliteLedgerStore` (one rollup arm and two methods), `GhLedgerCli` (registration), `FileRetry` (one method), and `docs/cli.md`;
   - Task 3: `.github/workflows/ci.yml` and `docs/cli.md`;
   - Task 4: `InstallCommands`, `ReportCommands`, the Cli project file and `GhLedgerCli` (version), `.github/workflows/ci.yml`, `README.md`, `docs/guide.md`, `docs/cli.md`, and the tests DM1 and `ReportCommandTests.StatusText`;
   - Task 5: `JsonRateCardCalculator` (one method), `CliContext` (one property), `RatesCommands`, `DaemonHost`, `ReportCommands`, `CliHarness` (one method), `README.md`, `docs/cli.md`, and `docs/configuration.md`.
-- The test project uses xUnit v2 (`xunit` 2.9.3), and tests use only public APIs, with no `InternalsVisibleTo`. That's why `WindowsCommandLine` (Task 1) and `ReceiptMarkdown` (Task 2) are public.
+- The test project uses xUnit v2 (`xunit` 2.9.3), and tests use only public APIs, with no `InternalsVisibleTo`. That's why `WindowsCommandLine` and `SystemCliPlatform.UnixDetachedStartInfo` (Task 1) and `ReceiptMarkdown` (Task 2) are public.
 - When an acceptance criterion says `src/` contains no `double` or `float`, it means the C# keywords and the `GetDouble` and `TryGetDouble` calls.
 
 ## Verified facts (retrieved 2026-11-21)
 
 ### Detached daemon start
 
-Sources: [.NET 10 `Process.Windows.cs`](https://github.com/dotnet/runtime/blob/release/10.0/src/libraries/System.Diagnostics.Process/src/System/Diagnostics/Process.Windows.cs); [`ProcessStartInfo.cs`](https://github.com/dotnet/runtime/blob/release/10.0/src/libraries/System.Diagnostics.Process/src/System/Diagnostics/ProcessStartInfo.cs); [UpdateProcThreadAttribute](https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute). Probes ran on Windows 11 ARM64 (build 28000), PowerShell 7.6, and the minimal MSYS `sh` (bash 5.3) bundled with the Copilot app's Git.
+Sources: [.NET 10 `Process.Windows.cs`](https://github.com/dotnet/runtime/blob/release/10.0/src/libraries/System.Diagnostics.Process/src/System/Diagnostics/Process.Windows.cs); [`ProcessStartInfo.cs`](https://github.com/dotnet/runtime/blob/release/10.0/src/libraries/System.Diagnostics.Process/src/System/Diagnostics/ProcessStartInfo.cs); [UpdateProcThreadAttribute](https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute); POSIX.1-2024 [`echo`](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/echo.html); Ubuntu 24.04 [dash(1)](https://manpages.ubuntu.com/manpages/noble/man1/dash.1.html). Probes ran on Windows 11 ARM64 (build 28000), PowerShell 7.6, and the minimal MSYS `sh` (bash 5.3) bundled with the Copilot app's Git.
 
 - On Windows, .NET 10's `Process.Start` calls `CreateProcess` with `bInheritHandles = true` (commented `// handle inheritance flag`) and no handle list, so the child inherits every inheritable handle in the parent. `ProcessStartInfo` has no option to limit that. When a shell captures `gh-ledger daemon start`, gh-ledger's standard output is the capture pipe, the daemon inherits it, and the reader waits for the daemon to exit.
 - `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` gives `CreateProcess` the list of handles to inherit. The handles must be inheritable, and `bInheritHandles` must be `TRUE`.
 - **Reproduced with the merged binary.** A `win-arm64` single-file publish of `main` at `33a2881`, run as `$x = & gh-ledger daemon start --port 54318` in a child `pwsh` with a temporary `COPILOT_LEDGER_HOME`: the capture hadn't returned after 20 seconds, and it returned only after `gh-ledger daemon stop`.
 - **Fixed with Task 1's code.** The same capture with Task 1's `SystemCliPlatform` returned in 6.8 seconds (the time the daemon takes to write `daemon.json` on that machine), and `x=$(gh-ledger daemon start --port 54319)` under MSYS `sh` returned in 1.2 seconds with `gh-ledger daemon started (pid 18228) on http://localhost:54319.`. A standalone probe of the same launcher took 0.2 seconds under a PowerShell capture and 0.3 seconds under `sh`, against 8.4 and 6.4 seconds with `Process.Start`. The child saw redirected standard handles: reading standard input returned end-of-file, and writing to standard output and error didn't throw.
-- `WindowsCommandLine.Build` was checked by starting a child with 16 arguments (spaces, an empty string, quotes, trailing and doubled backslashes, a tab, non-ASCII, and a UNC path) and comparing the child's `args` with them; all 16 matched.
+- `WindowsCommandLine.Build` was checked through real child processes started by `WindowsDetachedProcess.Start`: one child got WC1's 13 vectors as its arguments and another WC2's six daemon arguments, and each child's `args` matched them exactly.
+- POSIX leaves `echo`'s output implementation-defined when an operand contains a backslash. dash, "the standard command interpreter" on Ubuntu, interprets backslash sequences in `echo`; `\c` means "subsequent output is suppressed". So Task 1's script prints the path with `printf '... %s\n'`.
+- **Task 1's `/bin/sh` check, probed under MSYS `sh` (bash 5.3).** For a file without execute permission, the script printed `gh-ledger: cannot execute <path>` on standard error and exited 126; a path containing `\cut` was printed whole. For an executable script, it exec'd the script with its arguments intact (`daemon`, `run`, `a b`), and what the script wrote to standard output and error went to the null device. On Windows, `CreateProcessW` for a missing file fails, and `WindowsDetachedProcess.Start` throws a `Win32Exception` whose `NativeErrorCode` is 2 (SD1).
 - The analyzers in this repository report CA1416 when `WindowsDetachedProcess.Start` is called without an `OperatingSystem.IsWindows()` check, and nothing for the `DllImport` declarations (SYSLIB1054 is a suggestion).
 - While the daemon runs on Windows, its executable can't be opened for writing ("being used by another process") or deleted ("Access … is denied"). That affects `gh extension upgrade` and `gh extension remove` (below).
 
@@ -102,6 +104,7 @@ Sources: GitHub Docs, [Permissions required for GitHub Apps](https://docs.github
 - A composite action sets `runs.using: composite`; a `run` step needs `shell`; `GITHUB_ACTION_PATH` is the action's directory; and steps can read the `inputs` and `github` contexts. For `shell: pwsh` the runner prepends `$ErrorActionPreference = 'stop'` and appends `if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit $LASTEXITCODE }`. `GITHUB_API_URL` is the API URL, and `GITHUB_OUTPUT` is the step's output file.
 - GitHub-hosted runners include PowerShell 7.6.10 (`pwsh`), GitHub CLI, and jq on `ubuntu-latest`, `macos-latest`, and `windows-latest`.
 - A workflow can use an action from its own repository with `uses: ./path` after `actions/checkout`. (The newer `$/path` reference needs no checkout; this plan uses the familiar form.)
+- For `workflow_dispatch`, `GITHUB_REF` is the "branch or tag that received dispatch", so `github.ref_type` is `tag` for a manual run started from a tag; `github.event_name` tells it apart from a pushed tag (`push`). A manual run is possible only when the workflow file exists on the default branch.
 
 ### GitHub Markdown
 
@@ -119,12 +122,14 @@ Sources: [HttpClient.DefaultProxy](https://learn.microsoft.com/dotnet/api/system
 - `HttpClient` treats a `TaskCanceledException` from its handler, when the caller's token isn't canceled, as a timeout and throws `TaskCanceledException`.
 - In PowerShell 7, `catch [System.Text.Json.JsonException]` and `catch [System.Text.DecoderFallbackException]` catch those exceptions from .NET method calls. A function named like a cmdlet (`Invoke-WebRequest`) that's defined in a calling script takes precedence over the cmdlet in a script that script runs with `&`.
 - `Write-Output` inside a function whose output is assigned to a variable goes into that variable; `Write-Host` doesn't, and `*>&1` captures it.
+- **PowerShell compares strings with culture rules.** In PowerShell 7.6.10, each of these was `True`: `"feature/ledger$([char] 0x200B)" -ceq 'feature/ledger'` (a zero-width space), `"$([char] 0xFEFF)<!-- copilot-ledger-receipt -->" -ceq '<!-- copilot-ledger-receipt -->'` (a byte order mark), `"fea$([char] 0xAD)ture" -ceq 'feature'` (a soft hyphen), and `"$([char] 0xE9)" -ceq "e$([char] 0x301)"` (precomposed and combining forms). `[string]::Equals(a, b, [System.StringComparison]::Ordinal)` returned `False` for the first two, and `[System.Array]::IndexOf` on a `string[]` compares ordinally. PowerShell passes `$null` to a .NET `string` parameter as `""`: `[string]::Equals($null, '', [System.StringComparison]::Ordinal)` is `True`.
 
 ### Assumptions (not verified)
 
-- **The comment size limit.** The REST docs don't state a body limit. GitHub's API rejects longer comments with `Body is too long (maximum is 65536 characters)` (reported in [community discussion #27190](https://github.com/orgs/community/discussions/27190)). The action rejects receipts over 65,536 bytes of UTF-8, which is never more characters than that.
+- **The comment size limit.** The REST docs don't state a body limit. GitHub's API rejects longer comments with `Body is too long (maximum is 65536 characters)` (reported in [community discussion #27190](https://github.com/orgs/community/discussions/27190)). The action and `export-pr` reject receipts over 65,536 bytes of UTF-8, which is never more characters than that.
 - **macOS binaries.** The release workflow builds `osx-x64` and `osx-arm64` on `macos-latest`, where the .NET SDK signs the app host, and smoke-tests `osx-arm64` there. A manual run of the workflow (Task 4's verification) checks this before the first tag.
 - **Linux arm64 and Windows arm64 binaries** are cross-published and not run in CI.
+- **Task 1's `/bin/sh` check under dash.** The script ran only under MSYS `sh` (bash). SD1's Linux branch, which runs it through `/bin/sh` (dash on `ubuntu-latest`), first runs in Task 1's CI.
 - **Locked binaries on Linux and macOS.** Whether `gh extension upgrade` can replace a running binary there wasn't tested; the docs tell everyone to stop the daemon first.
 
 ## Design decisions
@@ -133,7 +138,14 @@ Sources: [HttpClient.DefaultProxy](https://learn.microsoft.com/dotnet/api/system
 
 - **Windows:** `WindowsDetachedProcess.Start` opens one inheritable handle to the NUL device (`File.OpenHandle(@"\\.\NUL", …, FileShare.ReadWrite | FileShare.Inheritable)`), uses it as the daemon's standard input, output, and error (`STARTF_USESTDHANDLES`), and passes it as the only entry of `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` to `CreateProcessW` with `EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW`. The daemon inherits nothing else, whatever gh-ledger itself inherited. `CREATE_NO_WINDOW` keeps the current behavior: a console without a window, so Windows still sends the daemon shutdown events.
 - **Rejected for Windows:** clearing the inherit flag on gh-ledger's own standard handles (it misses inheritable handles gh-ledger got from its parent but doesn't use as standard handles); redirecting the three streams to pipes (`bInheritHandles` stays `TRUE`, so everything else still leaks); and `UseShellExecute = true` (no handle control, and it can show the "Open File – Security Warning" prompt for a downloaded binary).
-- **Linux and macOS:** start `/bin/sh -c 'exec "$0" "$@" </dev/null >/dev/null 2>&1' <gh-ledger> daemon run …`. The redirections replace the inherited standard descriptors before the daemon runs, and `exec` keeps the process ID, so `daemon start`'s check of `daemon.json` still matches. .NET opens its own descriptors close-on-exec.
+- **Linux and macOS:** start `/bin/sh` with `-c`, this script, the gh-ledger path (the script's `$0`), and `daemon run …`:
+
+  ```shell
+  [ -x "$0" ] || { printf 'gh-ledger: cannot execute %s\n' "$0" >&2; exit 126; }; exec "$0" "$@" </dev/null >/dev/null 2>&1
+  ```
+
+  The redirections replace the inherited standard descriptors before the daemon runs, and `exec` keeps the process ID, so `daemon start`'s check of `daemon.json` still matches. .NET opens its own descriptors close-on-exec.
+- **A daemon binary that can't run fails loudly.** A failed `exec` would report to the null device, because the redirections come first; `Process.Start` used to throw instead. So the script first checks that the file is executable; if not, it writes `gh-ledger: cannot execute <path>` to the standard error it inherited (the caller's) and exits 126, the shell's code for a command that can't be executed. `sh` exits at once, so no caller's pipe stays open, and `daemon start` then reports that the daemon didn't start, as before. It prints with `printf`, because dash's `echo` interprets backslashes. On Windows, `CreateProcessW` fails synchronously and `WindowsDetachedProcess.Start` throws a `Win32Exception`, as `Process.Start` did.
 - The command line is built by `WindowsCommandLine.Build`, which quotes like .NET's `ArgumentList` (the C runtime's rules) and is unit-tested on every OS.
 
 ### The receipt and how it reaches the pull request (Task 2)
@@ -145,6 +157,7 @@ Sources: [HttpClient.DefaultProxy](https://learn.microsoft.com/dotnet/api/system
 - **Exact reconciliation.** The receipt's totals are the branch's row from `GetRollupAsync(LedgerGrouping.Branch, { Repository, Branch })`: the same query, keys, and filter as `gh-ledger branch --since all`. EP4 compares all 10 fields of `export-pr --json` and `branch --since all --json`, decimals by value.
 - **All recorded spend on the branch.** A receipt covers every span on the branch, with no `--since`, and says so through its check command. If a branch name is reused, the receipt includes the earlier spend (deferred: `--since`).
 - **Terms.** A *turn* is one model request: one stored inference span. *Max single-prompt burn* is the costliest prompt chain's billed spend, `(AiCreditsUsd + FoundryByokUsd) / 0.01`, in AI credits: the same measure that orders `top-prompts` and that the breaker's velocity rule counts, with BYOK at $0.01 per credit. *Breaker trips* counts the branch's trips, open or reset.
+- **At most 65,536 bytes.** The action rejects a larger receipt, and GitHub's comment limit is 65,536 characters, so `export-pr` refuses one too, with or without `--stdout`, and the developer finds out before pushing instead of from a failed job. `--json` still writes the data.
 - **The repository must have a GitHub `origin`.** Without a slug, the ledger key is a local path, which mustn't be committed or posted, so `export-pr` refuses.
 
 ### Signed receipts and a pre-push hook (deferred)
@@ -156,15 +169,16 @@ Sources: [HttpClient.DefaultProxy](https://learn.microsoft.com/dotnet/api/system
 
 - **Composite action, PowerShell 7, no dependencies.** `action/action.yml` runs `action/receipt.ps1` with `shell: pwsh`. It calls the REST API with `Invoke-WebRequest` and parses responses with `System.Text.Json`, so strings stay exact: no jq number coercion, and no `ConvertFrom-Json` turning a date-like branch name into a `DateTime`. It uses no third-party or `actions/*` action. PowerShell 7.6 is on every GitHub-hosted runner, and the tests run offline by defining a function named `Invoke-WebRequest`.
 - **Permissions: `contents: read` and `pull-requests: write`.** This is a deliberate deviation from "only `pull-requests: write`": reading the receipt file at the pull request's head needs Contents read, by GitHub's permission table. The example workflow requests both in its `permissions` block, so it works whichever default token permissions the repository uses, and the token gets nothing else.
-- **Finding the receipt:** list the pull request's changed files (paged, 100 per page, up to 30 pages), keep those under `receipts-directory` that end in `.md` and weren't removed, fetch each at the head SHA, and pick the one whose `branch` equals the pull request's head branch, compared case-sensitively.
-- **Validating it:** at most 65,536 bytes, valid UTF-8, the marker `<!-- copilot-ledger-receipt -->` as its first line, a `json` block, `"schemaVersion": 1`, and a string `branch`. A file that fails is an error that fails the job and names the file. No receipt is a notice, not a failure.
-- **One comment:** the oldest comment by `comment-author` (default `github-actions[bot]`) whose body starts with the marker is updated; with none, a comment is created; when the body is already identical (ignoring `\r`), nothing is sent. Others' comments are never edited. The example workflow's `concurrency` group per pull request prevents two runs from both creating a comment.
+- **Finding the receipt:** list the pull request's changed files (paged, 100 per page, up to 30 pages), keep those under `receipts-directory` that end in `.md` and weren't removed, fetch each at the head SHA, and pick the one whose `branch` equals the pull request's head branch, compared ordinally: case-sensitively, with every character counted.
+- **Validating it:** at most 65,536 bytes, valid UTF-8, the marker `<!-- copilot-ledger-receipt -->` as its first line (with nothing before it, not even a byte order mark), a `json` block, `"schemaVersion": 1`, and a string `branch`. A file that fails is an error that fails the job and names the file; when no receipt is for the head branch, the error lists the branches it found. No receipt is a notice, not a failure.
+- **One comment:** the oldest comment by `comment-author` (default `github-actions[bot]`, compared case-insensitively, as GitHub logins are) whose body starts with the marker is updated; with none, a comment is created; when the body is already identical (ignoring `\r`), nothing is sent. Others' comments are never edited. The example workflow's `concurrency` group per pull request prevents two runs from both creating a comment.
+- **Exact comparisons.** `receipt.ps1` compares strings only with `[string]::Equals` and an ordinal `StringComparison`, or ordinal `StartsWith` and `EndsWith`, never with `-eq`, `-ceq`, `-like`, or `-match`. PowerShell's operators use culture rules, which ignore zero-width characters and a byte order mark, so a receipt for `feature/ledger` plus a zero-width space would be posted on `feature/ledger`, and a receipt starting with a byte order mark would pass the marker check and then never match its own comment, adding a comment on every run.
 - **Events:** only `pull_request`. Fork pull requests are skipped with a notice, because their token is read-only. `pull_request_target` fails with an error: it runs with a write token on untrusted input, and posting a fork author's Markdown as the bot isn't worth that risk.
 - **Location:** `action/` in this repository, used as `swigerb/gh-ledger/action@<ref>`, per the user's layout. A separate repository for a Marketplace listing is deferred.
 
 ### The gh extension (Task 4)
 
-- **Release assets** follow gh's convention: `gh-ledger-windows-amd64.exe`, `gh-ledger-windows-arm64.exe`, `gh-ledger-linux-amd64`, `gh-ledger-linux-arm64`, `gh-ledger-darwin-amd64`, and `gh-ledger-darwin-arm64`, plus `rates.json` and `gh-ledger-checksums.txt` (SHA-256), which gh ignores. Each OS's binaries are built on that OS's runner; the native one is smoke-tested (`--version` equals the project version). A tag `v*` must equal `v` plus the project version. `workflow_dispatch` runs the build without releasing.
+- **Release assets** follow gh's convention: `gh-ledger-windows-amd64.exe`, `gh-ledger-windows-arm64.exe`, `gh-ledger-linux-amd64`, `gh-ledger-linux-arm64`, `gh-ledger-darwin-amd64`, and `gh-ledger-darwin-arm64`, plus `rates.json` and `gh-ledger-checksums.txt` (SHA-256), which gh ignores. Each OS's binaries are built on that OS's runner. The three that the runners can run (`win-x64`, `linux-x64`, and `osx-arm64`) are smoke-tested: `--version` equals the project version. A tag `v*` must equal `v` plus the project version. The release job runs only when a tag is pushed (`github.event_name == 'push' && github.ref_type == 'tag'`), so a manual (`workflow_dispatch`) run builds and smoke-tests without releasing, even when it's started from a tag. `run` scripts read matrix values from environment variables, never from `${{ }}`.
 - **Detecting the extension:** gh-ledger is running as the installed extension when its path is `…/extensions/gh-ledger/gh-ledger` (or `gh-ledger.exe`) and `manifest.yml` exists in that directory, the layout gh creates. It doesn't depend on `GH_EXTENSION`, which the sign-in item doesn't set.
 - **`install` as the extension** skips the alias (gh would refuse it, and the extension already provides `gh ledger`) and the `sh.exe` warning (binary extensions don't use `sh`). The sign-in item already uses the running executable, which is the extension's binary; `gh extension upgrade` replaces it in place, so the item stays valid. An alias set by an earlier standalone install is left recorded, and `uninstall` removes it as before.
 - **`status` as the extension** shows `gh-ledger <version> (GitHub CLI extension)`, names `gh ledger daemon start` and `gh ledger install` in its hints, and reports `"ghExtension": true`. In either mode it warns when `install.json` names a different executable, for example after switching from a downloaded binary to the extension: `CopilotLedger was installed from <path>; run <command> install to use this copy instead.`
@@ -188,11 +202,12 @@ Sources: [HttpClient.DefaultProxy](https://learn.microsoft.com/dotnet/api/system
 |---|---|
 | `src/CopilotLedger.Cli/WindowsCommandLine.cs` | New, copy exactly |
 | `src/CopilotLedger.Cli/WindowsDetachedProcess.cs` | New, copy exactly |
-| `src/CopilotLedger.Cli/SystemCliPlatform.cs` | Replace `StartDetached` |
+| `src/CopilotLedger.Cli/SystemCliPlatform.cs` | Replace `StartDetached`; add `UnixDetachedStartInfo` |
 | `src/CopilotLedger.Cli/ICliPlatform.cs` | Replace the comment on `StartDetached` |
 | `.github/workflows/ci.yml` | Capture `daemon start` in the smoke test; add a PowerShell step |
 | `docs/cli.md` | One sentence in "The daemon" |
 | `tests/CopilotLedger.Tests/Cli/WindowsCommandLineTests.cs` | New (Task 1 tests) |
+| `tests/CopilotLedger.Tests/Cli/StartDetachedTests.cs` | New (Task 1 tests) |
 
 No project file changes: `DllImport` needs neither `AllowUnsafeBlocks` nor a package.
 
@@ -445,9 +460,9 @@ internal static class WindowsDetachedProcess
 }
 ```
 
-### `SystemCliPlatform.StartDetached` (copy exactly)
+### `SystemCliPlatform` (copy exactly)
 
-Replace the whole method with:
+Replace the whole `StartDetached` method with these two methods. `UnixDetachedStartInfo` is public so that SD1 can run the same `/bin/sh` command with standard error redirected.
 
 ```csharp
     public int StartDetached(
@@ -460,25 +475,39 @@ Replace the whole method with:
             return WindowsDetachedProcess.Start(fileName, arguments, workingDirectory);
         }
 
-        // exec keeps the process id, and the redirections replace the inherited standard handles before the daemon runs.
-        using Process process = new();
-        process.StartInfo.FileName = "/bin/sh";
-        process.StartInfo.UseShellExecute = false;
-        process.StartInfo.WorkingDirectory = workingDirectory;
-        process.StartInfo.ArgumentList.Add("-c");
-        process.StartInfo.ArgumentList.Add("exec \"$0\" \"$@\" </dev/null >/dev/null 2>&1");
-        process.StartInfo.ArgumentList.Add(fileName);
-        foreach (string argument in arguments)
-        {
-            process.StartInfo.ArgumentList.Add(argument);
-        }
-
+        using Process process = new() { StartInfo = UnixDetachedStartInfo(fileName, arguments, workingDirectory) };
         process.Start();
         return process.Id;
     }
+
+    // /bin/sh first checks that fileName can be executed: if not, it says so on the caller's standard error and exits
+    // with 126, because a failed exec would report to the null device. Otherwise exec keeps the process id, and the
+    // redirections replace the inherited standard handles before the daemon runs. printf, not echo: dash's echo
+    // interprets backslashes in the path.
+    public static ProcessStartInfo UnixDetachedStartInfo(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        string workingDirectory)
+    {
+        ProcessStartInfo startInfo = new("/bin/sh")
+        {
+            UseShellExecute = false,
+            WorkingDirectory = workingDirectory,
+        };
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add(
+            """[ -x "$0" ] || { printf 'gh-ledger: cannot execute %s\n' "$0" >&2; exit 126; }; exec "$0" "$@" </dev/null >/dev/null 2>&1""");
+        startInfo.ArgumentList.Add(fileName);
+        foreach (string argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        return startInfo;
+    }
 ```
 
-The `if (OperatingSystem.IsWindows())` check is what satisfies CA1416 for the Windows-only class; keep it in that form.
+The `if (OperatingSystem.IsWindows())` check is what satisfies CA1416 for the Windows-only class; keep it in that form. The script is a one-line C# raw string literal (`"""…"""`), so its `\n` reaches `printf` as a backslash and an `n`.
 
 ### `ICliPlatform` (copy exactly)
 
@@ -528,9 +557,10 @@ In "## The daemon", append this sentence to the first paragraph:
 
 ### Acceptance criteria
 
-- `StartDetached` calls `WindowsDetachedProcess.Start` on Windows and starts `/bin/sh` with exactly the arguments above elsewhere. Nothing else in `SystemCliPlatform` changes.
+- `StartDetached` calls `WindowsDetachedProcess.Start` on Windows and starts `UnixDetachedStartInfo`'s `/bin/sh` command elsewhere. Apart from those two methods, nothing in `SystemCliPlatform` changes.
+- On Linux and macOS, a daemon binary that can't be executed makes `sh` write `gh-ledger: cannot execute <path>` to the caller's standard error and exit 126; on Windows, `StartDetached` throws a `Win32Exception` (SD1).
 - `WindowsCommandLine` is public; `WindowsDetachedProcess` is internal and marked `[SupportedOSPlatform("windows")]`.
-- `dotnet build` reports no warnings, and `dotnet test` passes 591 tests (577 + 14).
+- `dotnet build` reports no warnings, and `dotnet test` passes 592 tests (577 + 15).
 - CI passes on `ubuntu-latest` and `windows-latest`, including both capture checks.
 
 ### Verify
@@ -701,6 +731,8 @@ The Markdown, built by `ReceiptMarkdown.ToMarkdown` with `\n` line breaks on eve
 
 Money and counts use `LedgerFormat` (`Credits`, `Usd`, `Count`), so they round half away from zero to cents, exactly like the CLI tables. EP1 shows a whole receipt.
 
+A receipt whose Markdown is more than `ReceiptMarkdown.MaximumBytes` (65,536) bytes of UTF-8 is refused before anything is written, with `--stdout` or without: exit code 1, nothing on `Out`, and `The receipt for <branch> is <size> bytes; a receipt can be at most 65536 bytes.` on `Error`. The action rejects such a receipt, and GitHub's comment limit is 65,536 characters. `--json` isn't limited.
+
 ### `PullRequestReceipt.cs` (copy exactly)
 
 ```csharp
@@ -742,6 +774,7 @@ public static class ReceiptMarkdown
 {
     public const string Marker = "<!-- copilot-ledger-receipt -->";
     public const string ReceiptsDirectory = ".github/copilot-ledger/receipts";
+    public const int MaximumBytes = 65536;   // as in action/receipt.ps1; keeps a receipt within GitHub's 65,536-character comment limit
 
     internal static string ToJson(PullRequestReceipt receipt)
     {
@@ -1109,6 +1142,14 @@ internal static class ReceiptCommands
         }
 
         string markdown = ReceiptMarkdown.ToMarkdown(receipt);
+        int size = Encoding.UTF8.GetByteCount(markdown);
+        if (size > ReceiptMarkdown.MaximumBytes)
+        {
+            context.Error.WriteLine(
+                $"The receipt for {git.BranchName} is {size} bytes; a receipt can be at most {ReceiptMarkdown.MaximumBytes} bytes.");
+            return 1;
+        }
+
         if (stdout)
         {
             context.Out.Write(markdown);
@@ -1167,15 +1208,15 @@ The receipt covers all spend recorded on the branch. It lists GitHub AI Credits 
 - `--stdout` writes the Markdown to standard output instead of the file.
 - `--json` writes the JSON data to standard output instead of the file.
 
-`export-pr` needs a branch with at least one commit and a GitHub remote named `origin`. A turn is one model request. Branch and model names appear in code spans, so they never become mentions or links.
+A receipt can be at most 65,536 bytes, the most the CopilotLedger action posts; `export-pr` refuses a larger one, with or without `--stdout`. `export-pr` needs a branch with at least one commit and a GitHub remote named `origin`. A turn is one model request. Branch and model names appear in code spans, so they never become mentions or links.
 ```
 
 ### Acceptance criteria
 
 - `GetRollupAsync` returns the same rows as before for the four existing groupings, with `Channel` null.
-- `export-pr` writes only the receipt file, with UTF-8 without a byte order mark and `\n` line breaks, and creates its directories. `--stdout` and `--json` write no file.
+- `export-pr` writes only the receipt file, with UTF-8 without a byte order mark and `\n` line breaks, and creates its directories. `--stdout` and `--json` write no file. A receipt over 65,536 bytes is refused, with or without `--stdout`, and writes nothing.
 - No `double` or `float` in `src/`. Money flows only through `decimal` and `LedgerFormat`.
-- `dotnet build` reports no warnings, and `dotnet test` passes 619 tests (591 + 28).
+- `dotnet build` reports no warnings, and `dotnet test` passes 621 tests (592 + 29).
 
 ### Verify
 
@@ -1214,7 +1255,7 @@ inputs:
     description: Token that reads the pull request and writes the comment. Needs contents read and pull-requests write.
     default: ${{ github.token }}
   receipts-directory:
-    description: Repository directory that gh ledger export-pr writes receipts to.
+    description: Repository directory where receipts are committed. Change it only if you move them.
     default: .github/copilot-ledger/receipts
   comment-author:
     description: Login that owns the receipt comment. Change it only when github-token belongs to another account.
@@ -1253,6 +1294,8 @@ Every value from the event reaches the script through `env`, never by `${{ }}` i
 #Requires -Version 7.4
 # Posts the CopilotLedger receipt that a pull request commits as one comment, and updates that comment on later runs.
 # action.yml passes the inputs and pull request fields as environment variables. See docs/action.md.
+# Strings are compared with [string]::Equals and an ordinal StringComparison, never -eq or -ceq: PowerShell compares
+# strings with culture rules, which ignore zero-width characters and a byte order mark.
 
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
@@ -1349,7 +1392,7 @@ function Read-Receipt([string] $Repository, [string] $Path, [string] $Sha) {
     }
 
     [string[]] $lines = @($text.Split("`n") | ForEach-Object { $_.TrimEnd("`r") })
-    if ($lines[0] -cne $Marker) {
+    if (-not [string]::Equals($lines[0], $Marker, [System.StringComparison]::Ordinal)) {
         Stop-WithError "$Path doesn't start with $Marker, so it isn't a CopilotLedger receipt."
     }
 
@@ -1370,7 +1413,7 @@ function Read-Receipt([string] $Repository, [string] $Path, [string] $Sha) {
     if ($data.ValueKind -ne [System.Text.Json.JsonValueKind]::Object -or
         -not $data.TryGetProperty('schemaVersion', [ref] $version) -or
         $version.ValueKind -ne [System.Text.Json.JsonValueKind]::Number -or
-        $version.GetRawText() -cne '1') {
+        -not [string]::Equals($version.GetRawText(), '1', [System.StringComparison]::Ordinal)) {
         Stop-WithError "$Path has an unsupported schemaVersion; this action reads schemaVersion 1."
     }
 
@@ -1382,7 +1425,7 @@ function Read-Receipt([string] $Repository, [string] $Path, [string] $Sha) {
     return [pscustomobject]@{ Path = $Path; Branch = $branch; Text = $text }
 }
 
-if ($env:EVENT_NAME -cne 'pull_request') {
+if (-not [string]::Equals($env:EVENT_NAME, 'pull_request', [System.StringComparison]::Ordinal)) {
     Stop-WithError "The CopilotLedger receipt action runs on pull_request events, not $($env:EVENT_NAME)."
 }
 
@@ -1399,7 +1442,7 @@ $candidates = [System.Collections.Generic.List[string]]::new()
 foreach ($file in (Get-Pages "repos/$repository/pulls/$($env:PR_NUMBER)/files")) {
     $name = Get-StringProperty $file 'filename'
     if ($null -ne $name -and
-        (Get-StringProperty $file 'status') -cne 'removed' -and
+        -not [string]::Equals((Get-StringProperty $file 'status'), 'removed', [System.StringComparison]::Ordinal) -and
         $name.StartsWith($directory, [System.StringComparison]::Ordinal) -and
         $name.EndsWith('.md', [System.StringComparison]::Ordinal)) {
         $candidates.Add($name)
@@ -1414,7 +1457,7 @@ if ($candidates.Count -eq 0) {
 }
 
 $receipts = @($candidates | ForEach-Object { Read-Receipt $repository $_ $env:HEAD_SHA })
-$matching = @($receipts | Where-Object { $_.Branch -ceq $env:HEAD_REF })
+$matching = @($receipts | Where-Object { [string]::Equals($_.Branch, $env:HEAD_REF, [System.StringComparison]::Ordinal) })
 if ($matching.Count -eq 0) {
     $found = ($receipts | ForEach-Object { $_.Branch }) -join ', '
     Stop-WithError "No receipt for $($env:HEAD_REF) changed in this pull request; found receipts for: $found."
@@ -1431,7 +1474,8 @@ foreach ($comment in (Get-Pages "repos/$repository/issues/$($env:PR_NUMBER)/comm
     $user = [System.Text.Json.JsonElement]::new()
     $login = if ($comment.TryGetProperty('user', [ref] $user)) { Get-StringProperty $user 'login' } else { $null }
     $body = Get-StringProperty $comment 'body'
-    if ($login -ceq $env:COMMENT_AUTHOR -and
+    if ($null -ne $login -and
+        [string]::Equals($login, $env:COMMENT_AUTHOR, [System.StringComparison]::OrdinalIgnoreCase) -and
         $null -ne $body -and
         $body.StartsWith($Marker, [System.StringComparison]::Ordinal)) {
         $existing = $comment
@@ -1445,7 +1489,10 @@ if ($null -eq $existing) {
     $result = 'created'
     $url = Get-StringProperty $created 'html_url'
 }
-elseif ((Get-StringProperty $existing 'body').Replace("`r`n", "`n") -ceq $receipt.Text.Replace("`r`n", "`n")) {
+elseif ([string]::Equals(
+        (Get-StringProperty $existing 'body').Replace("`r`n", "`n"),
+        $receipt.Text.Replace("`r`n", "`n"),
+        [System.StringComparison]::Ordinal)) {
     $result = 'unchanged'
     $url = Get-StringProperty $existing 'html_url'
 }
@@ -1467,8 +1514,10 @@ How it behaves, in order:
 1. Any event but `pull_request`: `::error::The CopilotLedger receipt action runs on pull_request events, not <event>.`, exit 1, no API calls.
 2. A head repository other than this one (a fork, or a deleted fork): `::notice::Skipped the CopilotLedger receipt: …`, outputs `result=skipped` and an empty `comment-url`, exit 0, no API calls.
 3. List the changed files and keep the candidates. None: a `::notice::` naming `gh ledger export-pr` and the directory, `result=no-receipt`, exit 0.
-4. Read and validate every candidate (errors name the file and exit 1), then require exactly one whose `branch` is the head branch, case-sensitively.
-5. Find the comment, then create it, leave it, or update it, and write `CopilotLedger receipt <result>: <url>` and both outputs.
+4. Read and validate every candidate (errors name the file and exit 1), then require exactly one whose `branch` is the head branch, compared ordinally. With none, the error lists the branches it found.
+5. Find the comment (the oldest by `comment-author`, compared ignoring case, whose body starts with the marker), then create it, leave it, or update it, and write `CopilotLedger receipt <result>: <url>` and both outputs.
+
+Every string comparison is `[string]::Equals` with `[System.StringComparison]::Ordinal` (`OrdinalIgnoreCase` for logins) or an ordinal `StartsWith` or `EndsWith`. Don't use `-eq`, `-ceq`, `-ne`, `-cne`, `-like`, or `-match` on strings: they compare with culture rules, which ignore zero-width characters and a byte order mark (see "Verified facts"). The login check keeps `$null -ne $login`, because PowerShell passes `$null` to `[string]::Equals` as `""`.
 
 Messages go through `Write-Host`, because `Write-Output` inside a function whose result is assigned would be swallowed. Workflow-command text escapes `%`, `\r`, and `\n`. `Set-StrictMode -Version 3.0` is deliberate.
 
@@ -1559,7 +1608,7 @@ The action reads the receipt with `contents: read` and comments with `pull-reque
 | Input | Default | Meaning |
 |---|---|---|
 | `github-token` | `${{ github.token }}` | Token that reads the pull request and writes the comment |
-| `receipts-directory` | `.github/copilot-ledger/receipts` | Where `export-pr` writes receipts |
+| `receipts-directory` | `.github/copilot-ledger/receipts` | Where receipts are committed; change it only if you move them |
 | `comment-author` | `github-actions[bot]` | The login that owns the receipt comment. Change it only when `github-token` belongs to another account. |
 
 | Output | Meaning |
@@ -1571,8 +1620,8 @@ The action reads the receipt with `contents: read` and comments with `pull-reque
 
 - It runs only for `pull_request` events. Pull requests from forks get a read-only token, so the action skips them with a notice.
 - A receipt must be among the pull request's changed files, under the receipts directory, and end in `.md`. With none, the action leaves a notice and succeeds.
-- A receipt must start with `<!-- copilot-ledger-receipt -->`, be at most 65,536 bytes of UTF-8, and hold a JSON block with `"schemaVersion": 1` and a `branch` equal to the pull request's branch. Otherwise the action fails with an error that names the file.
-- It updates the oldest comment by `comment-author` that starts with `<!-- copilot-ledger-receipt -->`. It never edits anyone else's comment.
+- A receipt must start with `<!-- copilot-ledger-receipt -->` (with no byte order mark before it), be at most 65,536 bytes of UTF-8, and hold a JSON block with `"schemaVersion": 1` and a `branch` exactly equal to the pull request's branch. Otherwise the action fails with an error that names the file or, when no receipt is for the pull request's branch, lists the branches of the receipts it found.
+- It updates the oldest comment by `comment-author` (compared case-insensitively, as GitHub logins are) that starts with `<!-- copilot-ledger-receipt -->`. It never edits anyone else's comment.
 
 The action is a composite action that runs PowerShell 7, which GitHub-hosted runners include.
 ````
@@ -1587,9 +1636,10 @@ The CopilotLedger action then posts it on the pull request; see [Posting PR rece
 
 ### Acceptance criteria
 
-- `pwsh -NoProfile -File action/tests/receipt.Tests.ps1` prints `All receipt action tests passed.` and exits 0 on Windows and Linux.
+- `pwsh -NoProfile -File action/tests/receipt.Tests.ps1` runs AC1–AC18, prints `All receipt action tests passed.`, and exits 0 on Windows and Linux.
+- `receipt.ps1` uses none of `-eq`, `-ceq`, `-ne`, `-cne`, `-like`, `-clike`, `-match`, or `-cmatch` on a string; the remaining `-eq`, `-ne`, `-lt`, `-le`, and `-gt` compare numbers, enum values, or `$null`.
 - The action uses no other action and no network access other than `GITHUB_API_URL`. The workflow grants only `contents: read` and `pull-requests: write`.
-- `dotnet test` still passes 619 tests.
+- `dotnet test` still passes 621 tests.
 - On this task's pull request, the `Receipt` workflow succeeds with a `No CopilotLedger receipt changed in this pull request.` notice.
 
 ### Verify
@@ -1827,22 +1877,29 @@ jobs:
             exit 1
           fi
       - name: Publish
-        run: dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release -r ${{ matrix.rid }} -o publish
+        shell: bash
+        env:
+          RID: ${{ matrix.rid }}
+        run: dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release -r "$RID" -o publish
       - name: Name the asset
         shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
         run: |
           mkdir dist
           if [ -f publish/gh-ledger.exe ]; then
-            cp publish/gh-ledger.exe "dist/${{ matrix.asset }}"
+            cp publish/gh-ledger.exe "dist/$ASSET"
           else
-            cp publish/gh-ledger "dist/${{ matrix.asset }}"
+            cp publish/gh-ledger "dist/$ASSET"
           fi
       - name: Smoke-test the asset
         if: matrix.smoke
         shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
         run: |
           version=$(dotnet msbuild src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -getProperty:Version | tr -d '\r')
-          test "$("./dist/${{ matrix.asset }}" --version | tr -d '\r')" = "$version"
+          test "$("./dist/$ASSET" --version | tr -d '\r')" = "$version"
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
@@ -1851,7 +1908,7 @@ jobs:
 
   release:
     needs: build
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1887,8 +1944,12 @@ Releases are GitHub Releases of this repository. They make `gh extension install
 
 ## Cut a release
 
-1. Set `<Version>` in `src/CopilotLedger.Cli/CopilotLedger.Cli.csproj`, the version fallback in `GhLedgerCli.cs`, and the version that the CI smoke test checks, and merge that change.
-2. Optional: run the Release workflow from the Actions tab on `main`. A manual run builds and smoke-tests all six binaries and uploads them as workflow artifacts, without creating a release.
+1. Change the version everywhere it's written, and merge that change:
+   - `<Version>` in `src/CopilotLedger.Cli/CopilotLedger.Cli.csproj`;
+   - in `src/CopilotLedger.Cli/GhLedgerCli.cs`, the `AssemblyInformationalVersionAttribute` comment and the fallback after `??`;
+   - the version that the smoke test in `.github/workflows/ci.yml` compares with;
+   - the tests that expect it: `DaemonCommandTests.DM1` and `ReportCommandTests.StatusText`.
+2. Optional: run the Release workflow on `main` from the Actions tab. A manual run builds all six binaries, smoke-tests the three that GitHub's runners can run (`win-x64`, `linux-x64`, and `osx-arm64`), and uploads the six as workflow artifacts. It never creates a release, even when it's started from a tag.
 3. Tag the merged commit and push the tag:
 
    ```shell
@@ -1896,7 +1957,7 @@ Releases are GitHub Releases of this repository. They make `gh extension install
    git push origin v0.4.0
    ```
 
-The Release workflow checks that the tag equals `v` plus the project version, builds a single-file binary for each platform, and creates the release with these assets:
+When a `v*` tag is pushed, the Release workflow checks that the tag equals `v` plus the project version, builds a single-file binary for each platform, smoke-tests the same three, and creates the release with these assets:
 
 | Asset | Platform |
 |---|---|
@@ -2049,7 +2110,7 @@ without it, run `gh-ledger` directly.
    ```markdown
    Commands are shown as `gh-ledger <command>`. With the GitHub CLI extension, or after `install` sets the alias, run them as `gh ledger <command>`.
    ```
-2. Replace the subsections "### Build the binary" and "### Install it" with:
+2. Replace the subsections "### Build the binary" and "### Install it", everything from "### Build the binary" up to "### Verify it", with:
 
    ````markdown
    ### Install it
@@ -2107,7 +2168,7 @@ without it, run `gh-ledger` directly.
 
 ### `docs/cli.md`
 
-1. Replace "## Build the binary" and its paragraph and code block with:
+1. Replace the whole "## Build the binary" section, everything from that heading up to "## Install", with the text below. That's the heading, the paragraph before the code block, the code block, and the paragraph after it that starts "Use `win-x64`". The replacement:
 
    ````markdown
    ## Get gh-ledger
@@ -2151,8 +2212,8 @@ without it, run `gh-ledger` directly.
 
 - As the extension (`…/extensions/gh-ledger/gh-ledger[.exe]` with `manifest.yml` beside it), `install` runs no `gh` command, prints the no-alias line, never prints the `sh.exe` warning, and registers the extension's path; otherwise `install` is unchanged.
 - `status` text and JSON are unchanged for a standalone binary without `install.json` (apart from the version and `"ghExtension": false`).
-- `release.yml` publishes the six assets, `rates.json`, and `gh-ledger-checksums.txt` only for a `v*` tag whose version matches; `workflow_dispatch` builds without releasing. Don't push a tag or run a release.
-- `dotnet build` reports no warnings, and `dotnet test` passes 626 tests (619 + 7).
+- `release.yml` publishes the six assets, `rates.json`, and `gh-ledger-checksums.txt` only when a `v*` tag whose version matches is pushed. A manual run (`workflow_dispatch`) builds and smoke-tests without releasing, even when it's started from a tag. No `run` script contains `${{ }}`. Don't push a tag or run a release.
+- `dotnet build` reports no warnings, and `dotnet test` passes 628 tests (621 + 7).
 
 ### Verify
 
@@ -2635,7 +2696,7 @@ Run `gh-ledger rates init` to create a starter overlay and `gh-ledger rates vali
 - Without `rates.downloaded.json`, `status`, `rates validate`, and the daemon behave exactly as before, apart from `status --json`'s new `ratesSource`.
 - No new package references. No `double` or `float` in `src/`.
 - `docs/configuration.md` keeps exactly three `<!-- rates-error-example -->` blocks.
-- `dotnet build` reports no warnings, and `dotnet test` passes 647 tests (626 + 21).
+- `dotnet build` reports no warnings, and `dotnet test` passes 649 tests (628 + 21).
 
 ### Verify
 
@@ -2652,19 +2713,20 @@ Report the counts. Don't run `rates update` against the real URL in tests; runni
 Shared rules for every task, which extend Sprint 3's:
 
 - **Money.** Assertions use `decimal`. Read JSON money with `GetDecimal()`, never `GetDouble`.
-- **Public API only.** No `InternalsVisibleTo`. CLI behavior is tested through `GhLedgerCli.InvokeAsync` (`CliHarness`). The public helpers `WindowsCommandLine` and `ReceiptMarkdown` are tested directly.
-- **Isolation.** Each test that writes files gets its own `TempDirectory`, declared first (`using TempDirectory temp = new();`) so it's disposed last, after the harness and any store. Build every path with `Path.Combine`, except the fake platform's paths, which are plain strings because the fake never touches the disk for them. Nothing touches the network, the real registry, `~/.copilot-ledger`, `~/.config`, gh, or shell profiles: HTTP goes through `FakeHttpHandler`, processes through `FakeCliPlatform`, and daemons through `TestServer`. No test opens a socket, starts a process, or runs `git`.
+- **Public API only.** No `InternalsVisibleTo`. CLI behavior is tested through `GhLedgerCli.InvokeAsync` (`CliHarness`). The public helpers `WindowsCommandLine`, `SystemCliPlatform.UnixDetachedStartInfo`, and `ReceiptMarkdown` are tested directly.
+- **Isolation.** Each test that writes files gets its own `TempDirectory`, declared first (`using TempDirectory temp = new();`) so it's disposed last, after the harness and any store. Build every path with `Path.Combine`, except the fake platform's paths, which are plain strings because the fake never touches the disk for them. Nothing touches the network, the real registry, `~/.copilot-ledger`, `~/.config`, gh, or shell profiles: HTTP goes through `FakeHttpHandler`, processes through `FakeCliPlatform`, and daemons through `TestServer`. No test opens a socket or runs `git`. Only SD1 starts a process: on Linux and macOS, `/bin/sh` with a file it can't execute, which exits at once.
 - **SQLite pools.** Keep every database under the test's `TempDirectory`; `TempDirectory.Dispose` calls `SqliteConnection.ClearAllPools()` before deleting it. These tests never reopen a database with a changed schema, so they need no other pool handling.
 - **Files the product just wrote.** Read them with `FileRetry.ReadAllTextAsync` or `FileRetry.ReadAllBytesAsync`, which retry while Windows reports the file in use (antivirus scans of new files caused issue #30).
+- **Files the test just wrote.** When a test writes a file that the product then reads, it calls `await FileRetry.ReadAllTextAsync(path);` right after the write, before running the product, so a brief antivirus lock can't change the product's output. RP13, RU4–RU9, EP5, EP6, LW2, and LW3 do this.
 - **Text.** `CliRun.Out` and `CliRun.Error` already have `\r\n` replaced with `\n`; never normalize them again, and never normalize a file the product wrote. Write multi-line expected text either as string literals that each end in `\n`, joined with `+`, or as a raw string literal followed by `.ReplaceLineEndings("\n")` *before* any value is substituted into it (checkouts use `core.autocrlf=true`, so a raw literal takes the file's line endings). Never call `ReplaceLineEndings` on interpolated text.
 - **Exact output.** When a case compares `Out` or `Error`, it compares the whole text. A line check compares a whole line (`Split('\n')[index]`), and `StartsWith` checks include the trailing `\n`. Every CLI run asserts its exit code.
 - **Clocks.** Receipt tests use `new ManualTimeProvider(2026-11-21T15:00:00Z, ManualTimeProvider.UtcMinus5)`. RU9 uses `ManualTimeProvider(2026-11-21T15:00:00Z)` so the daemon's log line is exact.
 - **Outside a repository.** EP6's `no-repository` case expects `<root>/work` not to be in a Git repository. Like `ReportCommandTests` and Sprint 3's BC3, it assumes no `.git` above the system temp directory, which holds on developer machines and GitHub's runners.
-- **The action's tests** are PowerShell: `pwsh -NoProfile -File action/tests/receipt.Tests.ps1`. They define a function named `Invoke-WebRequest` that answers from a table and fails on any request it doesn't expect, so they never reach the network.
+- **The action's tests** are PowerShell: `pwsh -NoProfile -File action/tests/receipt.Tests.ps1`. They define a function named `Invoke-WebRequest` that answers from a table and fails the case on any request it doesn't expect, so they never reach the network.
 
 ### Task 1 tests
 
-`tests/CopilotLedger.Tests/Cli/WindowsCommandLineTests.cs` (copy exactly). WC1 checks each argument rule; WC2 checks the daemon's whole command line and an empty argument list. These vectors are the ones that round-tripped through a real child process (see "Verified facts").
+`tests/CopilotLedger.Tests/Cli/WindowsCommandLineTests.cs` (copy exactly). WC1 checks each argument rule; WC2 checks the daemon's whole command line and an empty argument list. WC1's 13 vectors and WC2's six daemon arguments are the ones that round-tripped through a real child process (see "Verified facts").
 
 ```csharp
 using CopilotLedger.Cli;
@@ -2712,7 +2774,50 @@ public sealed class WindowsCommandLineTests
 }
 ```
 
-The capture behavior itself is checked by the two CI steps in Task 1, on both operating systems, because a unit test can't start processes.
+`tests/CopilotLedger.Tests/Cli/StartDetachedTests.cs` (copy exactly). **SD1** checks that a daemon binary that can't run fails loudly. On Windows, `StartDetached` with a missing file throws a `Win32Exception` whose `NativeErrorCode` is 2 (`ERROR_FILE_NOT_FOUND`), and no process starts. On Linux and macOS, it runs `UnixDetachedStartInfo` for a file without execute permission, named `gh-ledger\cut`, with standard error redirected: the exit code is 126, and standard error is exactly `gh-ledger: cannot execute <path>` and `\n`, with the whole path. So each CI runner covers its own branch, and `ubuntu-latest` runs the script under dash.
+
+```csharp
+using System.ComponentModel;
+using System.Diagnostics;
+using CopilotLedger.Cli;
+using CopilotLedger.Tests.TestSupport;
+
+namespace CopilotLedger.Tests.Cli;
+
+public sealed class StartDetachedTests
+{
+    // On Windows, CreateProcess fails at once for a missing file. Elsewhere, /bin/sh reports a file it can't execute on
+    // the caller's standard error, which the test redirects to read it. The backslash in the file name checks that the
+    // path is printed as is: dash's echo would stop at "\c".
+    [Fact]
+    public async Task SD1_StartDetachedFailsLoudlyWhenTheFileCantRun()
+    {
+        using TempDirectory temp = new();
+        if (OperatingSystem.IsWindows())
+        {
+            Win32Exception exception = Assert.Throws<Win32Exception>(() => new SystemCliPlatform().StartDetached(
+                Path.Combine(temp.Path, "gh-ledger.exe"),
+                ["daemon", "run"],
+                temp.Path));
+            Assert.Equal(2, exception.NativeErrorCode);
+            return;
+        }
+
+        string file = Path.Combine(temp.Path, @"gh-ledger\cut");
+        await File.WriteAllTextAsync(file, "#!/bin/sh\n");
+        ProcessStartInfo startInfo = SystemCliPlatform.UnixDetachedStartInfo(file, ["daemon", "run"], temp.Path);
+        startInfo.RedirectStandardError = true;
+        using Process process = Process.Start(startInfo)!;
+        string error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        Assert.Equal(126, process.ExitCode);
+        Assert.Equal($"gh-ledger: cannot execute {file}\n", error);
+    }
+}
+```
+
+The capture behavior itself is checked by the two CI steps in Task 1, on both operating systems, because unit tests don't start the daemon.
 
 ### Task 2 tests
 
@@ -2978,11 +3083,14 @@ public sealed class ReceiptQueryTests
 - **EP6** covers the four Git problems; each exits 1 with exactly its error and writes nothing.
 - **EP7** rejects `--stdout --json` together.
 - **EP8** and **EP9** check `ReceiptMarkdown.FileName` and `ReceiptMarkdown.Code` vectors. The hashes are the first 8 hex digits of SHA-256 of the branch's UTF-8 bytes, computed independently in PowerShell.
+- **EP10** records one span on `feature/ledger` whose model name is 22,000 `m` characters. The name appears three times (the summary line, the table, and the JSON), so the receipt is 1,765 + 3 × 21,999 = 67,762 bytes; 1,765 is that receipt's size with a one-character name, and sizes measured at 100 and 1,000 characters (2,062 and 4,762) confirm three bytes per character. `export-pr` and `export-pr --stdout` each exit 1 with nothing on `Out` and exactly `The receipt for feature/ledger is 67762 bytes; a receipt can be at most 65536 bytes.` and `\n` on `Error`. `export-pr --json` exits 0 with nothing on `Error`. No `.github` directory is created.
 
 ````csharp
 using System.Text.Json;
 using CopilotLedger.Cli;
 using CopilotLedger.Cli.Receipts;
+using CopilotLedger.Core.Pricing;
+using CopilotLedger.Core.Telemetry;
 using CopilotLedger.Storage;
 using CopilotLedger.Tests.TestSupport;
 
@@ -3290,6 +3398,8 @@ public sealed class ReceiptCommandTests
         Directory.CreateDirectory(Path.Combine(git, "refs", "heads", "fix"));
         File.WriteAllText(Path.Combine(git, "HEAD"), "ref: refs/heads/fix/@octocat-#7\n");
         File.WriteAllText(Path.Combine(git, "refs", "heads", "fix", "@octocat-#7"), GitFixture.Sha1 + "\n");
+        await FileRetry.ReadAllTextAsync(Path.Combine(git, "HEAD"));
+        await FileRetry.ReadAllTextAsync(Path.Combine(git, "refs", "heads", "fix", "@octocat-#7"));
 
         CliRun run = await harness.RunInAsync(repo, "export-pr");
 
@@ -3325,12 +3435,14 @@ public sealed class ReceiptCommandTests
         {
             case "detached":
                 File.WriteAllText(Path.Combine(git, "HEAD"), GitFixture.Sha1 + "\n");
+                await FileRetry.ReadAllTextAsync(Path.Combine(git, "HEAD"));
                 break;
             case "unborn":
                 File.Delete(Path.Combine(git, "refs", "heads", "feature", "ledger"));
                 break;
             case "no-origin":
                 File.WriteAllText(Path.Combine(git, "config"), "[core]\n\tbare = false\n");
+                await FileRetry.ReadAllTextAsync(Path.Combine(git, "config"));
                 break;
         }
 
@@ -3397,6 +3509,42 @@ public sealed class ReceiptCommandTests
         Assert.Equal(span, ReceiptMarkdown.Code(value));
     }
 
+    // The model's 22,000-character name appears three times: in the summary, the table, and the JSON data.
+    [Fact]
+    public async Task EP10_ReceiptsOverTheSizeLimitAreRefused()
+    {
+        using TempDirectory temp = new();
+        GitFixture.Create(temp.Path);
+        await using CliHarness harness = new(temp.Path, new FakeCliPlatform(), Time);
+        SqliteLedgerStore store = new(Path.Combine(temp.Path, "data", "ledger.db"), harness.TimeProvider);
+        await store.InitializeAsync();
+        NormalizedGenAiSpan span = TestSpans.Chat(
+            requestModel: new string('m', 22_000),
+            inputTokens: 1_000,
+            outputTokens: 100);
+        await store.RecordAsync(
+        [
+            new LedgerEntry(span, JsonRateCardCalculator.LoadEmbedded().Calculate(span), GitFixture.Feature(temp.Path)),
+        ]);
+        string repo = Path.Combine(temp.Path, "repo");
+        const string Error =
+            "The receipt for feature/ledger is 67762 bytes; a receipt can be at most 65536 bytes.\n";
+
+        CliRun file = await harness.RunInAsync(repo, "export-pr");
+        CliRun stdout = await harness.RunInAsync(repo, "export-pr", "--stdout");
+        CliRun json = await harness.RunInAsync(repo, "export-pr", "--json");
+
+        Assert.Equal(1, file.ExitCode);
+        Assert.Equal(string.Empty, file.Out);
+        Assert.Equal(Error, file.Error);
+        Assert.Equal(1, stdout.ExitCode);
+        Assert.Equal(string.Empty, stdout.Out);
+        Assert.Equal(Error, stdout.Error);
+        Assert.Equal(0, json.ExitCode);
+        Assert.Equal(string.Empty, json.Error);
+        Assert.False(Directory.Exists(Path.Combine(repo, ".github")));
+    }
+
     private static string Expected(string template) =>
         template.ReplaceLineEndings("\n").Replace("<version>", GhLedgerCli.Version, StringComparison.Ordinal);
 
@@ -3414,7 +3562,7 @@ public sealed class ReceiptCommandTests
 
 ### Task 3 tests
 
-`action/tests/receipt.Tests.ps1` (copy exactly). It fakes the GitHub API with a function named `Invoke-WebRequest`, runs `receipt.ps1` once per case with the action's environment variables, and checks the exit code, every log line, the `GITHUB_OUTPUT` file, every request in order, the posted body, and the request headers. A mutation check by the architect (comparing branches case-insensitively) made AC15 fail, as it should.
+`action/tests/receipt.Tests.ps1` (copy exactly). It fakes the GitHub API with a function named `Invoke-WebRequest`, runs `receipt.ps1` once per case with the action's environment variables, and checks the exit code, every log line, the `GITHUB_OUTPUT` file, every request in order, the posted body, and the request headers. An unexpected request fails only its own case: `Invoke-Receipt` catches the exception, records it as the only log line, and sets exit code 99. `Assert-Equal` compares JSON forms ordinally, and the JSON escapes non-ASCII characters, so a failure shows a zero-width space or byte order mark as `\u200b` or `\ufeff`. The architect's mutation checks each failed exactly one case: comparing branches with `OrdinalIgnoreCase` failed AC15, comparing them with `-ceq` failed AC16, checking the marker with `-cne` failed AC17, and comparing logins with `-ceq` failed AC18.
 
 | Case | Setup | Expected |
 |---|---|---|
@@ -3433,6 +3581,9 @@ public sealed class ReceiptCommandTests
 | AC13 | 100 files on page 1, the receipt on page 2 | Both pages read, then the usual requests |
 | AC14 | `receipts-directory` `/.github/copilot-ledger/receipts/` | Still found |
 | AC15 | Head branch `Feature/Ledger` | Error: branch names are case-sensitive |
+| AC16 | The receipt's branch is `feature/ledger` plus U+200B (zero-width space) | Error listing that branch; no comment requests |
+| AC17 | The receipt starts with U+FEFF (byte order mark) | The marker error naming the file; no comment requests |
+| AC18 | `comment-author` `GitHub-Actions[bot]`; the bot's comment is by `github-actions[bot]` | `PATCH` that comment; `result=updated` |
 
 ````powershell
 #Requires -Version 7.4
@@ -3549,7 +3700,15 @@ function Invoke-Receipt([hashtable] $Responses, [hashtable] $Environment = @{}) 
     }
 
     $global:LASTEXITCODE = 0
-    [string[]] $lines = @(& $ScriptPath *>&1 | ForEach-Object { "$_" })
+    try {
+        [string[]] $lines = @(& $ScriptPath *>&1 | ForEach-Object { "$_" })
+    }
+    catch {
+        # An unexpected request fails this case, not the whole run.
+        [string[]] $lines = @("exception: $($_.Exception.Message)")
+        $global:LASTEXITCODE = 99
+    }
+
     $run = [pscustomobject]@{
         ExitCode = $global:LASTEXITCODE
         Lines = $lines
@@ -3563,9 +3722,9 @@ function Invoke-Receipt([hashtable] $Responses, [hashtable] $Environment = @{}) 
 }
 
 function Assert-Equal($Expected, $Actual, [string] $Message) {
-    $expectedJson = ConvertTo-CompactJson $Expected
-    $actualJson = ConvertTo-CompactJson $Actual
-    if ($expectedJson -cne $actualJson) {
+    $expectedJson = ConvertTo-Json -InputObject $Expected -Compress -Depth 5 -EscapeHandling EscapeNonAscii
+    $actualJson = ConvertTo-Json -InputObject $Actual -Compress -Depth 5 -EscapeHandling EscapeNonAscii
+    if (-not [string]::Equals($expectedJson, $actualJson, [System.StringComparison]::Ordinal)) {
         $Failures.Add("$Message`n  expected: $expectedJson`n  actual:   $actualJson")
     }
 }
@@ -3723,6 +3882,36 @@ $run = Invoke-Receipt @{
 } @{ HEAD_REF = 'Feature/Ledger' }
 Assert-Equal 1 $run.ExitCode 'AC15 exit code'
 Assert-Equal @('::error::No receipt for Feature/Ledger changed in this pull request; found receipts for: feature/ledger.') $run.Lines 'AC15 log'
+
+# AC16: a branch that differs only by a zero-width space doesn't match.
+$zeroWidthBranch = "feature/ledger$([char] 0x200B)"
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(, @($ReceiptPath, 'added'))
+    $ContentUri = New-Content $ReceiptText.Replace('"branch": "feature/ledger"', "`"branch`": `"$zeroWidthBranch`"")
+}
+Assert-Equal 1 $run.ExitCode 'AC16 exit code'
+Assert-Equal @("::error::No receipt for feature/ledger changed in this pull request; found receipts for: $zeroWidthBranch.") $run.Lines 'AC16 log'
+Assert-Equal @($FilesUri, $ContentUri) $run.Requests 'AC16 requests'
+
+# AC17: a receipt that starts with a byte order mark fails the marker check.
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(, @($ReceiptPath, 'added'))
+    $ContentUri = New-Content ("$([char] 0xFEFF)" + $ReceiptText)
+}
+Assert-Equal 1 $run.ExitCode 'AC17 exit code'
+Assert-Equal @("::error::$ReceiptPath doesn't start with <!-- copilot-ledger-receipt -->, so it isn't a CopilotLedger receipt.") $run.Lines 'AC17 log'
+Assert-Equal @($FilesUri, $ContentUri) $run.Requests 'AC17 requests'
+
+# AC18: comment-author matches the comment's login case-insensitively, as GitHub logins do.
+$run = Invoke-Receipt @{
+    $FilesUri = New-Files @(, @($ReceiptPath, 'modified'))
+    $ContentUri = New-Content $ReceiptText
+    $CommentsUri = ConvertTo-CompactJson @(, (New-Comment 58 'github-actions[bot]' "<!-- copilot-ledger-receipt -->`nold"))
+    "PATCH $Api/repos/$Repository/issues/comments/58" = ConvertTo-CompactJson (New-Comment 58 'github-actions[bot]' $ReceiptText)
+} @{ COMMENT_AUTHOR = 'GitHub-Actions[bot]' }
+Assert-Equal 0 $run.ExitCode 'AC18 exit code'
+Assert-Equal "result=updated`ncomment-url=https://github.test/octo/widgets/pull/7#issuecomment-58`n" $run.Outputs 'AC18 outputs'
+Assert-Equal @($FilesUri, $ContentUri, $CommentsUri, "PATCH $Api/repos/$Repository/issues/comments/58") $run.Requests 'AC18 requests'
 
 if ($Failures.Count -gt 0) {
     $Failures | ForEach-Object { Write-Host "FAIL: $_" }
@@ -3889,11 +4078,13 @@ exit 0
     {
         using TempDirectory temp = new();
         await using CliHarness harness = await SeededHarnessAsync(temp.Path);
+        string manifest = Path.Combine(temp.Path, "data", "install.json");
         await File.WriteAllTextAsync(
-            Path.Combine(temp.Path, "data", "install.json"),
+            manifest,
             """
             {"schemaVersion":1,"installedAt":"2026-11-20T00:00:00+00:00","executablePath":"/opt/old/gh-ledger","windowsUserVariableSet":false,"windowsUserVariablePreviousValue":null,"profileFiles":[],"ghAliasSet":false}
             """);
+        await FileRetry.ReadAllTextAsync(manifest);
         const string Warning =
             "CopilotLedger was installed from /opt/old/gh-ledger; run gh-ledger install to use this copy instead.";
 
@@ -3917,7 +4108,7 @@ exit 0
 ```
 
    - **RP12**: as the extension, `status` is the usual text with the three changed lines, and `ghExtension` is true with no warnings.
-   - **RP13**: an `install.json` that names `/opt/old/gh-ledger` adds one warning line after the Copilot line and one entry to `warnings`.
+   - **RP13**: an `install.json` that names `/opt/old/gh-ledger` (read back with `FileRetry` before `status` runs) adds one warning line after the Copilot line and one entry to `warnings`.
 
 ### Task 5 tests
 
@@ -4032,7 +4223,7 @@ Responses use `ByteArrayContent` without a content type, never `StringContent`, 
 - **RU6**: an unreadable download is ignored with the same warning in `rates validate`, `status --json`, and `rates update`, which then replaces it.
 - **RU7**: a download dated before the built-in rates is ignored without a warning.
 - **RU8**: with the daemon running on downloaded rates that double `claude-opus-5.5`'s prices, `rates update` adds the restart line, and trace V's three chats are priced at the downloaded rates: 3 × (100,000 × $8 + 10,000 × $40) per 1M = $3.60, or 360 AI credits, instead of the built-in 180.
-- **RU9**: the daemon logs the ignored download as its first line and still starts and stops.
+- **RU9**: the daemon logs the ignored download as its first line, still starts and stops, and exits with 0.
 - **RU10**: the built-in `ratesVersion` is a `yyyy-MM-dd` date.
 
 ```csharp
@@ -4154,6 +4345,7 @@ public sealed class RatesUpdateTests
         string overlay = Path.Combine(temp.Path, "data", "rates.json");
         Directory.CreateDirectory(Path.GetDirectoryName(overlay)!);
         await File.WriteAllTextAsync(overlay, PublishedRates.GptPreviewOverlay);
+        await FileRetry.ReadAllTextAsync(overlay);
         Assert.Equal(0, (await harness.RunAsync("rates", "validate")).ExitCode);
         FakeHttpHandler handler = new(_ => FakeHttpHandler.Bytes(
             PublishedRates.Utf8(PublishedRates.WithGptNew("2026-12-01"))));
@@ -4176,6 +4368,7 @@ public sealed class RatesUpdateTests
         string downloaded = Path.Combine(temp.Path, "data", "rates.downloaded.json");
         Directory.CreateDirectory(Path.GetDirectoryName(downloaded)!);
         await File.WriteAllTextAsync(downloaded, PublishedRates.WithVersion("2026-12-01"));
+        await FileRetry.ReadAllTextAsync(downloaded);
 
         CliRun same = await harness.RunWithHttpAsync(
             new FakeHttpHandler(_ => FakeHttpHandler.Bytes(PublishedRates.Utf8(PublishedRates.WithVersion("2026-12-01")))),
@@ -4201,6 +4394,7 @@ public sealed class RatesUpdateTests
         string downloaded = Path.Combine(temp.Path, "data", "rates.downloaded.json");
         Directory.CreateDirectory(Path.GetDirectoryName(downloaded)!);
         await File.WriteAllTextAsync(downloaded, "not json");
+        await FileRetry.ReadAllTextAsync(downloaded);
         string warning = $"Warning: ignored {downloaded}: line 1, column 2: invalid JSON\n";
 
         CliRun validate = await harness.RunAsync("rates", "validate");
@@ -4233,6 +4427,7 @@ public sealed class RatesUpdateTests
         string downloaded = Path.Combine(temp.Path, "data", "rates.downloaded.json");
         Directory.CreateDirectory(Path.GetDirectoryName(downloaded)!);
         await File.WriteAllTextAsync(downloaded, PublishedRates.WithVersion("2026-11-01"));
+        await FileRetry.ReadAllTextAsync(downloaded);
 
         CliRun validate = await harness.RunAsync("rates", "validate");
 
@@ -4251,6 +4446,7 @@ public sealed class RatesUpdateTests
         string downloaded = Path.Combine(temp.Path, "data", "rates.downloaded.json");
         Directory.CreateDirectory(Path.GetDirectoryName(downloaded)!);
         await File.WriteAllTextAsync(downloaded, PublishedRates.DoubledOpus("2026-12-01"));
+        await FileRetry.ReadAllTextAsync(downloaded);
         await harness.StartInProcessDaemonAsync();
 
         CliRun update = await harness.RunWithHttpAsync(
@@ -4289,10 +4485,11 @@ public sealed class RatesUpdateTests
         string downloaded = Path.Combine(temp.Path, "data", "rates.downloaded.json");
         Directory.CreateDirectory(Path.GetDirectoryName(downloaded)!);
         await File.WriteAllTextAsync(downloaded, "not json");
+        await FileRetry.ReadAllTextAsync(downloaded);
 
         await harness.StartInProcessDaemonAsync();
         CliRun stop = await harness.RunAsync("daemon", "stop");
-        await harness.InProcessDaemon!;
+        Assert.Equal(0, (await harness.InProcessDaemon!).ExitCode);
 
         Assert.Equal(0, stop.ExitCode);
         Assert.StartsWith(
@@ -4338,11 +4535,12 @@ public sealed class LoadWithOverlayTests
     }
 
     [Fact]
-    public void LW2_OverlayIsMergedOnTheGivenBase()
+    public async Task LW2_OverlayIsMergedOnTheGivenBase()
     {
         using TempDirectory temp = new();
         string overlay = Path.Combine(temp.Path, "rates.json");
         File.WriteAllText(overlay, PublishedRates.GptPreviewOverlay);
+        await FileRetry.ReadAllTextAsync(overlay);
 
         JsonRateCardCalculator calculator =
             JsonRateCardCalculator.LoadWithOverlay(PublishedRates.WithVersion("2026-12-01"), overlay);
@@ -4351,11 +4549,12 @@ public sealed class LoadWithOverlayTests
     }
 
     [Fact]
-    public void LW3_OverlayErrorsStartWithTheOverlayPath()
+    public async Task LW3_OverlayErrorsStartWithTheOverlayPath()
     {
         using TempDirectory temp = new();
         string overlay = Path.Combine(temp.Path, "rates.json");
         File.WriteAllText(overlay, "{");
+        await FileRetry.ReadAllTextAsync(overlay);
 
         InvalidDataException invalid = Assert.Throws<InvalidDataException>(() =>
             JsonRateCardCalculator.LoadWithOverlay(PublishedRates.WithVersion("2026-12-01"), overlay));
