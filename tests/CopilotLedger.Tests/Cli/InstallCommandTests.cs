@@ -747,6 +747,114 @@ public sealed class InstallCommandTests
             },
         };
 
+    private const string WindowsExtension =
+        @"C:\Users\me\AppData\Local\GitHub CLI\extensions\gh-ledger\gh-ledger.exe";
+
+    [Fact]
+    public async Task IN17_WindowsExtensionInstallSkipsTheAlias()
+    {
+        using TempDirectory temp = new();
+        FakeCliPlatform platform = WindowsPlatform();
+        platform.ProcessPath = WindowsExtension;
+        platform.ExistingFiles.Add(
+            @"C:\Users\me\AppData\Local\GitHub CLI\extensions\gh-ledger\manifest.yml");
+        await using CliHarness harness = new(temp.Path, platform);
+
+        CliRun run = await harness.RunAsync("install");
+
+        Assert.Equal(0, run.ExitCode);
+        Assert.Equal(
+            "Set COPILOT_OTEL_ENABLED=true for your user account.\n" +
+            "gh ledger runs this GitHub CLI extension, so no alias is needed.\n" +
+            "gh-ledger will start when you sign in.\n" +
+            $"gh-ledger daemon started (pid {Environment.ProcessId}) on http://localhost:4318.\n" +
+            "CopilotLedger is installed. Restart the GitHub Copilot app, VS Code, and open terminals so they pick up COPILOT_OTEL_ENABLED.\n",
+            run.Out);
+        Assert.Equal(string.Empty, run.Error);
+        Assert.Empty(platform.ProcessRuns);
+        Assert.Equal(
+            [("CopilotLedger", $"\"{WindowsExtension}\" daemon start")],
+            platform.StartupCommandWrites);
+        DetachedStart start = Assert.Single(platform.DetachedStarts);
+        Assert.Equal(WindowsExtension, start.FileName);
+        using JsonDocument manifest = JsonDocument.Parse(
+            await FileRetry.ReadAllTextAsync(ManifestPath(temp.Path)));
+        Assert.Equal(
+            WindowsExtension,
+            manifest.RootElement.GetProperty("executablePath").GetString());
+        Assert.False(manifest.RootElement.GetProperty("ghAliasSet").GetBoolean());
+    }
+
+    [Fact]
+    public async Task IN18_LinuxExtensionInstallStartsTheExtensionAtSignIn()
+    {
+        using TempDirectory temp = new();
+        FakeCliPlatform platform = UnixPlatform(temp.Path);
+        platform.ProcessPath = "/home/me/.local/share/gh/extensions/gh-ledger/gh-ledger";
+        platform.ExistingFiles.Add("/home/me/.local/share/gh/extensions/gh-ledger/manifest.yml");
+        await using CliHarness harness = new(temp.Path, platform);
+
+        CliRun run = await harness.RunAsync("install");
+
+        Assert.Equal(0, run.ExitCode);
+        Assert.Equal(
+            $"Added COPILOT_OTEL_ENABLED=true to {Path.Combine(temp.Path, "home", ".zshrc")}.\n" +
+            "gh ledger runs this GitHub CLI extension, so no alias is needed.\n" +
+            "gh-ledger will start when you sign in.\n" +
+            $"gh-ledger daemon started (pid {Environment.ProcessId}) on http://localhost:4318.\n" +
+            "CopilotLedger is installed. Restart the GitHub Copilot app, VS Code, and open terminals so they pick up COPILOT_OTEL_ENABLED.\n",
+            run.Out);
+        Assert.Equal(string.Empty, run.Error);
+        Assert.Empty(platform.ProcessRuns);
+        Assert.Equal(
+            """
+            [Desktop Entry]
+            Type=Application
+            Name=CopilotLedger
+            Comment=Starts the CopilotLedger daemon
+            Exec="/home/me/.local/share/gh/extensions/gh-ledger/gh-ledger" daemon start
+            Terminal=false
+            """.ReplaceLineEndings("\n") + "\n",
+            await FileRetry.ReadAllTextAsync(Path.Combine(
+                temp.Path,
+                "home",
+                ".config",
+                "autostart",
+                "copilot-ledger.desktop")));
+    }
+
+    public static TheoryData<string, string?> NotExtensions => new()
+    {
+        { @"C:\Users\me\AppData\Local\GitHub CLI\extensions\gh-ledger\gh-ledger.exe", null },
+        { @"C:\Users\me\AppData\Local\GitHub CLI\other\gh-ledger\gh-ledger.exe", @"C:\Users\me\AppData\Local\GitHub CLI\other\gh-ledger\manifest.yml" },
+        { @"C:\Users\me\AppData\Local\GitHub CLI\extensions\gh-tools\gh-ledger.exe", @"C:\Users\me\AppData\Local\GitHub CLI\extensions\gh-tools\manifest.yml" },
+    };
+
+    [Theory]
+    [MemberData(nameof(NotExtensions))]
+    public async Task IN19_OnlyTheGhExtensionLayoutSkipsTheAlias(string executable, string? existingManifest)
+    {
+        using TempDirectory temp = new();
+        FakeCliPlatform platform = WindowsPlatform();
+        platform.ProcessPath = executable;
+        if (existingManifest is not null)
+        {
+            platform.ExistingFiles.Add(existingManifest);
+        }
+
+        await using CliHarness harness = new(temp.Path, platform);
+
+        CliRun run = await harness.RunAsync("install");
+
+        Assert.Equal(0, run.ExitCode);
+        (string gh, IReadOnlyList<string> arguments) = Assert.Single(platform.ProcessRuns);
+        Assert.Equal(@"C:\gh\gh.exe", gh);
+        Assert.Equal(
+            ["alias", "set", "ledger", $"'{executable.Replace('\\', '/')}' \"$@\"", "--shell", "--clobber"],
+            arguments);
+        Assert.DoesNotContain("no alias is needed", run.Out);
+    }
+
     private static FakeCliPlatform UnixPlatform(string root)
     {
         string home = Path.Combine(root, "home");

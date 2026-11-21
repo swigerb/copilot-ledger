@@ -146,8 +146,14 @@ internal static class InstallCommands
             }
         }
 
+        bool extension = GhExtension.IsInstalled(context.Platform);
         string? gh = context.Platform.FindOnPath("gh");
-        if (gh is null)
+        if (extension)
+        {
+            context.Out.WriteLine(
+                "gh ledger runs this GitHub CLI extension, so no alias is needed.");
+        }
+        else if (gh is null)
         {
             context.Out.WriteLine(
                 "GitHub CLI (gh) was not found, so the gh ledger alias was not set. Run gh-ledger directly.");
@@ -183,7 +189,7 @@ internal static class InstallCommands
             }
         }
 
-        if (gh is not null && context.Platform.IsWindows && FindSh(context) is null)
+        if (!extension && gh is not null && context.Platform.IsWindows && FindSh(context) is null)
         {
             context.Out.WriteLine(
                 "Warning: GitHub CLI needs sh.exe from Git for Windows to run shell aliases, so gh ledger won't work until Git for Windows is installed. Run gh-ledger directly.");
@@ -506,7 +512,7 @@ internal static class InstallCommands
         return 0;
     }
 
-    private static async Task<InstallManifest?> TryReadManifestAsync(
+    internal static async Task<InstallManifest?> TryReadManifestAsync(
         string path,
         CancellationToken cancellationToken)
     {
@@ -536,7 +542,7 @@ internal static class InstallCommands
     private static Option<bool> DryRunOption() =>
         new("--dry-run") { Description = "Print the changes without making them." };
 
-    private static string ManifestPath(CliContext context) =>
+    internal static string ManifestPath(CliContext context) =>
         Path.Combine(context.DataDirectory, "install.json");
 
     private static string ExecutableName(string? path)

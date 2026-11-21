@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (${{ matrix.rid }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            asset: gh-ledger-windows-amd64.exe
+            smoke: true
+          - os: windows-latest
+            rid: win-arm64
+            asset: gh-ledger-windows-arm64.exe
+            smoke: false
+          - os: ubuntu-latest
+            rid: linux-x64
+            asset: gh-ledger-linux-amd64
+            smoke: true
+          - os: ubuntu-latest
+            rid: linux-arm64
+            asset: gh-ledger-linux-arm64
+            smoke: false
+          - os: macos-latest
+            rid: osx-x64
+            asset: gh-ledger-darwin-amd64
+            smoke: false
+          - os: macos-latest
+            rid: osx-arm64
+            asset: gh-ledger-darwin-arm64
+            smoke: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Check the version
+        shell: bash
+        run: |
+          version=$(dotnet msbuild src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -getProperty:Version | tr -d '\r')
+          echo "Project version: $version"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match the project version $version."
+            exit 1
+          fi
+      - name: Publish
+        shell: bash
+        env:
+          RID: ${{ matrix.rid }}
+        run: dotnet publish src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -c Release -r "$RID" -o publish
+      - name: Name the asset
+        shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          mkdir dist
+          if [ -f publish/gh-ledger.exe ]; then
+            cp publish/gh-ledger.exe "dist/$ASSET"
+          else
+            cp publish/gh-ledger "dist/$ASSET"
+          fi
+      - name: Smoke-test the asset
+        if: matrix.smoke
+        shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          version=$(dotnet msbuild src/CopilotLedger.Cli/CopilotLedger.Cli.csproj -getProperty:Version | tr -d '\r')
+          test "$("./dist/$ASSET" --version | tr -d '\r')" = "$version"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Add the rates and checksums
+        run: |
+          cp src/CopilotLedger.Core/Pricing/rates.json dist/rates.json
+          cd dist
+          sha256sum gh-ledger-* rates.json > gh-ledger-checksums.txt
+          cat gh-ledger-checksums.txt
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease=(--prerelease) ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "gh-ledger $GITHUB_REF_NAME" --generate-notes "${prerelease[@]}"
