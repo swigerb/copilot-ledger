@@ -25,6 +25,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\CopilotLedger.Mcp\CopilotLedger.Mcp.csproj" />
     <ProjectReference Include="..\CopilotLedger.Otlp\CopilotLedger.Otlp.csproj" />
   </ItemGroup>
 </Project>

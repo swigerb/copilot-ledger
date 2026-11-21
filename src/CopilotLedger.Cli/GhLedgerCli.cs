@@ -3,6 +3,7 @@ using System.Reflection;
 using CopilotLedger.Cli.Breaker;
 using CopilotLedger.Cli.Daemon;
 using CopilotLedger.Cli.Install;
+using CopilotLedger.Cli.Mcp;
 using CopilotLedger.Cli.Rates;
 using CopilotLedger.Cli.Reporting;
 
@@ -44,6 +45,8 @@ public static class GhLedgerCli
         {
             root.Add(command);
         }
+
+        root.Add(McpCommand.Create(context));
 
         return root.Parse(args).InvokeAsync(
             new InvocationConfiguration

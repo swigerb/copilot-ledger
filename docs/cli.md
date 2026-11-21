@@ -74,6 +74,25 @@ A budget is a soft cap in AI credits for one branch. When the branch's billed sp
 - `gh-ledger budget clear` removes it, and `gh-ledger budget list [--json]` lists every budget with its spend.
 - `budget set` and `budget clear` accept `--repo <key> --branch <name>` for another branch.
 
+## MCP server
+
+`gh-ledger mcp` runs an MCP server on standard input and output, so Copilot can read the ledger and see the circuit breaker. Register it once with Copilot CLI:
+
+```shell
+copilot mcp add ledger -- /path/to/gh-ledger mcp
+```
+
+That adds `ledger` to `~/.copilot/mcp-config.json`. VS Code's Copilot agent harness reads the same file. The GitHub Copilot app runs the same agent runtime; if it doesn't list the server, add it in the app's MCP settings with the same command. For VS Code's Local agent harness, add the server to `mcp.json` under `servers`, with `"command": "/path/to/gh-ledger"` and `"args": ["mcp"]`.
+
+The server offers four tools. Each uses the current repository and branch unless you pass `repository` and `branch`:
+
+- `get_branch_ledger`: the branch's spend, top model, budget, and circuit-breaker status.
+- `get_top_expensive_prompts`: the branch's most expensive prompt chains, with output tokens and failed tool calls; `limit` (1 to 20, default 5) and `orderBy` (`cost`, `outputTokens`, or `failedToolCalls`).
+- `get_agent_breakdown`: the branch's spend by agent.
+- `set_branch_budget`: sets the branch's budget in AI credits (`aiCredits`).
+
+The first three are read-only. `set_branch_budget` changes only the budget, so Copilot asks before running it; in prompt mode, allow it with `--allow-tool 'ledger(set_branch_budget)'`. No tool can reset the circuit breaker. While the breaker is open for the branch or the session, or the branch is over its budget, every result starts with a `WARNING:` line.
+
 ## Rates
 
 Run `gh-ledger rates init` to create a starter overlay and `gh-ledger rates validate` to validate it. See [configuration.md](configuration.md) for the rates format and pricing channels.

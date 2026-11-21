@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="2.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CopilotLedger.Core\CopilotLedger.Core.csproj" />
+    <ProjectReference Include="..\CopilotLedger.Storage\CopilotLedger.Storage.csproj" />
+  </ItemGroup>
+</Project>

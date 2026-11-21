@@ -13,6 +13,8 @@ public sealed record CliContext
     public required string WorkingDirectory { get; init; }
     public required TimeProvider TimeProvider { get; init; }
     public required ICliPlatform Platform { get; init; }
+    public Stream? StandardInput { get; init; }            // mcp: null uses Console.OpenStandardInput()
+    public Stream? StandardOutput { get; init; }           // mcp: null uses Console.OpenStandardOutput()
     public Action<IWebHostBuilder>? ConfigureWebHost { get; init; }                     // tests: builder => builder.UseTestServer()
     public TimeSpan DaemonPollInterval { get; init; } = TimeSpan.FromMilliseconds(500);
     public TimeSpan DaemonStartTimeout { get; init; } = TimeSpan.FromSeconds(15);
