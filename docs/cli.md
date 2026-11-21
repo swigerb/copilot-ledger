@@ -78,7 +78,7 @@ A budget is a soft cap in AI credits for one branch. When the branch's billed sp
 
 ## Pull request receipts
 
-`gh-ledger export-pr` writes the current branch's receipt for its pull request to `.github/copilot-ledger/receipts/<branch>-<hash>.md` in the repository root, where `<branch>` is the branch name with characters other than letters, digits, `.`, `_`, and `-` replaced by `-`. Commit that file on the branch and push it.
+`gh-ledger export-pr` writes the current branch's receipt for its pull request to `.github/copilot-ledger/receipts/<branch>-<hash>.md` in the repository root, where `<branch>` is the branch name with characters other than letters, digits, `.`, `_`, and `-` replaced by `-`. Commit that file on the branch and push it. The CopilotLedger action then posts it on the pull request; see [Posting PR receipts with the CopilotLedger action](action.md).
 
 The receipt covers all spend recorded on the branch. It lists GitHub AI Credits by model, Foundry BYOK spend, local-model tokens and the cloud spend they avoided, requests that couldn't be priced, the number of circuit-breaker trips, and the most expensive prompt in AI credits. A collapsible section holds a table by billing channel and model, and the receipt's data as JSON. Its totals equal the branch's row in `gh-ledger branch --since all --json`.
 
