@@ -18,7 +18,7 @@ public interface ICliPlatform
     bool FileExists(string path);
     string? FindOnPath(string fileName);                                   // full path of an executable on PATH, or null
     Task<ProcessRunResult> RunAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken);
-    int StartDetached(string fileName, IReadOnlyList<string> arguments, string workingDirectory);   // returns the new process id
+    int StartDetached(string fileName, IReadOnlyList<string> arguments, string workingDirectory);   // returns the new process id; its standard input, output, and error are the null device; on Windows it inherits no other handle
     bool IsProcessRunning(int processId);
     void KillProcess(int processId);
 }
