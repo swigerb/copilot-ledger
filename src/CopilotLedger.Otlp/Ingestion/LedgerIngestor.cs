@@ -2,6 +2,7 @@ using CopilotLedger.Core.Git;
 using CopilotLedger.Core.Pricing;
 using CopilotLedger.Core.Telemetry;
 using CopilotLedger.Otlp.Attribution;
+using CopilotLedger.Otlp.Breaker;
 using CopilotLedger.Otlp.Decoding;
 using CopilotLedger.Otlp.Normalization;
 using CopilotLedger.Storage;
@@ -15,6 +16,7 @@ public sealed class LedgerIngestor : ILedgerIngestor
     private readonly ICreditCalculator _calculator;
     private readonly IGitContextResolver _gitResolver;
     private readonly CopilotSessionWorkspaceLocator _sessionLocator;
+    private readonly CircuitBreakerMonitor? _monitor;
 
     // The caller initializes the store. Throws ArgumentNullException for null arguments.
     public LedgerIngestor(
@@ -22,6 +24,17 @@ public sealed class LedgerIngestor : ILedgerIngestor
         ICreditCalculator calculator,
         IGitContextResolver gitResolver,
         CopilotSessionWorkspaceLocator sessionLocator)
+        : this(store, calculator, gitResolver, sessionLocator, null)
+    {
+    }
+
+    // monitor null means no circuit breaker. Throws ArgumentNullException for the other null arguments.
+    public LedgerIngestor(
+        SqliteLedgerStore store,
+        ICreditCalculator calculator,
+        IGitContextResolver gitResolver,
+        CopilotSessionWorkspaceLocator sessionLocator,
+        CircuitBreakerMonitor? monitor)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(calculator);
@@ -31,6 +44,7 @@ public sealed class LedgerIngestor : ILedgerIngestor
         _calculator = calculator;
         _gitResolver = gitResolver;
         _sessionLocator = sessionLocator;
+        _monitor = monitor;
     }
 
     public async Task<IngestResult> IngestAsync(
@@ -96,6 +110,10 @@ public sealed class LedgerIngestor : ILedgerIngestor
             if (traceIds.Length > 0)
             {
                 await _store.BackfillFromAgentSpansAsync(traceIds, cancellationToken);
+                if (_monitor is not null)
+                {
+                    await _monitor.EvaluateAsync(traceIds, cancellationToken);
+                }
             }
 
             return new IngestResult
